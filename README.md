@@ -31,13 +31,14 @@ To install **Youtube Clipster** from this GitHub repository:
 
 ```bash
 # Step 1: Clone the repository
-git clone https://github.com/joruf/Youtube-Clipster.git
+git clone https://github.com/joruf/youtube-clipster.git
 
 # Step 2: Change into the project directory
-cd Youtube-Clipster
+cd youtube-clipster
 
 # Step 3: Make the script executable
-chmod +x youtube-clipster.sh
+chmod +x youtube_clipster.sh
 
 # Step 4: Run it in the background
-./youtube-clipster.sh &
+./youtube_clipster.sh &
+
