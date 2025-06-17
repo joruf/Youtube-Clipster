@@ -25,6 +25,19 @@ Loresoft Youtube Clipster is a simple Bash script to automatically download YouT
 
 ---
 
+## Customization
+
+You can configure the script by editing the following lines in `youtube_clipster.sh`:
+
+```bash
+# Set the language (choose EN for English or DE for German)
+LANG_CHOICE="EN"
+
+# Set the download directory
+DOWNLOAD_DIR="$HOME/Downloads"
+
+---
+
 ## Installation via GitHub
 
 To install **Youtube Clipster** from this GitHub repository:
