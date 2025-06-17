@@ -37,7 +37,8 @@ git clone https://github.com/joruf/youtube-clipster.git
 cd youtube-clipster
 
 # Step 3: Make the script executable
-chmod +x youtube-clipster.sh
+chmod +x youtube_clipster.sh
 
 # Step 4: Run it in the background
-./youtube-clipster.sh &
+./youtube_clipster.sh &
+
