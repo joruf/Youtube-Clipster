@@ -6,7 +6,6 @@
 # Author: Joachim Ruf, Loresoft.de
 # License: GPLv3 — Der Name des Autors muss bei Veröffentlichung und Veränderung genannt werden.
 
-
 # --- Required ---
 # For X11 Desktop
 # sudo apt update && sudo apt install xclip
@@ -23,7 +22,6 @@
 # For GUI
 # sudo apt install zenity
 
-
 # --- Distribution Compatibility ---
 # This script is primarily designed for Debian-based Linux distributions
 # due to its reliance on the 'apt' package manager for system dependencies.
@@ -39,15 +37,12 @@
 # - Kali Linux (though specialized, it's Debian-based)
 # - Parrot OS (also specialized, but Debian-based)
 
-
 # --- Info ---
 # If too many downloads are performed consecutively, Google often interrupts with a "verify you are not a bot" query.
 # When this message appears, the IP address must be renewed.
 
-
 # Define language strings
 declare -A MESSAGES
-
 
 # Configuration
 INTERVAL_TIME_SEC="2"
@@ -63,7 +58,7 @@ if [[ "$LANG_CHOICE" == "DE" ]]; then
     MESSAGES["install_error"]="❌ Fehler bei der Installation von '%s'.\nDas Programm wird beendet."
     MESSAGES["zenity_install_error"]="❌ Fehler bei der Installation von 'zenity'. GUI-Meldungen nicht möglich."
     MESSAGES["python_package_error"]="❌ Fehler bei der Installation von Python-Paket '%s'.\nDas Programm wird beendet."
-	MESSAGES["started"]="✅ Loresoft Youtube Clipster gestartet. Youtube-Link kopieren um Download zu starten."
+    MESSAGES["started"]="✅ Loresoft Youtube Clipster gestartet. Youtube-Link kopieren um Download zu starten."
     MESSAGES["link_received"]="⬇️ Youtube-Link erhalten, Prozess wird vorbereitet..."
     MESSAGES["unknown_title"]="Unbekannter Titel"
     MESSAGES["download_title"]="Download: %s"
@@ -78,8 +73,8 @@ elif [[ "$LANG_CHOICE" == "EN" ]]; then
     MESSAGES["install_error"]="❌ Error installing '%s'.\nProgram will exit."
     MESSAGES["zenity_install_error"]="❌ Error installing 'zenity'. GUI messages not possible."
     MESSAGES["python_package_error"]="❌ Error installing Python package '%s'.\nProgram will exit."
-	MESSAGES["started"]="✅ Loresoft Youtube Clipster started. Copy YouTube link to start download."
-	MESSAGES["link_received"]="⬇️ YouTube link received, process preparing..."
+    MESSAGES["started"]="✅ Loresoft Youtube Clipster started. Copy YouTube link to start download."
+    MESSAGES["link_received"]="⬇️ YouTube link received, process preparing..."
     MESSAGES["unknown_title"]="Unknown Title"
     MESSAGES["download_title"]="Download: %s"
     MESSAGES["selection_column"]="Selection"
@@ -91,9 +86,14 @@ elif [[ "$LANG_CHOICE" == "EN" ]]; then
     MESSAGES["download_error"]="❌ Error during download: %s (%s)"
 fi
 
-
-
-
+# notify() function with DBus check
+notify() {
+  if dbus-send --session --dest=org.freedesktop.Notifications --type=method_call --print-reply /org/freedesktop/Notifications org.freedesktop.Notifications.GetServerInformation &>/dev/null; then
+    zenity --notification --text="$1"
+  else
+    zenity --info --text="$1"
+  fi
+}
 
 # Function to install missing dependencies
 check_and_install() {
@@ -137,11 +137,7 @@ check_and_install "yt-dlp" "yt-dlp" "pip"
 check_and_install "ffmpeg" "ffmpeg" "apt"
 check_and_install "zenity" "zenity" "apt"
 
-zenity --notification --text="${MESSAGES["started"]}"
-
-
-
-
+notify "${MESSAGES["started"]}"
 
 # Main loop
 while true; do
@@ -150,7 +146,7 @@ while true; do
 
   if [[ -n "$CLIP" && "$CLIP" != "$LAST_CLIP" && "$CLIP" != "$CANCELED_CLIP" ]]; then
     if [[ "$CLIP" =~ ^https?://(www\.)?(youtube\.com|youtu\.be)/ ]]; then
-      zenity --notification --text="${MESSAGES["link_received"]}"
+      notify "${MESSAGES["link_received"]}"
 
       # Get title
       TITLE=$(yt-dlp --user-agent "$USER_AGENT" --no-playlist --skip-download --no-warnings --get-title "$CLIP" 2>/dev/null)
@@ -162,7 +158,7 @@ while true; do
         TRUE mp3 FALSE mp4 2>/dev/null)
 
       if [[ -z "$FORMAT" ]]; then
-        zenity --notification --text="${MESSAGES["no_format_selected"]}"
+        notify "${MESSAGES["no_format_selected"]}"
         CANCELED_CLIP="$CLIP"   # Mark URL as canceled
         continue
       fi
@@ -172,7 +168,7 @@ while true; do
         exit 1
       }
 
-      zenity --notification --text="$(printf "${MESSAGES["starting_download"]}" "$FORMAT" "$TITLE")"
+      notify "$(printf "${MESSAGES["starting_download"]}" "$FORMAT" "$TITLE")"
 
       if [[ "$FORMAT" == "mp3" ]]; then
         yt-dlp --user-agent "$USER_AGENT" --no-playlist -x --audio-format mp3 "$CLIP"
@@ -183,9 +179,9 @@ while true; do
       RET=$?
 
       if [[ $RET -eq 0 ]]; then
-        zenity --notification --text="$(printf "${MESSAGES["download_complete"]}" "$TITLE" "$FORMAT" "$DOWNLOAD_DIR")"
+        notify "$(printf "${MESSAGES["download_complete"]}" "$TITLE" "$FORMAT" "$DOWNLOAD_DIR")"
       else
-        zenity --notification --text="$(printf "${MESSAGES["download_error"]}" "$TITLE" "$FORMAT")"
+        notify "$(printf "${MESSAGES["download_error"]}" "$TITLE" "$FORMAT")"
       fi
 
       LAST_CLIP="$CLIP"   # Set only after successful download
