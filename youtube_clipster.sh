@@ -69,6 +69,14 @@ if [[ "$LANG_CHOICE" == "DE" ]]; then
     MESSAGES["starting_download"]="⬇️ Starte Download als %s: %s"
     MESSAGES["download_complete"]="✅ Download abgeschlossen: %s (%s) in %s"
     MESSAGES["download_error"]="❌ Fehler beim Download: %s (%s)"
+    MESSAGES["clip_invalid"]="❌ Keine gültige YouTube-Adresse in der Zwischenablage gefunden."
+    MESSAGES["waiting_clip"]="⌛ Warte auf YouTube-Link in der Zwischenablage..."
+    MESSAGES["dependencies_ok"]="✅ Alle benötigten Abhängigkeiten sind installiert."
+    MESSAGES["checking_dependencies"]="🔍 Überprüfe benötigte Programme..."
+    MESSAGES["verwaiste_lock"]="⚠️ Verwaiste Lock-Datei gefunden. Entferne sie..."
+    MESSAGES["only_one_instance"]="❌ Das Programm läuft bereits. Nur eine Instanz erlaubt."
+    MESSAGES["lock_created"]="🔒 Lock-Datei erstellt."
+    MESSAGES["clip_already_canceled"]="⚠️ Dieser Link wurde zuvor abgebrochen."
 elif [[ "$LANG_CHOICE" == "EN" ]]; then
     MESSAGES["install_error"]="❌ Error installing '%s'.\nProgram will exit."
     MESSAGES["zenity_install_error"]="❌ Error installing 'zenity'. GUI messages not possible."
@@ -84,7 +92,36 @@ elif [[ "$LANG_CHOICE" == "EN" ]]; then
     MESSAGES["starting_download"]="⬇️ Starting download as %s: %s"
     MESSAGES["download_complete"]="✅ Download complete: %s (%s) in %s"
     MESSAGES["download_error"]="❌ Error during download: %s (%s)"
+    MESSAGES["clip_invalid"]="❌ No valid YouTube link found in clipboard."
+    MESSAGES["waiting_clip"]="⌛ Waiting for YouTube link in clipboard..."
+    MESSAGES["dependencies_ok"]="✅ All required dependencies are installed."
+    MESSAGES["checking_dependencies"]="🔍 Checking required programs..."
+    MESSAGES["verwaiste_lock"]="⚠️ Orphaned lock file found. Removing it..."
+    MESSAGES["only_one_instance"]="❌ Program is already running. Only one instance allowed."
+    MESSAGES["lock_created"]="🔒 Lock file created."
+    MESSAGES["clip_already_canceled"]="⚠️ This link was previously canceled."
 fi
+
+# Prevent multiple instances with lockfile
+LOCKFILE="$(pwd)/youtube-clipster.lock"
+if [ -f "$LOCKFILE" ]; then
+    OLDPID=$(cat "$LOCKFILE")
+    if ps -p "$OLDPID" > /dev/null 2>&1; then
+        echo "${MESSAGES["only_one_instance"]} PID: $OLDPID"
+        zenity --error --text="${MESSAGES["only_one_instance"]}"
+        exit 1
+    else
+        echo "${MESSAGES["verwaiste_lock"]}"
+        rm -f "$LOCKFILE"
+    fi
+fi
+
+echo $$ > "$LOCKFILE"
+echo "${MESSAGES["lock_created"]}"
+
+# Remove lockfile on exit or Ctrl+C
+trap 'rm -f "$LOCKFILE"' EXIT
+
 
 # notify() function with DBus check
 notify() {
