@@ -24,6 +24,21 @@ Loresoft Youtube Clipster is a simple Bash script to automatically download YouT
 - `zenity`
 
 ---
+## Distribution Compatibility
+This script is primarily designed for Debian-based Linux distributions
+due to its reliance on the 'apt' package manager for system dependencies.
+It should work well on desktop environments of the following:
+- Ubuntu (and its official flavors like Kubuntu, Xubuntu, Lubuntu, MATE, Budgie)
+- Linux Mint (Cinnamon, MATE, XFCE editions, and LMDE)
+- Debian (any desktop installation)
+- Pop!_OS
+- Zorin OS
+- Elementary OS
+- MX Linux
+- Kali Linux (though specialized, it's Debian-based)
+- Parrot OS (also specialized, but Debian-based)
+
+---
 
 ## Customization
 
