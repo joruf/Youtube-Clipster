@@ -50,7 +50,7 @@ DOWNLOAD_DIR="$HOME/Downloads"
 USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 LAST_CLIP=""
 CANCELED_CLIP=""
-LANG_CHOICE="DE" # Select language DE|EN
+LANG_CHOICE="EN" # Select language DE|EN
 mkdir -p "$DOWNLOAD_DIR"
 
 # Language pack
