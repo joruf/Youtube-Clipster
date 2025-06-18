@@ -1,7 +1,6 @@
 #!/bin/bash
 
 # Loresoft Youtube Clipster
-# v1.0
 #
 # Author: Joachim Ruf, Loresoft.de
 # License: GPLv3 — Der Name des Autors muss bei Veröffentlichung und Veränderung genannt werden.
