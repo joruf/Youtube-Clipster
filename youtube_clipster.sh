@@ -45,11 +45,13 @@ declare -A MESSAGES
 
 # Configuration
 INTERVAL_TIME_SEC="2"
+SHOW_STARTUP_DIALOG="1" # 0=hide, 1=show
+LANG_CHOICE="EN" # Select language {DE|EN}
 DOWNLOAD_DIR="$HOME/Downloads"
 USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 LAST_CLIP=""
 CANCELED_CLIP=""
-LANG_CHOICE="EN" # Select language DE|EN
+
 mkdir -p "$DOWNLOAD_DIR"
 
 # Language pack
@@ -173,7 +175,10 @@ check_and_install "yt-dlp" "yt-dlp" "pip"
 check_and_install "ffmpeg" "ffmpeg" "apt"
 check_and_install "zenity" "zenity" "apt"
 
-notify "${MESSAGES["started"]}"
+if [ "$SHOW_STARTUP_DIALOG" == "1" ]; then
+    notify "${MESSAGES["started"]}"
+fi
+
 
 # Main loop
 while true; do
