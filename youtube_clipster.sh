@@ -211,11 +211,13 @@ while true; do
 
       notify "$(printf "${MESSAGES["starting_download"]}" "$FORMAT" "$TITLE")"
 
-      if [[ "$FORMAT" == "mp3" ]]; then
-        yt-dlp --user-agent "$USER_AGENT" --no-playlist -x --audio-format mp3 "$CLIP"
-      else
-        yt-dlp --user-agent "$USER_AGENT" --no-playlist -f bestvideo+bestaudio --merge-output-format mp4 "$CLIP"
-      fi
+     if [[ "$FORMAT" == "mp3" ]]; then
+         yt-dlp --user-agent "$USER_AGENT" --no-playlist -x --audio-format mp3 \
+           -o "%(title)s.%(ext)s" "$CLIP"
+     else
+         yt-dlp --user-agent "$USER_AGENT" --no-playlist -f bestvideo+bestaudio \
+           --merge-output-format mp4 -o "%(title)s.%(ext)s" "$CLIP"
+     fi
 
       RET=$?
 
