@@ -108,7 +108,7 @@ if /i "%LANG_CHOICE%"=="DE" (
 if not exist "%DOWNLOAD_DIR%" mkdir "%DOWNLOAD_DIR%"
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 
-echo YouTube Clipster v1.01
+echo YouTube Clipster v1.02
 echo Author: Joachim Ruf, Loresoft.de
 echo License: GPLv3 - The author's name must be credited upon publication and modification.
 echo ========================================
@@ -379,12 +379,14 @@ if /i "!FMT!"=="CANCELED" (
 
 echo [DEBUG] User selected format: !FMT!
 
+:: Change to download directory
 cd /d "%DOWNLOAD_DIR%"
+echo [DEBUG] Working directory: %CD%
 
-:: Update: Downloading
+:: Update: Starting download
 echo STATUS=!MSG_STATUS_DOWNLOADING! > "%STATUS_FILE%"
 echo TITLE=!TITLE! >> "%STATUS_FILE%"
-echo PROGRESS=30 >> "%STATUS_FILE%"
+echo PROGRESS=0 >> "%STATUS_FILE%"
 echo URL=!URL! >> "%STATUS_FILE%"
 
 echo.
@@ -396,23 +398,45 @@ echo [INFO] !MSG_DESTINATION!: %DOWNLOAD_DIR%
 echo ========================================
 echo.
 
-set "DL_LOG=%TEMP%\ytdlp_download.log"
+set "DL_LOG=%TEMP%\ytdlp_download_%RANDOM%.log"
 
+:: Show full yt-dlp and FFmpeg output (no suppression)
 if /i "!FMT!"=="mp3" (
     echo [DEBUG] Executing MP3 download...
-    "%YTDLP_EXE%" --user-agent "!USER_AGENT!" --no-playlist -x --audio-format mp3 --ffmpeg-location "%FFMPEG_DIR%\bin" -o "%%(title)s.%%(ext)s" "!URL!" --newline > "!DL_LOG!" 2>&1
+    echo [DEBUG] Command: "%YTDLP_EXE%" --user-agent "!USER_AGENT!" --no-playlist -x --audio-format mp3 --ffmpeg-location "%FFMPEG_DIR%\bin" -o "%%(title)s.%%(ext)s" "!URL!"
+    echo.
+    echo [OUTPUT] yt-dlp ^& FFmpeg output:
+    echo ========================================
     
-    :: Monitor download progress
-    start /B cmd /c "call :monitor_progress "!DL_LOG!" "!STATUS_FILE!" "!TITLE!" "!MSG_STATUS_DOWNLOADING!" "!MSG_STATUS_CONVERTING!""
+    :: Start background process to monitor progress
+    start /B cmd /c "call :monitor_progress "!DL_LOG!" "%STATUS_FILE%" "!TITLE!" "!MSG_STATUS_DOWNLOADING!" "!MSG_STATUS_CONVERTING!""
+    
+    :: Run download with live output to console AND log file
+    "%YTDLP_EXE%" --user-agent "!USER_AGENT!" --no-playlist -x --audio-format mp3 --ffmpeg-location "%FFMPEG_DIR%\bin" -o "%%(title)s.%%(ext)s" "!URL!" --newline 2>&1 | "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "$input | ForEach-Object { Write-Host $_; Add-Content -Path '!DL_LOG!' -Value $_ -Encoding UTF8 }"
+    
+    echo ========================================
 ) else (
     echo [DEBUG] Executing MP4 download...
-    "%YTDLP_EXE%" --user-agent "!USER_AGENT!" --no-playlist -f bestvideo+bestaudio --merge-output-format mp4 --ffmpeg-location "%FFMPEG_DIR%\bin" -o "%%(title)s.%%(ext)s" "!URL!" --newline > "!DL_LOG!" 2>&1
+    echo [DEBUG] Command: "%YTDLP_EXE%" --user-agent "!USER_AGENT!" --no-playlist -f bestvideo+bestaudio --merge-output-format mp4 --ffmpeg-location "%FFMPEG_DIR%\bin" -o "%%(title)s.%%(ext)s" "!URL!"
+    echo.
+    echo [OUTPUT] yt-dlp ^& FFmpeg output:
+    echo ========================================
     
-    :: Monitor download progress
-    start /B cmd /c "call :monitor_progress "!DL_LOG!" "!STATUS_FILE!" "!TITLE!" "!MSG_STATUS_DOWNLOADING!" """
+    :: Start background process to monitor progress
+    start /B cmd /c "call :monitor_progress "!DL_LOG!" "%STATUS_FILE%" "!TITLE!" "!MSG_STATUS_DOWNLOADING!" """
+    
+    :: Run download with live output to console AND log file
+    "%YTDLP_EXE%" --user-agent "!USER_AGENT!" --no-playlist -f bestvideo+bestaudio --merge-output-format mp4 --ffmpeg-location "%FFMPEG_DIR%\bin" -o "%%(title)s.%%(ext)s" "!URL!" --newline 2>&1 | "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "$input | ForEach-Object { Write-Host $_; Add-Content -Path '!DL_LOG!' -Value $_ -Encoding UTF8 }"
+    
+    echo ========================================
 )
 
 set "RET=!errorlevel!"
+echo.
+echo [DEBUG] Process exit code: !RET!
+
+
+echo.
 
 if !RET! equ 0 (
     echo STATUS=!MSG_STATUS_SUCCESS! > "%STATUS_FILE%"
@@ -420,7 +444,19 @@ if !RET! equ 0 (
     echo PROGRESS=100 >> "%STATUS_FILE%"
     echo URL=!URL! >> "%STATUS_FILE%"
     
+    echo.
     echo [SUCCESS] !MSG_DOWNLOAD_COMPLETE!!
+    echo ========================================
+    echo [INFO] !MSG_TITLE!: !TITLE!
+    echo [INFO] !MSG_FORMAT!: !FMT!
+    echo [INFO] !MSG_LOCATION!: %DOWNLOAD_DIR%
+    echo ========================================
+    echo.
+    echo [DEBUG] Setting LAST_CLIP to prevent re-download
+    set "LAST_CLIP=!URL!"
+    echo [DEBUG] Resetting CANCELED_CLIP to allow new URLs
+    set "CANCELED_CLIP="
+    echo [DEBUG] Opening download folder...
     
     timeout /t 3 /nobreak >nul
     start "" "%DOWNLOAD_DIR%"
@@ -430,6 +466,8 @@ if !RET! equ 0 (
     del "!DL_LOG!" 2>nul
     
     echo.
+    echo [DEBUG] Returning to clipboard monitoring...
+    echo.
     goto :eof
 ) else (
     echo STATUS=!MSG_STATUS_ERROR! > "%STATUS_FILE%"
@@ -437,7 +475,27 @@ if !RET! equ 0 (
     echo PROGRESS=0 >> "%STATUS_FILE%"
     echo ERROR=Exit code: !RET! >> "%STATUS_FILE%"
     
+    echo.
     echo [FAILED] !MSG_DOWNLOAD_FAILED!!
+    echo ========================================
+    echo [ERROR] !MSG_TITLE!: !TITLE!
+    echo [ERROR] !MSG_FORMAT!: !FMT!
+    echo [ERROR] Exit code: !RET!
+    echo ========================================
+    echo.
+    echo [TROUBLESHOOTING]
+    echo Possible reasons:
+    echo - Video unavailable, private, or deleted
+    echo - Age-restricted content
+    echo - Geographic restrictions
+    echo - Network connection issues
+    echo.
+    echo [TIP] To force update yt-dlp.exe:
+    echo       del "%YTDLP_EXE%"
+    echo       Then restart this script
+    echo.
+    echo [DEBUG] NOT setting LAST_CLIP (failed download can be retried)
+    
     timeout /t 5 /nobreak >nul
     
     :: Clean up
@@ -445,6 +503,8 @@ if !RET! equ 0 (
     del "!DL_LOG!" 2>nul
 )
 
+echo.
+echo [DEBUG] Returning to clipboard monitoring...
 echo.
 goto :eof
 
@@ -458,6 +518,8 @@ set "STATUS_FILE=%~2"
 set "TITLE=%~3"
 set "MSG_DL=%~4"
 set "MSG_CONV=%~5"
+set "LAST_PERCENT=0"
+set "CONVERTING=0"
 
 :monitor_loop
 if not exist "%LOG_FILE%" (
@@ -465,33 +527,57 @@ if not exist "%LOG_FILE%" (
     goto :monitor_loop
 )
 
-for /f "tokens=*" %%a in ('type "%LOG_FILE%"') do (
+:: Read log file line by line
+for /f "usebackq tokens=*" %%a in ("%LOG_FILE%") do (
     set "LINE=%%a"
     
+    :: Check for download progress
     echo !LINE! | findstr /C:"[download]" >nul
     if !errorlevel! equ 0 (
+        :: Extract percentage from download line
         for /f "tokens=2 delims= " %%p in ("!LINE!") do (
             set "PERCENT=%%p"
+            :: Remove % sign
             set "PERCENT=!PERCENT:~0,-1!"
             
+            :: Validate it's a number
+            echo !PERCENT! | findstr /R "^[0-9][0-9]*\.[0-9]$" >nul
+            if !errorlevel! equ 0 (
+                :: Round to integer
+                for /f "tokens=1 delims=." %%n in ("!PERCENT!") do set "PERCENT=%%n"
+            )
+            
+            :: Check if it's a valid percentage
             if defined PERCENT (
-                echo STATUS=%MSG_DL% > "%STATUS_FILE%"
-                echo TITLE=%TITLE% >> "%STATUS_FILE%"
-                echo PROGRESS=!PERCENT! >> "%STATUS_FILE%"
+                if !PERCENT! GEQ 0 if !PERCENT! LEQ 100 (
+                    if not "!PERCENT!"=="!LAST_PERCENT!" (
+                        echo STATUS=%MSG_DL% > "%STATUS_FILE%"
+                        echo TITLE=%TITLE% >> "%STATUS_FILE%"
+                        echo PROGRESS=!PERCENT! >> "%STATUS_FILE%"
+                        set "LAST_PERCENT=!PERCENT!"
+                        set "CONVERTING=0"
+                    )
+                )
             )
         )
     )
     
+    :: Check for conversion/post-processing (MP3 conversion)
     if not "%MSG_CONV%"=="" (
-        echo !LINE! | findstr /C:"ExtractAudio" >nul
+        :: Check for various conversion indicators
+        echo !LINE! | findstr /C:"ExtractAudio" /C:"Destination:" /C:"Deleting original file" >nul
         if !errorlevel! equ 0 (
-            echo STATUS=%MSG_CONV% > "%STATUS_FILE%"
-            echo TITLE=%TITLE% >> "%STATUS_FILE%"
-            echo PROGRESS=90 >> "%STATUS_FILE%"
+            if !CONVERTING! equ 0 (
+                echo STATUS=%MSG_CONV% > "%STATUS_FILE%"
+                echo TITLE=%TITLE% >> "%STATUS_FILE%"
+                echo PROGRESS=95 >> "%STATUS_FILE%"
+                set "CONVERTING=1"
+            )
         )
     )
 )
 
+:: Check if process is still running
 if exist "%LOG_FILE%" (
     timeout /t 1 /nobreak >nul
     goto :monitor_loop
@@ -499,7 +585,6 @@ if exist "%LOG_FILE%" (
 
 endlocal
 goto :eof
-
 :: ========================================
 :: CHECK YT-DLP
 :: ========================================
@@ -511,19 +596,56 @@ echo [1/2] Checking yt-dlp.exe...
 if exist "%YTDLP_EXE%" (
     echo [DEBUG] yt-dlp.exe found at: %YTDLP_EXE%
     
-    powershell -Command "$file=Get-Item '%YTDLP_EXE%';$age=(Get-Date)-$file.LastWriteTime;if($age.Days -gt 7){'UPDATE'}else{'OK'}" > "%TEMP%\ytdlp_check.txt"
-    set /p YTDLP_STATUS=<"%TEMP%\ytdlp_check.txt"
-    del "%TEMP%\ytdlp_check.txt" 2>nul
+    :: Get current installed version
+    set "CURRENT_VERSION="
+    for /f "usebackq delims=" %%v in (`"%YTDLP_EXE%" --version 2^>nul`) do set "CURRENT_VERSION=%%v"
     
-    if "!YTDLP_STATUS!"=="UPDATE" (
-        echo [DEBUG] yt-dlp.exe is older than 7 days
-        echo [UPDATE] Updating to latest version...
+    if defined CURRENT_VERSION (
+        echo [INFO] Current version: !CURRENT_VERSION!
+        
+        :: Get latest version from GitHub API
+        echo [DEBUG] Checking for latest version online...
+        powershell -Command "$ProgressPreference='SilentlyContinue';try{$response=Invoke-RestMethod -Uri 'https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest' -TimeoutSec 10;$response.tag_name}catch{Write-Output 'ERROR'}" > "%TEMP%\ytdlp_latest.txt"
+        
+        set "LATEST_VERSION="
+        set /p LATEST_VERSION=<"%TEMP%\ytdlp_latest.txt"
+        del "%TEMP%\ytdlp_latest.txt" 2>nul
+        
+        if "!LATEST_VERSION!"=="ERROR" (
+            echo [WARNING] Could not check for updates online
+            echo [INFO] Using existing version: !CURRENT_VERSION!
+            goto :eof
+        )
+        
+        if defined LATEST_VERSION (
+            echo [INFO] Latest version: !LATEST_VERSION!
+            
+            if not "!CURRENT_VERSION!"=="!LATEST_VERSION!" (
+                echo [UPDATE] New version available: !CURRENT_VERSION! -^> !LATEST_VERSION!
+                echo [UPDATE] Updating to latest version...
+                
+                :: Delete old version
+                del "%YTDLP_EXE%" 2>nul
+                timeout /t 1 /nobreak >nul
+                
+                goto :download_ytdlp
+            ) else (
+                echo [OK] yt-dlp.exe is up-to-date
+                goto :eof
+            )
+        ) else (
+            echo [WARNING] Could not retrieve latest version info
+            echo [INFO] Using existing version: !CURRENT_VERSION!
+            goto :eof
+        )
+    ) else (
+        echo [WARNING] Could not get version from existing yt-dlp.exe
+        echo [UPDATE] Re-downloading...
         del "%YTDLP_EXE%" 2>nul
         goto :download_ytdlp
-    ) else (
-        echo [OK] yt-dlp.exe is up-to-date
-        goto :eof
     )
+) else (
+    echo [INFO] yt-dlp.exe not found, downloading...
 )
 
 :download_ytdlp
@@ -535,7 +657,15 @@ if !errorlevel! neq 0 (
     exit /b 1
 )
 echo [OK] yt-dlp.exe downloaded successfully
-for /f "usebackq delims=" %%v in (`"%YTDLP_EXE%" --version 2^>nul`) do echo [INFO] Version: %%v
+
+:: Verify downloaded version
+set "NEW_VERSION="
+for /f "usebackq delims=" %%v in (`"%YTDLP_EXE%" --version 2^>nul`) do set "NEW_VERSION=%%v"
+if defined NEW_VERSION (
+    echo [INFO] Installed version: !NEW_VERSION!
+) else (
+    echo [INFO] yt-dlp.exe installed
+)
 goto :eof
 
 :: ========================================
