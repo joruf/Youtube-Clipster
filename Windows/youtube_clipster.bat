@@ -1,5 +1,6 @@
 @echo off
-chcp 65001 >nul
+::chcp 65001 >nul	:: UTF-8
+chcp 1252 >nul  :: Windows-1252
 setlocal enabledelayedexpansion
 
 :: Loresoft YouTube Clipster - Windows Edition
