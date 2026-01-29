@@ -42,21 +42,19 @@
 
 
 # --- CONFIGURATION ---
-LANG_CHOICE="EN"                 # Select language: DE | EN
-OPEN_NEMO=false
-INTERVAL_TIME_SEC="2"
-DOWNLOAD_DIR="$HOME/Downloads"
+declare -A MESSAGES
+LANG_CHOICE="EN"                # Select language: DE | EN
+OPEN_NEMO=false					# Open target folder when finished
+INTERVAL_TIME_SEC="2"			# Main loop interval time
+DOWNLOAD_DIR="$HOME/Downloads"	# mp3|mp4 download directory 
 INSTALL_DIR="$HOME/.local/share/YoutubeClipster"
 YTDLP_BIN="$INSTALL_DIR/yt-dlp"
 USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 # General
 APP_NAME="LORESOFT YOUTUBE CLIPSTER"
-APP_VERSION="v1.01"
+APP_VERSION="v1.02"
 APP_TITLE="$APP_NAME - $APP_VERSION"
-
-# Declare associative array for messages
-declare -A MESSAGES
 
 
 # --- LOAD LANGUAGE TEXTS ---
@@ -322,9 +320,30 @@ while true; do
   if [[ -n "$CLIP" && "$CLIP" != "$LAST_CLIP" && "$CLIP" != "$CANCELED_CLIP" ]]; then
     echo "$CLIP"
     
-    # Get video title
-    TITLE=$("$YTDLP_BIN" --no-warnings --get-title "$CLIP" 2>/dev/null)
-    SAFE_TITLE=$(echo "${TITLE:-${MESSAGES[fallback_title]}}" | sed 's/[^a-zA-Z0-9._ -]/ /g')
+    # Show immediate notification that link was detected
+    (
+      echo "0"
+      echo "# ${MESSAGES[link_received]}"
+      
+      # Get video title in background
+      TITLE=$("$YTDLP_BIN" --no-warnings --get-title "$CLIP" 2>/dev/null)
+      SAFE_TITLE=$(echo "${TITLE:-${MESSAGES[fallback_title]}}" | sed 's/[^a-zA-Z0-9._ -]/ /g')
+      
+      echo "100"
+      sleep 0.5
+    ) | zenity --progress \
+      --title="${MESSAGES[progress_title]}" \
+      --text="${MESSAGES[progress_text_prefix]} YouTube Link" \
+      --auto-close \
+      --no-cancel \
+      --width=400 \
+      --pulsate 2>/dev/null
+    
+    # Get video title if not already retrieved
+    if [[ -z "$SAFE_TITLE" ]]; then
+        TITLE=$("$YTDLP_BIN" --no-warnings --get-title "$CLIP" 2>/dev/null)
+        SAFE_TITLE=$(echo "${TITLE:-${MESSAGES[fallback_title]}}" | sed 's/[^a-zA-Z0-9._ -]/ /g')
+    fi
     
     # Format selection dialog
     FORMAT=$(zenity --list \
