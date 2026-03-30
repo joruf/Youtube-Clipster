@@ -46,14 +46,14 @@ declare -A MESSAGES
 LANG_CHOICE="EN"                # Select language: DE | EN
 OPEN_NEMO=false					# Open target folder when finished
 INTERVAL_TIME_SEC="2"			# Main loop interval time
-DOWNLOAD_DIR="$HOME/Downloads"	# mp3|mp4 download directory 
+DOWNLOAD_DIR="$HOME/Downloads"	# mp3|mp4 download directory
 INSTALL_DIR="$HOME/.local/share/YoutubeClipster"
 YTDLP_BIN="$INSTALL_DIR/yt-dlp"
 USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 # General
 APP_NAME="LORESOFT YOUTUBE CLIPSTER"
-APP_VERSION="v1.02"
+APP_VERSION="v1.03"
 APP_TITLE="$APP_NAME - $APP_VERSION"
 
 
@@ -98,6 +98,14 @@ load_language() {
             MESSAGES["zenity_format_col_format"]="Format"
             MESSAGES["zenity_format_mp3"]="mp3"
             MESSAGES["zenity_format_mp4"]="mp4"
+
+            # Audio Language (Neu)
+            MESSAGES["zenity_lang_title"]="Tonspur wählen"
+            MESSAGES["zenity_lang_text"]="Welche Tonspur soll bevorzugt werden?"
+            MESSAGES["lang_de"]="Deutsch (de)"
+            MESSAGES["lang_en"]="Englisch (en)"
+            MESSAGES["lang_best"]="Original / Beste verfügbar"
+
             MESSAGES["selection_column"]="Auswahl"
             MESSAGES["format_column"]="Format"
             MESSAGES["no_format_selected"]="❌ Kein Format ausgewählt. Download abgebrochen."
@@ -155,6 +163,14 @@ load_language() {
             MESSAGES["zenity_format_col_format"]="Format"
             MESSAGES["zenity_format_mp3"]="mp3"
             MESSAGES["zenity_format_mp4"]="mp4"
+
+            # Audio Language (Neu)
+            MESSAGES["zenity_lang_title"]="Select Audio Track"
+            MESSAGES["zenity_lang_text"]="Which audio track should be preferred?"
+            MESSAGES["lang_de"]="German (de)"
+            MESSAGES["lang_en"]="English (en)"
+            MESSAGES["lang_best"]="Original / Best available"
+
             MESSAGES["selection_column"]="Selection"
             MESSAGES["format_column"]="Format"
             MESSAGES["no_format_selected"]="❌ No format selected. Download canceled."
@@ -266,7 +282,7 @@ echo "${MESSAGES[separator]}"
 echo "${MESSAGES[interval_label]} = $INTERVAL_TIME_SEC"
 echo "${MESSAGES[download_dir_label]}      = $DOWNLOAD_DIR"
 echo "${MESSAGES[install_dir_label]}       = $INSTALL_DIR"
-echo "${MESSAGES[ytdlp_bin_label]}         = $YTDLP_BIN"
+echo "${MESSAGES[ytdlp_bin_label]}          = $YTDLP_BIN"
 echo "${MESSAGES[user_agent_label]}        = $USER_AGENT"
 echo "${MESSAGES[lang_choice_label]}       = $LANG_CHOICE"
 
@@ -361,6 +377,25 @@ while true; do
         CANCELED_CLIP="$CLIP"
         continue 
     fi
+
+    # --- Audio Language Selection ---
+    AUDIO_LANG=$(zenity --list \
+      --title="${MESSAGES[zenity_lang_title]}" \
+      --text="${MESSAGES[zenity_lang_text]}\n$SAFE_TITLE" \
+      --radiolist \
+      --column="${MESSAGES[zenity_format_col_select]}" \
+      --column="Sprache" \
+      $([[ "$LANG_CHOICE" == "DE" ]] && echo "TRUE" || echo "FALSE") "${MESSAGES[lang_de]}" \
+      $([[ "$LANG_CHOICE" == "EN" ]] && echo "TRUE" || echo "FALSE") "${MESSAGES[lang_en]}" \
+      $([[ "$LANG_CHOICE" != "DE" && "$LANG_CHOICE" != "EN" ]] && echo "TRUE" || echo "FALSE") "${MESSAGES[lang_best]}" \
+      2>/dev/null)
+
+    # Filter-Logik für yt-dlp vorbereiten
+    case "$AUDIO_LANG" in
+        "${MESSAGES[lang_de]}") LANG_FILTER="[language*=de]" ;;
+        "${MESSAGES[lang_en]}") LANG_FILTER="[language*=en]" ;;
+        *) LANG_FILTER="" ;; 
+    esac
     
     # Change to download directory
     cd "$DOWNLOAD_DIR" || exit 1
@@ -370,11 +405,11 @@ while true; do
       echo "# ${MESSAGES[progress_downloading]}"
       echo "5"
       
-      # Assemble command based on format
+      # Assemble command based on format with language filter
       if [[ "$FORMAT" == "${MESSAGES[zenity_format_mp3]}" ]]; then
-          CMD=("$YTDLP_BIN" "--newline" "--restrict-filenames" "-x" "--audio-format" "mp3" "--audio-quality" "0" "$CLIP")
+          CMD=("$YTDLP_BIN" "--newline" "--restrict-filenames" "-x" "--audio-format" "mp3" "--audio-quality" "0" "--format" "ba${LANG_FILTER}/ba" "$CLIP")
       else
-          CMD=("$YTDLP_BIN" "--newline" "--restrict-filenames" "-f" "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4] / bv*+ba/b" "--merge-output-format" "mp4" "$CLIP")
+          CMD=("$YTDLP_BIN" "--newline" "--restrict-filenames" "-f" "bv*[ext=mp4]+ba${LANG_FILTER}[ext=m4a]/b[ext=mp4] / bv*+ba/b" "--merge-output-format" "mp4" "$CLIP")
       fi
       
       # Execute download and parse progress
