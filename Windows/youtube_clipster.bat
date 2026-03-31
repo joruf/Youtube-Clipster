@@ -6,10 +6,10 @@ setlocal enabledelayedexpansion
 :: Loresoft YouTube Clipster - Windows Edition
 :: Original: Joachim Ruf, Loresoft.de
 :: License: GPLv3 - The author's name must be credited upon publication and modification.
-
 :: ========================================
 :: CONFIGURATION
 :: ========================================
+set "APP_VERSION=1.03"
 set "LANG_CHOICE=EN"
 set "SHOW_STARTUP_DIALOG=1"
 set "ENABLE_AUTOSTART=0"
@@ -66,9 +66,17 @@ if /i "%LANG_CHOICE%"=="DE" (
     set "MSG_STATUS_CONVERTING=Konvertiere zu MP3..."
     set "MSG_STATUS_SUCCESS=Erfolgreich abgeschlossen!"
     set "MSG_STATUS_ERROR=Fehler aufgetreten"
+    set "MSG_SELECT_AUDIO_TRACK=Tonspur auswaehlen:"
+    set "MSG_AUDIO_ORIGINAL=Original"
+    set "MSG_AUDIO_GERMAN=Deutsch"
+    set "MSG_AUDIO_ENGLISH=Englisch"
+    set "MSG_AUDIO_TRACK_TITLE=YouTube Clipster - Tonspur"
+    set "MSG_NO_AUDIO_SELECTED=Keine Tonspur ausgewaehlt. Download abgebrochen."
+    set "MSG_DOWNLOAD_ERROR_TITLE=Download Fehlgeschlagen"
+    set "MSG_DOWNLOAD_ERROR_BODY=Der Download ist fehlgeschlagen."
 ) else (
     set "MSG_INSTALL_ERROR=Error installing"
-    set "MSG_STARTED=Loresoft Youtube Clipster started. Copy YouTube link to start download."
+    set "MSG_STARTED=Loresoop Youtube Clipster started. Copy YouTube link to start download."
     set "MSG_LINK_RECEIVED=YouTube link received, process preparing..."
     set "MSG_UNKNOWN_TITLE=Unknown Title"
     set "MSG_DOWNLOAD_TITLE=YouTube Clipster - Download"
@@ -104,12 +112,20 @@ if /i "%LANG_CHOICE%"=="DE" (
     set "MSG_STATUS_CONVERTING=Converting to MP3..."
     set "MSG_STATUS_SUCCESS=Successfully completed!"
     set "MSG_STATUS_ERROR=Error occurred"
+    set "MSG_SELECT_AUDIO_TRACK=Select audio track:"
+    set "MSG_AUDIO_ORIGINAL=Original"
+    set "MSG_AUDIO_GERMAN=German"
+    set "MSG_AUDIO_ENGLISH=English"
+    set "MSG_AUDIO_TRACK_TITLE=YouTube Clipster - Audio Track"
+    set "MSG_NO_AUDIO_SELECTED=No audio track selected. Download canceled."
+    set "MSG_DOWNLOAD_ERROR_TITLE=Download Failed"
+    set "MSG_DOWNLOAD_ERROR_BODY=The download has failed."
 )
 
 if not exist "%DOWNLOAD_DIR%" mkdir "%DOWNLOAD_DIR%"
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 
-echo YouTube Clipster v1.02
+echo YouTube Clipster %APP_VERSION%
 echo Author: Joachim Ruf, Loresoft.de
 echo License: GPLv3 - The author's name must be credited upon publication and modification.
 echo ========================================
@@ -245,7 +261,6 @@ goto loop
 :download
 set "URL=%~1"
 echo [DEBUG] Full URL: !URL!
-
 :: Initialize status file
 echo STATUS=!MSG_STATUS_URL! > "%STATUS_FILE%"
 echo TITLE=... >> "%STATUS_FILE%"
@@ -280,7 +295,6 @@ if not defined TITLE (
 )
 
 echo [DEBUG] Title: !TITLE!
-
 :: Update: Show title, format selection
 echo STATUS=!MSG_STATUS_FORMAT! > "%STATUS_FILE%"
 echo TITLE=!TITLE! >> "%STATUS_FILE%"
@@ -293,7 +307,6 @@ set "PS=%TEMP%\fmt.ps1"
 
 set "TITLE_CLEAN=!TITLE!"
 set "TITLE_CLEAN=!TITLE_CLEAN:'=''!"
-
 (
 echo Add-Type -AssemblyName System.Windows.Forms
 echo $f=New-Object System.Windows.Forms.Form
@@ -379,6 +392,140 @@ if /i "!FMT!"=="CANCELED" (
 )
 
 echo [DEBUG] User selected format: !FMT!
+:: ----------------------------------------
+:: AUDIO TRACK SELECTION (Step 2 of 2)
+:: ----------------------------------------
+echo [DEBUG] Fetching available audio tracks...
+
+:: Check if 'de' audio track is available
+set "HAS_DE=0"
+set "HAS_EN=0"
+
+"%YTDLP_EXE%" --no-playlist --no-warnings -F "!URL!" 2>nul | findstr /i "audio only" > "%TEMP%\ytdlp_formats.txt" 2>nul
+
+findstr /i "\[de\]" "%TEMP%\ytdlp_formats.txt" >nul 2>&1
+if !errorlevel! equ 0 set "HAS_DE=1"
+
+findstr /i "\[en\]" "%TEMP%\ytdlp_formats.txt" >nul 2>&1
+if !errorlevel! equ 0 set "HAS_EN=1"
+
+del "%TEMP%\ytdlp_formats.txt" 2>nul
+
+:: HIER ANGEPASST: Auflistung aller verfügbaren Sprachen in den Debug-Infos
+echo [DEBUG] Verfügbare Audiosprachen:
+echo [DEBUG] - !MSG_AUDIO_ORIGINAL! (Standard)
+if !HAS_DE! equ 1 echo [DEBUG] - !MSG_AUDIO_GERMAN!
+if !HAS_EN! equ 1 echo [DEBUG] - !MSG_AUDIO_ENGLISH!
+echo.
+
+:: Build and run audio track dialog only if DE or EN is available
+set "AUDIO_TRACK=!MSG_AUDIO_ORIGINAL!"
+
+if !HAS_DE! equ 1 goto :show_audio_dialog
+if !HAS_EN! equ 1 goto :show_audio_dialog
+goto :audio_dialog_done
+
+:show_audio_dialog
+set "AUDIO_PS=%TEMP%\audio_track.ps1"
+
+set "TITLE_CLEAN2=!TITLE!"
+set "TITLE_CLEAN2=!TITLE_CLEAN2:'=''!"
+(
+echo Add-Type -AssemblyName System.Windows.Forms
+echo $f=New-Object System.Windows.Forms.Form
+echo $f.Text="!MSG_AUDIO_TRACK_TITLE!"
+echo $f.Width=400
+echo $f.StartPosition="CenterScreen"
+echo $f.TopMost=$true
+echo $f.FormBorderStyle="FixedDialog"
+echo $f.MaximizeBox=$false
+echo.
+echo $lTitle=New-Object System.Windows.Forms.Label
+echo $lTitle.Text='!TITLE_CLEAN2!'
+echo $lTitle.Location="10,10"
+echo $lTitle.Size="360,40"
+echo $lTitle.Font=New-Object System.Drawing.Font^("Segoe UI",9,[System.Drawing.FontStyle]::Bold^)
+echo $f.Controls.Add^($lTitle^)
+echo.
+echo $l=New-Object System.Windows.Forms.Label
+echo $l.Text="!MSG_SELECT_AUDIO_TRACK!"
+echo $l.Location="20,58"
+echo $l.AutoSize=$true
+echo $f.Controls.Add^($l^)
+echo.
+echo $r1=New-Object System.Windows.Forms.RadioButton
+echo $r1.Text="!MSG_AUDIO_ORIGINAL!"
+echo $r1.Location="30,85"
+echo $r1.Width=300
+echo $r1.Checked=$true
+echo $f.Controls.Add^($r1^)
+echo $yPos=113
+echo $r2=$null
+echo $r3=$null
+) > "!AUDIO_PS!"
+if !HAS_DE! equ 1 (
+(
+echo $r2=New-Object System.Windows.Forms.RadioButton
+echo $r2.Text="!MSG_AUDIO_GERMAN!"
+echo $r2.Location="30,$yPos"
+echo $r2.Width=300
+echo $f.Controls.Add^($r2^)
+echo $yPos += 28
+) >> "!AUDIO_PS!"
+)
+
+if !HAS_EN! equ 1 (
+(
+echo $r3=New-Object System.Windows.Forms.RadioButton
+echo $r3.Text="!MSG_AUDIO_ENGLISH!"
+echo $r3.Location="30,$yPos"
+echo $r3.Width=300
+echo $f.Controls.Add^($r3^)
+echo $yPos += 28
+) >> "!AUDIO_PS!"
+)
+
+(
+echo $f.Height=$yPos+80
+echo $b=New-Object System.Windows.Forms.Button
+echo $b.Text="OK"
+echo $b.Location="150,$yPos"
+echo $b.Width=100
+echo $b.Height=35
+echo $b.DialogResult="OK"
+echo $f.Controls.Add^($b^)
+echo $f.AcceptButton=$b
+echo.
+echo $result=$f.ShowDialog^(^)
+echo if^($result -eq "OK"^) {
+echo     if^($r2 -and $r2.Checked^){"!MSG_AUDIO_GERMAN!"}
+echo     elseif^($r3 -and $r3.Checked^){"!MSG_AUDIO_ENGLISH!"}
+echo     else{"!MSG_AUDIO_ORIGINAL!"}
+echo } else { "CANCELED" }
+) >> "!AUDIO_PS!"
+set "AUDIO_TRACK="
+for /f "usebackq delims=" %%a in (`powershell -EP Bypass -NoProfile -File "!AUDIO_PS!" 2^>nul`) do set "AUDIO_TRACK=%%a"
+del "!AUDIO_PS!" 2>nul
+
+if not defined AUDIO_TRACK (
+    echo [INFO] !MSG_NO_AUDIO_SELECTED!
+    set "CANCELED_CLIP=!URL!"
+    set "LAST_CLIP="
+    goto :eof
+)
+if /i "!AUDIO_TRACK!"=="CANCELED" (
+    echo [INFO] !MSG_NO_AUDIO_SELECTED!
+    set "CANCELED_CLIP=!URL!"
+    set "LAST_CLIP="
+    goto :eof
+)
+
+:audio_dialog_done
+echo [DEBUG] Selected audio track: !AUDIO_TRACK!
+:: Map track label to yt-dlp argument
+set "AUDIO_LANG_ARG="
+if /i "!AUDIO_TRACK!"=="!MSG_AUDIO_GERMAN!" set "AUDIO_LANG_ARG=--format-sort lang:de"
+if /i "!AUDIO_TRACK!"=="!MSG_AUDIO_ENGLISH!" set "AUDIO_LANG_ARG=--format-sort lang:en"
 
 :: Change to download directory
 cd /d "%DOWNLOAD_DIR%"
@@ -413,7 +560,7 @@ if /i "!FMT!"=="mp3" (
     start /B cmd /c "call :monitor_progress "!DL_LOG!" "%STATUS_FILE%" "!TITLE!" "!MSG_STATUS_DOWNLOADING!" "!MSG_STATUS_CONVERTING!""
     
     :: Run download with live output to console AND log file
-    "%YTDLP_EXE%" --user-agent "!USER_AGENT!" --no-playlist -x --audio-format mp3 --ffmpeg-location "%FFMPEG_DIR%\bin" -o "%%(title)s.%%(ext)s" "!URL!" --newline 2>&1 | "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "$input | ForEach-Object { Write-Host $_; Add-Content -Path '!DL_LOG!' -Value $_ -Encoding UTF8 }"
+    "%YTDLP_EXE%" --user-agent "!USER_AGENT!" --no-playlist -x --audio-format mp3 --ffmpeg-location "%FFMPEG_DIR%\bin" !AUDIO_LANG_ARG! -o "%%(title)s.%%(ext)s" "!URL!" --newline 2>&1 | "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "$input | ForEach-Object { Write-Host $_; Add-Content -Path '!DL_LOG!' -Value $_ -Encoding UTF8 }"
     
     echo ========================================
 ) else (
@@ -427,7 +574,7 @@ if /i "!FMT!"=="mp3" (
     start /B cmd /c "call :monitor_progress "!DL_LOG!" "%STATUS_FILE%" "!TITLE!" "!MSG_STATUS_DOWNLOADING!" """
     
     :: Run download with live output to console AND log file
-    "%YTDLP_EXE%" --user-agent "!USER_AGENT!" --no-playlist -f bestvideo+bestaudio --merge-output-format mp4 --ffmpeg-location "%FFMPEG_DIR%\bin" -o "%%(title)s.%%(ext)s" "!URL!" --newline 2>&1 | "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "$input | ForEach-Object { Write-Host $_; Add-Content -Path '!DL_LOG!' -Value $_ -Encoding UTF8 }"
+    "%YTDLP_EXE%" --user-agent "!USER_AGENT!" --no-playlist -f bestvideo+bestaudio --merge-output-format mp4 --ffmpeg-location "%FFMPEG_DIR%\bin" !AUDIO_LANG_ARG! -o "%%(title)s.%%(ext)s" "!URL!" --newline 2>&1 | "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "$input | ForEach-Object { Write-Host $_; Add-Content -Path '!DL_LOG!' -Value $_ -Encoding UTF8 }"
     
     echo ========================================
 )
@@ -496,7 +643,10 @@ if !RET! equ 0 (
     echo       Then restart this script
     echo.
     echo [DEBUG] NOT setting LAST_CLIP (failed download can be retried)
-    
+
+    :: Show error popup dialog
+    powershell -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('!MSG_DOWNLOAD_ERROR_BODY!`n`n!MSG_TITLE!: !TITLE!`n!MSG_FORMAT!: !FMT!`nExit code: !RET!', '!MSG_DOWNLOAD_ERROR_TITLE!', 'OK', 'Error')" >nul
+
     timeout /t 5 /nobreak >nul
     
     :: Clean up
