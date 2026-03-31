@@ -53,7 +53,7 @@ USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 # General
 APP_NAME="LORESOFT YOUTUBE CLIPSTER"
-APP_VERSION="v1.03"
+APP_VERSION="v1.04"
 APP_TITLE="$APP_NAME - $APP_VERSION"
 
 
@@ -90,7 +90,9 @@ load_language() {
             MESSAGES["starting_download"]="⬇️ Starte Download als %s: %s"
             MESSAGES["download_complete"]="✅ Download abgeschlossen: %s (%s) in %s"
             MESSAGES["download_error"]="❌ Fehler beim Download: %s (%s)"
-            
+            MESSAGES["error_bot_detected"]="❌ YouTube hat den Download blockiert (Bot-Erkennung).\n\nBitte erneuere deine IP-Adresse oder warte eine Weile."
+			MESSAGES["error_generic"]="❌ Ein unerwarteter Fehler ist aufgetreten. Prüfe die Konsole für Details."
+
             # Zenity dialogs
             MESSAGES["zenity_format_title"]="YouTube Clipster"
             MESSAGES["zenity_format_text_prefix"]="Format wählen für:"
@@ -155,7 +157,9 @@ load_language() {
             MESSAGES["starting_download"]="⬇️ Starting download as %s: %s"
             MESSAGES["download_complete"]="✅ Download complete: %s (%s) in %s"
             MESSAGES["download_error"]="❌ Error during download: %s (%s)"
-            
+            MESSAGES["error_bot_detected"]="❌ YouTube blocked the download (Bot detection).\n\nPlease renew your IP address or wait a while."
+			MESSAGES["error_generic"]="❌ An unexpected error occurred. Check the console for details."
+
             # Zenity dialogs
             MESSAGES["zenity_format_title"]="YouTube Clipster"
             MESSAGES["zenity_format_text_prefix"]="Choose format for:"
@@ -379,17 +383,17 @@ while true; do
     fi
 
     # --- Audio Language Selection ---
-    AUDIO_LANG=$(zenity --list \
+	AUDIO_LANG=$(zenity --list \
       --title="${MESSAGES[zenity_lang_title]}" \
       --text="${MESSAGES[zenity_lang_text]}\n$SAFE_TITLE" \
       --radiolist \
       --column="${MESSAGES[zenity_format_col_select]}" \
       --column="Sprache" \
-      $([[ "$LANG_CHOICE" == "DE" ]] && echo "TRUE" || echo "FALSE") "${MESSAGES[lang_de]}" \
-      $([[ "$LANG_CHOICE" == "EN" ]] && echo "TRUE" || echo "FALSE") "${MESSAGES[lang_en]}" \
-      $([[ "$LANG_CHOICE" != "DE" && "$LANG_CHOICE" != "EN" ]] && echo "TRUE" || echo "FALSE") "${MESSAGES[lang_best]}" \
+      FALSE "${MESSAGES[lang_de]}" \
+      FALSE "${MESSAGES[lang_en]}" \
+      TRUE  "${MESSAGES[lang_best]}" \
       2>/dev/null)
-
+      
     # Filter-Logik für yt-dlp vorbereiten
     case "$AUDIO_LANG" in
         "${MESSAGES[lang_de]}") LANG_FILTER="[language*=de]" ;;
@@ -400,56 +404,56 @@ while true; do
     # Change to download directory
     cd "$DOWNLOAD_DIR" || exit 1
     
+	# Temporarily file for error messages
+    ERROR_LOG=$(mktemp)
+
     # Download process with progress display
-    (
+    if (
       echo "# ${MESSAGES[progress_downloading]}"
       echo "5"
       
-      # Assemble command based on format with language filter
       if [[ "$FORMAT" == "${MESSAGES[zenity_format_mp3]}" ]]; then
           CMD=("$YTDLP_BIN" "--newline" "--restrict-filenames" "-x" "--audio-format" "mp3" "--audio-quality" "0" "--format" "ba${LANG_FILTER}/ba" "$CLIP")
       else
           CMD=("$YTDLP_BIN" "--newline" "--restrict-filenames" "-f" "bv*[ext=mp4]+ba${LANG_FILTER}[ext=m4a]/b[ext=mp4] / bv*+ba/b" "--merge-output-format" "mp4" "$CLIP")
       fi
       
-      # Execute download and parse progress
-      "${CMD[@]}" 2>&1 | while read -r line; do
-          echo "${MESSAGES[debug_prefix]} $line" >&2
-          
-          # Extract progress percentage
+      # Execute download, we pipe stderr to our log file AND keep it for the loop
+      "${CMD[@]}" 2> >(tee "$ERROR_LOG" >&2) | while read -r line; do
           if [[ "$line" =~ ([0-9.]+)% ]]; then
               PERCENT=$(echo "${BASH_REMATCH[1]}" | cut -d'.' -f1)
               if [ "$PERCENT" -lt 99 ]; then echo "$PERCENT"; fi
           fi
           
-          # Detect conversion phase
           if [[ "$line" == *"[ExtractAudio]"* || "$line" == *"[Merger]"* || "$line" == *"[VideoConvertor]"* ]]; then
               FORMAT_UPPER=$(echo "$FORMAT" | tr '[:lower:]' '[:upper:]')
               echo "# ${MESSAGES[progress_converting_prefix]} ${FORMAT_UPPER}${MESSAGES[progress_converting_suffix]}"
               echo "50"
           fi
       done
-      
-      # Completion
       echo "100"
-      FORMAT_UPPER=$(echo "$FORMAT" | tr '[:lower:]' '[:upper:]')
-      echo "# ${MESSAGES[progress_complete_prefix]} ${FORMAT_UPPER} ${MESSAGES[progress_complete_suffix]}"
-      sleep 2
-      
-    ) | zenity --progress \
-      --title="${MESSAGES[progress_title]}" \
-      --text="${MESSAGES[progress_text_prefix]} $SAFE_TITLE" \
-      --auto-close \
-      --width=500
-    
-    # Optional: Open file manager
-    if [ "$OPEN_NEMO" = true ]; then
-        echo "${MESSAGES[debug_prefix]} ${MESSAGES[opening_nemo]}"
-        nemo "$DOWNLOAD_DIR" &
+      sleep 1
+    ) | zenity --progress --title="${MESSAGES[progress_title]}" --text="${MESSAGES[progress_text_prefix]} $SAFE_TITLE" --auto-close --width=500; then
+        
+        # Download SUCCEEDED
+        if [ "$OPEN_NEMO" = true ]; then nemo "$DOWNLOAD_DIR" & fi
+        LAST_CLIP="$CLIP"
+    else
+        # Download FAILED
+        ERROR_MSG=$(cat "$ERROR_LOG")
+        if [[ "$ERROR_MSG" == *"confirm you are not a robot"* || "$ERROR_MSG" == *"429"* ]]; then
+            zenity --error --title="YouTube Blockade" --text="${MESSAGES[error_bot_detected]}" --width=400
+        else
+            # Nur anzeigen, wenn nicht manuell vom User abgebrochen wurde
+            if [[ -n "$ERROR_MSG" ]]; then
+                zenity --error --title="Fehler" --text="${MESSAGES[error_generic]}" --width=400
+            fi
+        fi
+        # Link trotzdem als "gesehen" markieren, damit die Meldung nicht in Endlosschleife kommt
+        LAST_CLIP="$CLIP"
     fi
-    
-    # Update status
-    LAST_CLIP="$CLIP"
+
+    rm -f "$ERROR_LOG"
     CANCELED_CLIP=""
   fi
 done
