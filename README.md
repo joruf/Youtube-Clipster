@@ -6,12 +6,12 @@
 
 ## Features
 
-- 🎯 **Automatic Detection** - Monitors clipboard for YouTube links
-- 🎵 **Format Selection** - Choose between audio (MP3) or video (MP4) download
-- 🖥️ **GUI Dialogs** - User-friendly interface for interaction
-- ⚙️ **Auto-Installation** - Automatically installs and updates required dependencies
-- 🌍 **Multi-Language** - Supports English and German
-- 🔒 **Single Instance** - Prevents multiple instances from running simultaneously
+- **Automatic Detection** - Monitors clipboard for YouTube links
+- **Format Selection** - Choose between audio (MP3) or video (MP4) download
+- **GUI Dialogs** - User-friendly interface for interaction
+- **Auto-Installation** - Automatically installs and updates required dependencies
+- **Multi-Language** - Supports English and German
+- **Single Instance** - Prevents multiple instances from running simultaneously
 
 ---
 
@@ -275,10 +275,10 @@ Add this line to your `~/.bashrc` or `~/.profile`:
 
 ## Important Notes
 
-- ⚠️ **Rate Limiting**: YouTube may temporarily block downloads after many consecutive requests. This is an IP-based restriction. Wait a few minutes or change your IP address.
-- 🔒 **Single Instance**: Only one instance can run at a time to prevent conflicts
-- 📁 **File Names**: Downloaded files use the video title as the filename
-- 🌐 **Network Required**: Active internet connection required for downloads
+- **Rate Limiting**: YouTube may temporarily block downloads after many consecutive requests. This is an IP-based restriction. Wait a few minutes or change your IP address.
+- **Single Instance**: Only one instance can run at a time to prevent conflicts
+- **File Names**: Downloaded files use the video title as the filename
+- **Network Required**: Active internet connection required for downloads
 
 ---
 
