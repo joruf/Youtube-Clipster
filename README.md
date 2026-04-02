@@ -15,6 +15,37 @@
 
 ---
 
+## Preview & Workflow (Linux)
+
+Here is how the program works on Linux:
+
+### 1. Copy YouTube Link
+As soon as you copy a YouTube URL to your clipboard, the program detects it automatically.
+
+![1 Copy URL](assets/linux/1%20Copy%20URL.png)
+
+### 2. Process Starts
+The program notifies you that the download process is being initiated.
+
+![2 Starting Process](assets/linux/2%20Starting%20Process.png)
+
+### 3. Select Format
+You will be asked whether you want to download the video (MP4) or just the audio (MP3).
+
+![3 Select mp3 or mp4](assets/linux/3%20Select%20mp3%20or%20mp4.png)
+
+### 4. Downloading
+The download progress is displayed in real-time.
+
+![4 Downloading](assets/linux/4%20Downloading.png)
+
+### 5. Converting (if necessary)
+If MP3 was selected, the audio format will be converted accordingly.
+
+![5 Converting](assets/linux/5%20Converting.png)
+
+---
+
 ## Platform Support
 
 ### Linux
