@@ -71,9 +71,30 @@ ytdlp_js_runtime_args() {
     fi
 }
 
-# Fetch context parameters from OS desktop clip buffers
+# Fetch a YouTube watch URL from the OS clipboard and normalize it.
+# Accepts playlist/radio/share query orders, music./m. hosts, youtu.be and shorts.
 get_clip() {
     local clip_data
     clip_data=$( (wl-paste || xclip -o -selection clipboard) 2>/dev/null)
-    echo "$clip_data" | grep -oE "https://(www\.)?youtube\.com/watch\?v=[a-zA-Z0-9_-]{11}|https://youtu.be/[a-zA-Z0-9_-]{11}" | head -n 1
+    [[ -z "$clip_data" ]] && return 0
+
+    python3 -c '
+import re
+import sys
+
+text = sys.stdin.read()
+if "youtu" not in text.lower():
+    sys.exit(0)
+
+patterns = [
+    r"(?:youtu\.be/|youtube\.com/(?:shorts|embed|live)/)([A-Za-z0-9_-]{11})",
+    r"youtube\.com/watch\?[^\s]*?\bv=([A-Za-z0-9_-]{11})",
+    r"[?&]v=([A-Za-z0-9_-]{11})",
+]
+for pattern in patterns:
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match:
+        print(f"https://www.youtube.com/watch?v={match.group(1)}")
+        break
+' <<< "$clip_data"
 }
