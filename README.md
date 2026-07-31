@@ -527,6 +527,38 @@ cat ~/.local/share/YoutubeClipster/youtube-clipster.log
 
 ---
 
+## Testing
+
+```bash
+# Cross-platform contract tests (no GUI / display needed)
+python3 -m unittest tests.test_cross_platform_contract -v
+```
+
+### Multi-OS matrix (local Linux host)
+
+From a Linux development machine, the companion suite `os-test-matrix` (clone or keep it
+next to your projects, e.g. under `~/os-test-matrix`) runs the same contract checks on
+several Linux distros (Docker) and on real Windows via GitHub Actions.
+
+```bash
+# Windows only (GitHub Actions runner)
+~/os-test-matrix/bin/test-project /path/to/youtube-clipster --only windows-gha
+
+# Full enabled matrix (Linux Docker targets + Windows)
+~/os-test-matrix/bin/test-project /path/to/youtube-clipster
+
+# From inside this checkout
+~/os-test-matrix/bin/test-project "$PWD" --only windows-gha
+```
+
+If you symlink `test-project` into `~/bin`, the same commands work as `./bin/test-project …`
+from your home directory.
+
+On-demand Windows/Linux runs use the [`OS Matrix`](.github/workflows/os-matrix.yml) workflow
+(`workflow_dispatch`). Results are written under `~/os-test-matrix/results/`.
+
+---
+
 ## Logo
 
 The mark is a red download triangle on a near-black tile, matching the interface colours. The vector
