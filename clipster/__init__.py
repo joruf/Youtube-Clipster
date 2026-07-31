@@ -14,7 +14,10 @@ License: GPLv3 - the author's name must be credited upon publication and modific
 APP_NAME = "Loresoft YouTube Clipster"
 APP_SHORT_NAME = "YouTube Clipster"
 APP_VERSION = "2.0.0"
-APP_AUTHOR = "Joachim Ruf, Loresoft.de"
+APP_AUTHOR = "Joachim Ruf"
+#: The author's website, shown on the about page.
+APP_WEBSITE = "https://www.loresoft.de"
+#: Source repository; matches the ``origin`` remote of this checkout.
 APP_URL = "https://github.com/joruf/youtube-clipster"
 APP_TITLE = "{0} - v{1}".format(APP_NAME, APP_VERSION)
 
@@ -25,6 +28,7 @@ __all__ = [
     "APP_SHORT_NAME",
     "APP_VERSION",
     "APP_AUTHOR",
+    "APP_WEBSITE",
     "APP_URL",
     "APP_TITLE",
     "__version__",

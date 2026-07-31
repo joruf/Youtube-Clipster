@@ -17,7 +17,7 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Callable, Dict, List, Optional
 
-from . import APP_SHORT_NAME, APP_VERSION, dependencies, paths, theme
+from . import APP_AUTHOR, APP_SHORT_NAME, APP_URL, APP_VERSION, APP_WEBSITE, dependencies, paths, theme
 from .config import Config
 from .history import (
     STATUS_CANCELED,
@@ -774,18 +774,76 @@ class ViewWindow:
     # ------------------------------------------------------------------
     # About page
     # ------------------------------------------------------------------
+    def _add_value(self, master: tk.Misc, text: str, link: str = "") -> None:
+        """Add a value to an about card, as a clickable link when given a URL.
+
+        :param master: The row frame.
+        :param text: The text to show.
+        :param link: URL opened on click; empty renders plain text.
+        :return: None
+        """
+        if not link:
+            ttk.Label(master, text=text, style="Panel.TLabel").pack(side="left")
+            return
+        label = tk.Label(
+            master,
+            text=text,
+            background=self.palette.panel,
+            foreground=self.palette.accent,
+            font=self.fonts["body"],
+            cursor="hand2",
+            borderwidth=0,
+        )
+        label.pack(side="left")
+        label.bind("<Button-1>", lambda _event, url=link: self._open_link(url))
+
+    @staticmethod
+    def _open_link(url: str) -> None:
+        """Open ``url`` in the user's browser.
+
+        :param url: The address to open.
+        :return: None
+        """
+        import webbrowser
+
+        try:
+            webbrowser.open(url)
+        except Exception as exc:  # pragma: no cover - depends on the desktop
+            log.warning("Could not open %s: %s", url, exc)
+
     def _build_about(self, master: tk.Misc) -> ttk.Frame:
         """Create the about page with version, paths and dependency status.
 
         :param master: The page container.
         :return: The page frame.
         """
-        page = ttk.Frame(master, style="TFrame", padding=PAD)
+        outer = ttk.Frame(master, style="TFrame", padding=PAD)
+        # The licence keeps its place at the bottom, everything above scrolls -
+        # the card stack is taller than the window in some languages.
+        ttk.Label(outer, text=self.messages["about_license"], style="Muted.TLabel", wraplength=880,
+                  justify="left").pack(side="bottom", anchor="w", pady=(PAD, 0))
+        scroller = _Scroller(outer, self.palette)
+        scroller.pack(fill="both", expand=True)
+        page = ttk.Frame(scroller.body, style="TFrame")
+        page.pack(fill="both", expand=True)
+
         ttk.Label(page, text=APP_SHORT_NAME, style="Title.TLabel").pack(anchor="w")
         ttk.Label(page, text="Version {0}".format(APP_VERSION), style="Muted.TLabel").pack(anchor="w")
         ttk.Label(page, text=self.messages["about_text"], wraplength=760, justify="left").pack(
             anchor="w", pady=(PAD, 0)
         )
+
+        author = ttk.LabelFrame(page, text=self.messages["about_author"], style="Card.TLabelframe", padding=PAD)
+        author.pack(fill="x", pady=(PAD, 0))
+        for label, value, link in (
+            (self.messages["about_author_name"], APP_AUTHOR, ""),
+            (self.messages["about_website"], APP_WEBSITE, APP_WEBSITE),
+            (self.messages["about_repository"], APP_URL, APP_URL),
+        ):
+            line = ttk.Frame(author, style="Panel.TFrame")
+            line.pack(fill="x", pady=1)
+            ttk.Label(line, text=label, style="Panel.Muted.TLabel", width=18, anchor="w").pack(side="left")
+            self._add_value(line, value, link)
 
         card = ttk.LabelFrame(page, text=self.messages["about_paths"], style="Card.TLabelframe", padding=PAD)
         card.pack(fill="x", pady=(PAD, 0))
@@ -800,12 +858,9 @@ class ViewWindow:
             ttk.Label(line, text=label, style="Panel.Muted.TLabel", width=18, anchor="w").pack(side="left")
             ttk.Label(line, text=str(value), style="Panel.TLabel").pack(side="left")
 
-        ttk.Label(page, text=self.messages["about_license"], style="Muted.TLabel", wraplength=880,
-                  justify="left").pack(side="bottom", anchor="w", pady=(PAD, 0))
-
         deps = ttk.LabelFrame(page, text=self.messages["about_dependencies"], style="Card.TLabelframe",
                               padding=PAD)
-        deps.pack(fill="both", expand=True, pady=(PAD, 0))
+        deps.pack(fill="x", pady=(PAD, 0))
         platform = dependencies.current_platform()
         for item in dependencies.pip_dependencies(platform) + dependencies.system_dependencies(platform):
             level = getattr(item, "level", dependencies.LEVEL_REQUIRED)
@@ -827,7 +882,10 @@ class ViewWindow:
                 described = item.feature
             ttk.Label(line, text=described, style="Panel.Muted.TLabel").pack(side="left")
 
-        return page
+        # The page container is the scroller's parent, not the inner frame -
+        # select_page() shows and hides whatever is returned here.
+        scroller.bind_wheel_tree(page)
+        return outer
 
     # ------------------------------------------------------------------
     # Window state

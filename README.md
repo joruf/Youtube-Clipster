@@ -209,17 +209,25 @@ The about page lists the version, every path the program uses and the full depen
 
 | Action | Result |
 |---|---|
-| Click the tray icon | menu: **Show window**, **Open download folder**, **Quit** |
+| Click the tray icon | opens the view window with the download list |
+| Right click the tray icon | menu: **Show window**, **Open download folder**, **Quit** |
 | Closing the view window | hides it again – the program keeps running |
 | **Quit** in the view window or in the tray menu | ends the program |
 
 Hovering the icon shows what the program is currently doing.
 
-The menu needs a menu-capable tray backend. On Linux that is AppIndicator, which requires PyGObject
-(`gi`) – the installer takes care of it, and the private environment is created with
-`--system-site-packages` so the system PyGObject is visible. If only pystray's X11 fallback is
-available it can show the **icon but no menu at all**; the program then says so in the log and a
-click on the icon opens the view window, where the **Quit** button lives. See
+Both need a capable tray backend, and they do not come together everywhere. The program picks the
+best one available and writes its choice to the log:
+
+| Backend | Menu | Click on the icon | Used on |
+|---|---|---|---|
+| `gtk` | yes | yes | preferred everywhere except GNOME |
+| `appindicator` | yes | **no** | GNOME and friends, where GTK's status icon is not shown |
+| `xorg` | **no** | yes | last resort, when PyGObject is missing |
+
+All of them need PyGObject (`gi`) except the last – the installer takes care of it, and the private
+environment is created with `--system-site-packages` so the system PyGObject stays visible. Pin a
+backend yourself with `PYSTRAY_BACKEND=gtk`. See
 [The tray icon has no menu](#the-tray-icon-has-no-menu).
 
 Turn the tray off with `--no-tray` or `"use_tray": false`. Without a tray the view window is shown

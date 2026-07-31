@@ -14,11 +14,14 @@ thread and has to be marshalled onto the Tk thread by the caller.
 
 from __future__ import annotations
 
+import importlib
+import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import APP_SHORT_NAME
+from . import APP_SHORT_NAME, paths
 from .i18n import Messages
 from .logging_setup import get_logger
 
@@ -26,6 +29,70 @@ log = get_logger(__name__)
 
 #: Edge length the icon is scaled to before it is handed to the tray.
 ICON_SIZE = 64
+
+
+#: Linux tray backends, best first.  GTK is the only one that shows a menu *and*
+#: reacts to a click on the icon; AppIndicator has no click action and X11 has no
+#: menu.  pystray picks AppIndicator before GTK on its own, so the preference is
+#: stated explicitly through the environment variable it reads on import.
+_BACKEND_PREFERENCE = ("gtk", "appindicator", "xorg")
+
+#: Desktops whose shell dropped the legacy status icon GTK relies on.  There only
+#: AppIndicator works, and only with the matching shell extension installed.
+_APPINDICATOR_DESKTOPS = ("gnome", "unity", "pantheon")
+
+
+def _preferred_backends() -> tuple:
+    """Return the tray backends to try, best first.
+
+    :return: Backend names for ``PYSTRAY_BACKEND``; empty when we should not
+        interfere with pystray's own choice.
+    """
+    if not paths.IS_LINUX or os.environ.get("PYSTRAY_BACKEND"):
+        return ()
+    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+    if any(name in desktop for name in _APPINDICATOR_DESKTOPS):
+        # GTK's status icon imports fine here but never appears on screen.
+        return ("appindicator", "gtk", "xorg")
+    return _BACKEND_PREFERENCE
+
+
+def _forget_pystray() -> None:
+    """Drop pystray from the module cache so a re-import re-selects a backend."""
+    for name in [key for key in sys.modules if key == "pystray" or key.startswith("pystray.")]:
+        del sys.modules[name]
+
+
+def _import_pystray() -> Any:
+    """Import pystray with the most capable backend available.
+
+    pystray decides its backend while ``pystray`` itself is imported and prefers
+    AppIndicator, which cannot react to a click on the icon.  The choice is
+    therefore forced through the environment variable it reads, with a fallback
+    to its own selection when the preferred backend is unusable.
+
+    :return: The imported ``pystray`` module.
+    :raises ImportError: When no backend works at all.
+    """
+    candidates = _preferred_backends()
+    for name in candidates:
+        _forget_pystray()
+        os.environ["PYSTRAY_BACKEND"] = name
+        try:
+            module = importlib.import_module("pystray")
+        except Exception as exc:
+            log.debug("Tray backend '%s' is unusable: %s", name, exc)
+            continue
+        log.debug("Using the '%s' tray backend.", name)
+        return module
+
+    if candidates:
+        # All of our candidates failed; drop the leftover value so pystray is
+        # free to choose. An empty candidate list means the user pinned one, or
+        # the platform has a single native backend - leave that alone.
+        os.environ.pop("PYSTRAY_BACKEND", None)
+    _forget_pystray()
+    return importlib.import_module("pystray")
 
 
 def _load_image(icon_path: Path) -> Any:
@@ -90,6 +157,8 @@ class TrayIcon:
         self._failed = False
         #: ``False`` when the active backend cannot render a menu at all.
         self.has_menu = True
+        #: ``False`` when the active backend ignores clicks on the icon.
+        self.has_default_action = True
         #: Name of the pystray backend in use, for the log and the about page.
         self.backend = ""
 
@@ -106,7 +175,7 @@ class TrayIcon:
         :return: ``True`` when the tray icon is up.
         """
         try:
-            import pystray
+            pystray = _import_pystray()
         except Exception as exc:
             log.warning("System tray is unavailable (pystray: %s).", exc)
             return False
@@ -118,15 +187,20 @@ class TrayIcon:
             return False
 
         self.backend = getattr(pystray.Icon, "__module__", "").rsplit(".", 1)[-1].lstrip("_")
-        # pystray's X11 backend sets HAS_MENU = False - it can show an icon but
-        # no menu, which would leave the user without a way to quit. Detect that
-        # instead of silently shipping a dead icon.
+        # The backends differ in what they can do: X11 shows an icon but no menu,
+        # AppIndicator shows a menu but ignores clicks, GTK does both.
         self.has_menu = bool(getattr(pystray.Icon, "HAS_MENU", True))
+        self.has_default_action = bool(getattr(pystray.Icon, "HAS_DEFAULT_ACTION", True))
         if not self.has_menu:
             log.warning(
                 "The '%s' tray backend cannot show a menu, so there is no quit entry. "
                 "Install PyGObject and the AppIndicator typelib to get one; "
                 "clicking the icon opens the main window in the meantime.",
+                self.backend or "unknown",
+            )
+        elif not self.has_default_action:
+            log.info(
+                "The '%s' tray backend ignores clicks on the icon; use its menu to open the window.",
                 self.backend or "unknown",
             )
 

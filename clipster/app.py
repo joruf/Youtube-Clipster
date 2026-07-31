@@ -250,8 +250,9 @@ class ClipsterApp:
         log.debug("View window hidden - the program keeps running in the tray.")
         if not self._minimize_hint_shown:
             self._minimize_hint_shown = True
-            # Without a tray menu the icon click is the only way back, so say so.
-            key = "tray_minimized" if self.tray.has_menu else "tray_minimized_no_menu"
+            # Point at whatever this backend actually supports: a click on the
+            # icon when it reacts to one, the menu otherwise.
+            key = "tray_minimized_click" if self.tray.has_default_action else "tray_minimized"
             if not self.tray.notify(self.messages[key]):
                 self.gui.toast(self.messages[key])
 
