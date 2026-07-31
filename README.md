@@ -41,7 +41,7 @@ edition (`windows/*.bat`) have been replaced by the `clipster/` package.
 | **Media processing** | `ffmpeg` | `ffmpeg` |
 | **System tray** *(optional)* | `pystray`, `Pillow`, `python-xlib` | `pystray`, `Pillow` |
 
-**You do not have to install any of this by hand.** The bootstrapper `youtube-clipster.py` checks
+**You do not have to install any of this by hand.** The bootstrapper `run.py` checks
 every component on each start and installs what is missing – see
 [What the installer does](#what-the-installer-does).
 
@@ -60,20 +60,20 @@ git clone https://github.com/joruf/youtube-clipster.git
 cd youtube-clipster
 
 # 2. Make the starter executable (only needed once)
-chmod +x install.sh youtube-clipster.py
+chmod +x install.sh run.py
 
 # 3. Install everything that is missing and start the program
 ./install.sh
 ```
 
 `install.sh` looks for a suitable Python 3, installs it through your package manager if it is
-missing, and then hands over to `youtube-clipster.py`.
+missing, and then hands over to `run.py`.
 
 Installing system packages (`ffmpeg`, `python3-tk`, `xclip`, …) needs **root**, so you will be asked
 for your `sudo` password **in the terminal**. Everything else is installed into your user profile
 without root.
 
-> Prefer to do it yourself? `python3 youtube-clipster.py` works exactly the same way, and
+> Prefer to do it yourself? `python3 run.py` works exactly the same way, and
 > `--no-auto-install` only reports what is missing instead of installing it.
 
 ### Windows
@@ -110,13 +110,15 @@ adding a row there – `requirements.txt` is generated from the same table:
 python3 -c "from clipster import dependencies as d; print(d.requirements_text(), end='')" > requirements.txt
 ```
 
-`youtube-clipster.py` runs the following steps on **every** start (they are skipped when everything
+`run.py` runs the following steps on **every** start (they are skipped when everything
 is already in place, so a warm start takes about a second):
 
 1. **Python version** – aborts with a clear message on anything older than 3.8.
 2. **tkinter** – Linux: installs the distribution package (`python3-tk`, `python3-tkinter`, `tk`, …).
    Windows: reports how to add it, since it ships with the official installer.
-3. **Virtual environment** – creates a private venv so nothing is installed into your system Python:
+3. **Virtual environment** – creates a private venv so nothing is installed into your system Python
+   (on Linux with `--system-site-packages`, so the system PyGObject stays visible for the tray menu;
+   the environment's own packages still win in `sys.path`):
    - Linux/macOS: `~/.local/share/YoutubeClipster/venv`
    - Windows: `%LOCALAPPDATA%\YoutubeClipster\venv`
    A broken or half-written environment is repaired or rebuilt automatically.
@@ -126,9 +128,12 @@ is already in place, so a warm start takes about a second):
    unpacks it to `%LOCALAPPDATA%\YoutubeClipster\ffmpeg`. An `ffmpeg` already in `PATH` is used as is.
 6. **Clipboard helper** – Linux only: `xclip` or `wl-clipboard`, depending on X11 or Wayland.
    Tkinter is used as a fallback if neither can be installed.
-7. **System tray** *(optional)* – installs `pystray`, `Pillow` and, on Linux, `python-xlib`.
+7. **Tray menu** *(optional, Linux)* – installs PyGObject and the AppIndicator typelib, without
+   which the tray icon cannot show a menu. Never blocks the start.
+8. **System tray** *(optional)* – installs `pystray`, `Pillow` and, on Linux, `python-xlib`.
    Never blocks the start; without them the view window is shown instead.
-8. **JavaScript runtime** *(optional)* – `quickjs`/`node`/`deno` help a few yt-dlp extractors.
+9. **JavaScript runtime** *(optional)* – `quickjs`/`node`/`deno` help a few yt-dlp extractors.
+   The engine that is present is named explicitly, because yt-dlp otherwise only tries deno.
    Never blocks the start.
 
 Afterwards the program restarts itself with the venv interpreter and begins monitoring the clipboard.
@@ -136,7 +141,7 @@ Afterwards the program restarts itself with the venv interpreter and begins moni
 Check the setup without starting the program:
 
 ```bash
-python3 youtube-clipster.py --check      # Linux/macOS
+python3 run.py --check      # Linux/macOS
 install.bat --check                      # Windows
 ```
 
@@ -151,11 +156,20 @@ The program has **no main window**. It sits in the system tray and waits.
 The small navigation window appears with the video title and its length. Choose the format and, on
 multilingual videos, the audio track.
 
+The track question only appears when the video really offers several languages **and**
+`ask_audio_language` is on. Otherwise the track is picked automatically: the only one that exists,
+or – with several – the one the video was published with, which is marked `· original` in the list.
+
 ![Choose format](assets/screenshots/nav-choose.png)
 
 ### 2. Watch it download
 
 The same window shows the progress, the speed and the remaining time. **Cancel** stops it.
+
+Converting and merging report a real percentage too, plus the position in the media
+(`1:40 / 3:33`), so a long video does not sit behind an anonymous busy bar. The figure comes from
+ffmpeg itself: yt-dlp offers no progress for its post-processors, so ffmpeg is asked to write its
+`-progress` output to a file that the program reads while the conversion runs.
 
 ![Downloading](assets/screenshots/nav-progress.png)
 
@@ -195,16 +209,21 @@ The about page lists the version, every path the program uses and the full depen
 
 | Action | Result |
 |---|---|
-| Left click / double click on the tray icon | opens the view window |
-| Right click on the tray icon | menu: **Show window**, **Open download folder**, **Quit** |
+| Click the tray icon | menu: **Show window**, **Open download folder**, **Quit** |
 | Closing the view window | hides it again – the program keeps running |
 | **Quit** in the view window or in the tray menu | ends the program |
 
 Hovering the icon shows what the program is currently doing.
 
+The menu needs a menu-capable tray backend. On Linux that is AppIndicator, which requires PyGObject
+(`gi`) – the installer takes care of it, and the private environment is created with
+`--system-site-packages` so the system PyGObject is visible. If only pystray's X11 fallback is
+available it can show the **icon but no menu at all**; the program then says so in the log and a
+click on the icon opens the view window, where the **Quit** button lives. See
+[The tray icon has no menu](#the-tray-icon-has-no-menu).
+
 Turn the tray off with `--no-tray` or `"use_tray": false`. Without a tray the view window is shown
-at startup and closing it quits the program, so there is always a way out. See
-[No tray icon appears](#no-tray-icon-appears).
+at startup and closing it quits the program, so there is always a way out.
 
 ---
 
@@ -218,7 +237,7 @@ The configuration is a JSON file that is created with defaults on the first star
 | Windows | `%LOCALAPPDATA%\YoutubeClipster\config.json` |
 
 For a **portable setup** copy `config.example.json` to `config.json` **next to
-`youtube-clipster.py`** – that file then wins over the per-user one.
+`run.py`** – that file then wins over the per-user one.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -232,10 +251,10 @@ For a **portable setup** copy `config.example.json` to `config.json` **next to
 | `use_tray` | `true` | Place an icon in the system tray |
 | `start_minimized` | `true` | Start in the tray without showing any window |
 | `show_status_window` | `true` | Allow the view window to be shown at startup |
-| `open_folder_after_download` | `true` | Open the target folder when a download finished |
+| `open_folder_after_download` | `false` | Open the target folder when a download finished |
 | `file_manager` | `""` | Explicit file manager (e.g. `"nemo"`); empty uses the OS default |
 | `clear_clipboard_after_download` | `true` | Empty the clipboard so the link is not processed twice |
-| `ask_audio_language` | `true` | Ask for the audio track on multilingual videos |
+| `ask_audio_language` | `true` | Ask for the audio track on multilingual videos; when off the original track is used |
 | `no_playlist` | `true` | Download only the video, never the whole playlist |
 | `restrict_filenames` | `false` | ASCII-only file names (old `--restrict-filenames` behaviour) |
 | `output_template` | `"%(title)s.%(ext)s"` | yt-dlp output template |
@@ -252,7 +271,7 @@ The log file lives next to the configuration:
 
 ## Command line options
 
-Both `install.sh` and `install.bat` forward every option to `youtube-clipster.py`.
+Both `install.sh` and `install.bat` forward every option to `run.py`.
 
 ```
 --check               only check/install dependencies, do not start
@@ -282,7 +301,7 @@ Both `install.sh` and `install.bat` forward every option to `youtube-clipster.py
 **Desktop shortcut** – offered once on the first start, or created explicitly at any time:
 
 ```bash
-python3 youtube-clipster.py --create-shortcut     # Linux/macOS
+python3 run.py --create-shortcut     # Linux/macOS
 install.bat --create-shortcut                     # Windows
 ```
 
@@ -292,8 +311,8 @@ install.bat --create-shortcut                     # Windows
 **Autostart at login**
 
 ```bash
-python3 youtube-clipster.py --autostart on        # enable
-python3 youtube-clipster.py --autostart off       # disable
+python3 run.py --autostart on        # enable
+python3 run.py --autostart off       # disable
 ```
 
 - Linux: `~/.config/autostart/youtube-clipster.desktop`
@@ -307,7 +326,7 @@ python3 youtube-clipster.py --autostart off       # disable
 
 ```
 youtube-clipster/
-├── youtube-clipster.py      # bootstrapper: dependency check, relaunch, start
+├── run.py      # bootstrapper: dependency check, relaunch, start
 ├── install.sh               # Linux/macOS starter (finds or installs Python)
 ├── install.bat              # Windows starter (finds or installs Python)
 ├── requirements.txt         # generated from clipster/dependencies.py
@@ -368,7 +387,7 @@ sudo apt install xclip          # X11
 sudo apt install wl-clipboard   # Wayland
 ```
 
-Check which backend was chosen: `python3 youtube-clipster.py --verbose` prints
+Check which backend was chosen: `python3 run.py --verbose` prints
 `Clipboard backend: …`.
 
 ### `ModuleNotFoundError: No module named 'tkinter'`
@@ -381,12 +400,37 @@ sudo pacman -S tk                 # Arch
 
 On Windows: re-run the Python installer, choose **Modify** and enable **tcl/tk and IDLE**.
 
+### The tray icon has no menu
+
+pystray's X11 fallback backend can show an icon but **no menu** – there is no quit entry then. The
+log says which backend is active:
+
+```bash
+python3 run.py --verbose      # look for "backend: ..., menu: no"
+```
+
+Install PyGObject and the AppIndicator typelib to get the AppIndicator backend:
+
+```bash
+sudo apt install python3-gi gir1.2-ayatanaappindicator3-0.1     # Debian, Ubuntu, Mint
+sudo dnf install python3-gobject libayatana-appindicator-gtk3   # Fedora
+sudo pacman -S python-gobject libayatana-appindicator           # Arch
+```
+
+If the environment was created before those packages existed, rebuild it so it can see them:
+
+```bash
+python3 run.py --reinstall
+```
+
+Until then, clicking the tray icon opens the view window, which has a **Quit** button.
+
 ### No tray icon appears
 
 The program keeps working – it shows the view window instead. Check the reason first:
 
 ```bash
-python3 youtube-clipster.py --verbose        # look for "System tray is unavailable"
+python3 run.py --verbose        # look for "System tray is unavailable"
 ```
 
 - **Packages missing** – install them into the environment:
@@ -396,7 +440,7 @@ python3 youtube-clipster.py --verbose        # look for "System tray is unavaila
   or run with `--no-tray`.
 - **Wayland** – the X11 fallback backend needs XWayland. If the icon stays missing, install
   `gir1.2-ayatanaappindicator3-0.1` and `python3-gi`, or use `--no-tray`.
-- **Force a backend** – `PYSTRAY_BACKEND=xorg python3 youtube-clipster.py`
+- **Force a backend** – `PYSTRAY_BACKEND=xorg python3 run.py`
   (also `appindicator`, `gtk`, `win32`).
 
 ### “Program is already running”
@@ -404,19 +448,33 @@ python3 youtube-clipster.py --verbose        # look for "System tray is unavaila
 Only one instance is allowed. Quit the running one from its tray icon, or:
 
 ```bash
-pkill -f youtube-clipster.py                     # Linux/macOS
+pkill -f run.py                     # Linux/macOS
 taskkill /IM pythonw.exe /F                      # Windows
 ```
+
+### “Not enough free space” or a conversion that fails
+
+A download writes the source file first and then the converted one, so roughly twice the video size
+has to fit. When yt-dlp reports the size up front, the program refuses right away and names both
+figures. ffmpeg itself often only says `Conversion failed!` without a reason, so check the free
+space when that appears:
+
+```bash
+df -h ~/Downloads
+```
+
+A failed download no longer leaves its source file behind - it is removed automatically, which for a
+long video is easily a hundred megabytes.
 
 ### Downloads fail with “confirm you are not a bot”
 
 YouTube throttles by IP address after many consecutive downloads. Wait a few minutes or change your
-IP. Also make sure yt-dlp is current: `python3 youtube-clipster.py --update`.
+IP. Also make sure yt-dlp is current: `python3 run.py --update`.
 
 ### The setup fails or the environment is broken
 
 ```bash
-python3 youtube-clipster.py --reinstall
+python3 run.py --reinstall
 ```
 
 This deletes and rebuilds the virtual environment. Check the free disk space first – an interrupted
@@ -427,7 +485,7 @@ installation is almost always caused by a full disk.
 Start with `--verbose` and read the log:
 
 ```bash
-python3 youtube-clipster.py --verbose
+python3 run.py --verbose
 cat ~/.local/share/YoutubeClipster/youtube-clipster.log
 ```
 
@@ -488,4 +546,4 @@ modification.
 ## Support
 
 - Report issues on [GitHub](https://github.com/joruf/youtube-clipster/issues)
-- Please attach the output of `python3 youtube-clipster.py --verbose`
+- Please attach the output of `python3 run.py --verbose`

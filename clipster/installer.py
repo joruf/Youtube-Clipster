@@ -138,6 +138,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
             "pip": "python3-pip",
             "xclip": "xclip",
             "wl-clipboard": "wl-clipboard",
+            "appindicator": "python3-gi gir1.2-ayatanaappindicator3-0.1",
             "js": "quickjs",
             "python": "python3",
         },
@@ -153,6 +154,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
             "pip": "python3-pip",
             "xclip": "xclip",
             "wl-clipboard": "wl-clipboard",
+            "appindicator": "python3-gobject libayatana-appindicator-gtk3",
             "js": "quickjs",
             "python": "python3",
         },
@@ -168,6 +170,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
             "pip": "python-pip",
             "xclip": "xclip",
             "wl-clipboard": "wl-clipboard",
+            "appindicator": "python-gobject libayatana-appindicator",
             "js": "quickjs",
             "python": "python",
         },
@@ -183,6 +186,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
             "pip": "python3-pip",
             "xclip": "xclip",
             "wl-clipboard": "wl-clipboard",
+            "appindicator": "python3-gobject libayatana-appindicator3-1",
             "js": "quickjs",
             "python": "python3",
         },
@@ -198,6 +202,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
             "pip": "py3-pip",
             "xclip": "xclip",
             "wl-clipboard": "wl-clipboard",
+            "appindicator": "py3-gobject3",
             "js": "quickjs",
             "python": "python3",
         },
@@ -316,6 +321,28 @@ class CommandResult:
         return " | ".join(content[-lines:])
 
 
+def _package_names(manager: PackageManager, keys: Sequence[str]) -> List[str]:
+    """Resolve logical component keys to distribution package names.
+
+    A single component may need more than one package (PyGObject *and* the
+    AppIndicator typelib, for instance), so mappings may hold several
+    whitespace separated names.
+
+    :param manager: The detected package manager.
+    :param keys: Logical component keys.
+    :return: The package names, in order and without duplicates.
+    """
+    names: List[str] = []
+    for key in keys:
+        mapped = manager.package_for(key)
+        if not mapped:
+            continue
+        for name in mapped.split():
+            if name not in names:
+                names.append(name)
+    return names
+
+
 def install_system_packages(keys: Sequence[str], refresh: bool = True) -> CommandResult:
     """Install one or more logical components via the distribution package manager.
 
@@ -327,7 +354,7 @@ def install_system_packages(keys: Sequence[str], refresh: bool = True) -> Comman
     if manager is None:
         return CommandResult(returncode=1, output="No supported package manager found")
 
-    packages = [name for name in (manager.package_for(key) for key in keys) if name]
+    packages = _package_names(manager, keys)
     if not packages:
         return CommandResult(returncode=1, output="No package mapping for {0}".format(", ".join(keys)))
 
@@ -351,7 +378,7 @@ def manual_install_hint(keys: Sequence[str]) -> str:
     manager = detect_package_manager()
     if manager is None:
         return "Please install manually: {0}".format(", ".join(keys))
-    packages = [name for name in (manager.package_for(key) for key in keys) if name]
+    packages = _package_names(manager, keys)
     if not packages:
         return "Please install manually: {0}".format(", ".join(keys))
     prefix = "" if _is_root() or manager.name == "brew" else "sudo "
@@ -433,6 +460,62 @@ def _tkinter_available(interpreter: str) -> bool:
     return result.ok
 
 
+def _venv_options() -> List[str]:
+    """Return the ``python -m venv`` flags to create the environment with.
+
+    On Linux the system site packages are included on purpose: PyGObject
+    (``gi``) cannot be installed with pip, and without it pystray falls back to
+    its X11 backend, which cannot show a menu at all - leaving the tray icon
+    without a way to quit.  The environment's own packages still take
+    precedence in ``sys.path``, so the freshly installed yt-dlp is not shadowed
+    by an older system copy.
+
+    :return: The flags for the venv module.
+    """
+    if paths.IS_LINUX:
+        return ["--system-site-packages"]
+    return []
+
+
+def _enable_system_site_packages(target: Path) -> bool:
+    """Let an existing environment see the system packages.
+
+    Environments created by older versions were closed off, so PyGObject stays
+    invisible and the tray icon ends up without a menu.  Flipping the flag in
+    ``pyvenv.cfg`` is exactly what ``--system-site-packages`` does and avoids
+    rebuilding the environment - it takes effect the next time it starts.
+
+    :param target: The virtual environment directory.
+    :return: ``True`` when the file was actually changed.
+    """
+    if not paths.IS_LINUX:
+        return False
+    config_file = target / "pyvenv.cfg"
+    try:
+        lines = config_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+
+    changed = False
+    result = []
+    for line in lines:
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "include-system-site-packages" and value.strip().lower() != "true":
+            result.append("include-system-site-packages = true")
+            changed = True
+        else:
+            result.append(line)
+    if not changed:
+        return False
+    try:
+        config_file.write_text("\n".join(result) + "\n", encoding="utf-8")
+    except OSError as exc:
+        log.warning("Could not update %s: %s", config_file, exc)
+        return False
+    log.info("Enabled system site packages in %s so the tray menu can work.", config_file)
+    return True
+
+
 def ensure_venv(recreate: bool = False) -> Step:
     """Create the managed virtual environment if it does not exist yet.
 
@@ -447,18 +530,24 @@ def ensure_venv(recreate: bool = False) -> Step:
         shutil.rmtree(target, ignore_errors=True)
 
     if interpreter.exists():
-        return Step(name="Virtual environment", ok=True, detail=str(target))
+        repaired = _enable_system_site_packages(target)
+        return Step(
+            name="Virtual environment",
+            ok=True,
+            detail="system site packages enabled" if repaired else str(target),
+            changed=repaired,
+        )
 
     paths.ensure_install_dir()
     log.info("Creating virtual environment in %s ...", target)
-    result = run_command([sys.executable, "-m", "venv", str(target)], timeout=600.0)
+    result = run_command([sys.executable, "-m", "venv"] + _venv_options() + [str(target)], timeout=600.0)
 
     if not result.ok and not paths.IS_WINDOWS:
         # Debian and Ubuntu ship venv/ensurepip as a separate package.
         log.warning("Creating the virtual environment failed - trying to install the venv package...")
         install_system_packages(["venv", "pip"])
         shutil.rmtree(target, ignore_errors=True)
-        result = run_command([sys.executable, "-m", "venv", str(target)], timeout=600.0)
+        result = run_command([sys.executable, "-m", "venv"] + _venv_options() + [str(target)], timeout=600.0)
 
     if interpreter.exists():
         run_command(
@@ -658,6 +747,58 @@ def ensure_tray_support(interpreter: Optional[Path] = None, auto_install: bool =
         hint="The program runs without a tray icon. Install manually: "
         "\"{0}\" -m pip install {1}".format(python, " ".join(tray_modules())),
     )
+
+
+def ensure_tray_menu(interpreter: Optional[Path] = None, auto_install: bool = True) -> Step:
+    """Install PyGObject so the tray icon can show a context menu.
+
+    pystray's X11 backend can display an icon but no menu, which would leave the
+    tray without a quit entry.  PyGObject cannot be installed with pip, so it has
+    to come from the distribution.  Never fails: without it the program simply
+    reports that the icon has no menu.
+
+    :param interpreter: The interpreter that runs the GUI; defaults to the venv.
+        Probing the system interpreter instead would report success while the
+        environment the program actually runs in still cannot see PyGObject.
+    :param auto_install: Install the packages instead of only reporting them.
+    :return: The finished step (always ``ok``).
+    """
+    if not paths.IS_LINUX:
+        return Step(name="Tray menu", ok=True, detail="native")
+    python = interpreter or paths.venv_python()
+    if not python.exists():
+        python = Path(sys.executable)
+    if _module_importable(python, "gi"):
+        return Step(name="Tray menu", ok=True, detail="PyGObject")
+
+    key = _system_key("Tray menu support", "appindicator")
+    if not auto_install:
+        return Step(
+            name="Tray menu",
+            ok=True,
+            detail="PyGObject missing - the tray icon will have no menu",
+            hint=manual_install_hint([key]),
+        )
+
+    install_system_packages([key])
+    if _module_importable(python, "gi"):
+        return Step(name="Tray menu", ok=True, detail="PyGObject installed", changed=True)
+    return Step(
+        name="Tray menu",
+        ok=True,
+        detail="PyGObject unavailable - the tray icon will have no menu",
+        hint=manual_install_hint([key]),
+    )
+
+
+def _module_importable(interpreter: Path, module: str) -> bool:
+    """Return ``True`` when ``interpreter`` can import ``module``.
+
+    :param interpreter: The interpreter to ask.
+    :param module: The module name to try.
+    :return: Whether the import succeeds.
+    """
+    return run_command([str(interpreter), "-c", "import " + module], echo=False, timeout=60.0).ok
 
 
 def find_ffmpeg() -> Optional[Path]:
@@ -886,6 +1027,7 @@ def bootstrap(
     )
     report.add(ensure_ffmpeg(auto_install=auto_install))
     report.add(ensure_clipboard_tool(auto_install=auto_install))
+    report.add(ensure_tray_menu(interpreter=interpreter, auto_install=auto_install))
     report.add(ensure_tray_support(interpreter=interpreter, auto_install=auto_install))
     report.add(ensure_js_runtime(auto_install=auto_install))
     return report

@@ -14,7 +14,7 @@ IS_WINDOWS = os.name == "nt"
 IS_MACOS = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
 
-#: Root of the checkout (the directory containing ``youtube-clipster.py``).
+#: Root of the checkout (the directory containing ``run.py``).
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 #: Environment variable that relocates the whole application data directory.
@@ -77,8 +77,8 @@ def bundled_ffmpeg_exe() -> Path:
 
 
 def bootstrap_script() -> Path:
-    """Return the path of the bootstrap launcher ``youtube-clipster.py``."""
-    return PROJECT_ROOT / "youtube-clipster.py"
+    """Return the path of the bootstrap launcher ``run.py``."""
+    return PROJECT_ROOT / "run.py"
 
 
 def lock_file() -> Path:

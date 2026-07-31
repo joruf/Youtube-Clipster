@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from . import APP_SHORT_NAME, paths
 from .logging_setup import get_logger
@@ -42,6 +42,33 @@ def launch_command(gui: bool = True) -> List[str]:
 def _quote(value: str) -> str:
     """Return ``value`` wrapped in double quotes for Exec= / shortcut targets."""
     return '"{0}"'.format(value)
+
+
+def _ps_quote(value: object) -> str:
+    r"""Escape a value for a single quoted PowerShell string.
+
+    PowerShell ends a single quoted string at the first ``'``, so a path such as
+    ``C:\Users\O'Brien\Desktop`` would break the generated script.  Doubling the
+    quote is the documented escape.
+
+    :param value: The value to embed.
+    :return: The escaped text, without the surrounding quotes.
+    """
+    return str(value).replace("'", "''")
+
+
+def _no_window() -> Dict[str, int]:
+    """Return the ``subprocess`` keywords that suppress a console window.
+
+    Started from the desktop shortcut the program runs under ``pythonw.exe``,
+    which has no console; every child process would otherwise flash a black
+    window for a moment.
+
+    :return: Keyword arguments for ``subprocess``; empty off Windows.
+    """
+    if not paths.IS_WINDOWS:
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
 
 
 # ----------------------------------------------------------------------
@@ -112,6 +139,7 @@ def _powershell(script: str) -> bool:
             stderr=subprocess.PIPE,
             timeout=60,
             check=False,
+            **_no_window(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         log.debug("PowerShell call failed: %s", exc)
@@ -129,7 +157,7 @@ def _create_windows_shortcut(target: Path) -> bool:
     """
     command = launch_command(gui=True)
     icon = paths.windows_icon_file()
-    icon_line = "$s.IconLocation = '{0}';".format(icon) if icon.is_file() else ""
+    icon_line = "$s.IconLocation = '{0}';".format(_ps_quote(icon)) if icon.is_file() else ""
     script = (
         "$w = New-Object -ComObject WScript.Shell; "
         "$s = $w.CreateShortcut('{lnk}'); "
@@ -140,11 +168,11 @@ def _create_windows_shortcut(target: Path) -> bool:
         "{icon}"
         "$s.Save()"
     ).format(
-        lnk=target,
-        exe=command[0],
-        script=command[1],
-        cwd=paths.PROJECT_ROOT,
-        desc=_COMMENT,
+        lnk=_ps_quote(target),
+        exe=_ps_quote(command[0]),
+        script=_ps_quote(command[1]),
+        cwd=_ps_quote(paths.PROJECT_ROOT),
+        desc=_ps_quote(_COMMENT),
         icon=icon_line,
     )
     return _powershell(script)
@@ -267,7 +295,7 @@ def open_folder(folder: Path, file_manager: str = "") -> None:
     """
     try:
         if file_manager.strip():
-            subprocess.Popen([file_manager.strip(), str(folder)])
+            subprocess.Popen([file_manager.strip(), str(folder)], **_no_window())
             return
         if paths.IS_WINDOWS:
             os.startfile(str(folder))  # type: ignore[attr-defined]  # noqa: S606 - user's own folder
@@ -330,12 +358,14 @@ def reveal_path(target: Path, file_manager: str = "") -> bool:
     explicit = file_manager.strip()
     try:
         if explicit:
-            subprocess.Popen([explicit, str(target if target.exists() else folder)])
+            subprocess.Popen([explicit, str(target if target.exists() else folder)], **_no_window())
             return True
         if paths.IS_WINDOWS:
             if target.exists():
-                # explorer returns a non-zero exit code even on success.
-                subprocess.Popen(["explorer", "/select,{0}".format(target)])
+                # The command line has to read  explorer /select,"C:\dir\file" .
+                # Passing it as a list makes Python quote the whole switch, which
+                # explorer then fails to parse. It also exits non-zero on success.
+                subprocess.Popen('explorer /select,"{0}"'.format(target), **_no_window())
             else:
                 os.startfile(str(folder))  # type: ignore[attr-defined]  # noqa: S606 - user's own folder
             return True

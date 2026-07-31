@@ -250,8 +250,10 @@ class ClipsterApp:
         log.debug("View window hidden - the program keeps running in the tray.")
         if not self._minimize_hint_shown:
             self._minimize_hint_shown = True
-            if not self.tray.notify(self.messages["tray_minimized"]):
-                self.gui.toast(self.messages["tray_minimized"])
+            # Without a tray menu the icon click is the only way back, so say so.
+            key = "tray_minimized" if self.tray.has_menu else "tray_minimized_no_menu"
+            if not self.tray.notify(self.messages[key]):
+                self.gui.toast(self.messages[key])
 
     def _save_settings(self) -> None:
         """Persist the configuration edited in the settings page."""
@@ -441,8 +443,26 @@ class ClipsterApp:
             self.bridge.post(nav.finish, self.messages["error_title"], STATUS_FAILED)
             self.bridge.post(self._finish_worker, "status_failed")
 
+    def _auto_language(self, info: VideoInfo) -> str:
+        """Return the audio track to use without asking the user.
+
+        With a single track that track is picked explicitly instead of leaving
+        the choice to yt-dlp.  With several tracks the original one wins, which
+        is what "always use the default language" means.
+
+        :param info: The fetched video metadata.
+        :return: A language code, or an empty string when nothing is known.
+        """
+        if len(info.audio_languages) == 1:
+            return info.audio_languages[0]
+        return info.original_language()
+
     def _ask(self, nav: Any, info: VideoInfo) -> Optional[Dict[str, str]]:
-        """Ask for format and audio track, or skip when the format is fixed.
+        """Ask for format and audio track, or skip when nothing to decide.
+
+        The track question only appears when the video really offers several
+        languages and the user asked to be prompted; otherwise the track is
+        resolved by :meth:`_auto_language`.
 
         :param nav: The navigation window.
         :param info: The fetched video metadata.
@@ -450,7 +470,7 @@ class ClipsterApp:
         """
         if self._forced_format:
             # Started from the view window toolbar, which already picked a format.
-            return {"format": self._forced_format, "language": ""}
+            return {"format": self._forced_format, "language": self._auto_language(info)}
         prompt = Prompt()
         self.bridge.post(
             nav.ask,
@@ -464,7 +484,13 @@ class ClipsterApp:
         )
         cancel = self._cancel_event or threading.Event()
         answer = prompt.wait(self._quit_event, cancel, nav.cancel_event)
-        return answer if isinstance(answer, dict) else None
+        if not isinstance(answer, dict):
+            return None
+        if not answer.get("language"):
+            # No track was offered or "best available" was picked: resolve it
+            # here so the download never relies on yt-dlp guessing.
+            answer["language"] = self._auto_language(info)
+        return answer
 
     def _run_download(self, url: str, info: VideoInfo, media_format: str, language: str) -> None:
         """Download the video and report the outcome.
@@ -504,6 +530,8 @@ class ClipsterApp:
                 language=language,
                 on_progress=on_progress,
                 cancel_event=cancel_event,
+                duration=info.duration,
+                estimated_size=info.filesize,
             )
         except DownloadCanceled:
             cancel_event.set()
@@ -623,6 +651,8 @@ class ClipsterApp:
         :param error: The raised error.
         :return: The message shown to the user and stored in the history.
         """
+        if error.kind == "diskfull":
+            return self.messages.format("error_disk_full", details=_short_error(error))
         if error.kind == "bot":
             return self.messages["error_bot_detected"]
         if error.kind == "unavailable":

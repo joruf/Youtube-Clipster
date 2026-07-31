@@ -44,6 +44,16 @@ _BOT_PATTERNS = (
     "too many requests",
 )
 
+#: Only unambiguous wordings belong here - a wrong "the disk is full" is worse
+#: than the generic message, so a bare "write error" is deliberately absent.
+_DISK_FULL_PATTERNS = (
+    "no space left on device",
+    "errno 28",
+    "not enough space",
+    "disk full",
+    "disk quota exceeded",
+)
+
 _UNAVAILABLE_PATTERNS = (
     "video unavailable",
     "private video",
@@ -119,7 +129,7 @@ def _import_yt_dlp() -> Any:
         from yt_dlp import YoutubeDL
     except ImportError as exc:
         raise MetadataError(
-            "yt-dlp is not installed. Run 'python3 youtube-clipster.py --update' "
+            "yt-dlp is not installed. Run 'python3 run.py --update' "
             "(or '--reinstall') to set up the environment. Details: {0}".format(exc)
         ) from exc
     return YoutubeDL
@@ -159,6 +169,8 @@ class VideoInfo:
     audio_languages: List[str] = field(default_factory=list)
     #: The same tracks with the "is the original" flag kept.
     audio_tracks: List[AudioTrack] = field(default_factory=list)
+    #: Rough download size in bytes as reported by yt-dlp, ``0`` when unknown.
+    filesize: int = 0
 
     def original_language(self) -> str:
         """Return the code of the original audio track, or an empty string."""
@@ -211,9 +223,11 @@ def classify_error(message: str) -> str:
     """Classify a yt-dlp error message.
 
     :param message: The raw error text.
-    :return: ``bot``, ``unavailable`` or ``generic``.
+    :return: ``diskfull``, ``bot``, ``unavailable`` or ``generic``.
     """
     lowered = (message or "").lower()
+    if any(pattern in lowered for pattern in _DISK_FULL_PATTERNS):
+        return "diskfull"
     if any(pattern in lowered for pattern in _BOT_PATTERNS):
         return "bot"
     if any(pattern in lowered for pattern in _UNAVAILABLE_PATTERNS):
@@ -319,6 +333,7 @@ class Downloader:
             uploader=str(info.get("uploader") or ""),
             audio_languages=[track.code for track in tracks],
             audio_tracks=tracks,
+            filesize=_estimated_size(info),
         )
 
     @staticmethod
@@ -406,6 +421,8 @@ class Downloader:
         language: str = "",
         on_progress: Optional[ProgressCallback] = None,
         cancel_event: Optional[threading.Event] = None,
+        duration: Optional[int] = None,
+        estimated_size: int = 0,
     ) -> Optional[Path]:
         """Download ``url`` as MP3 or MP4.
 
@@ -414,6 +431,10 @@ class Downloader:
         :param language: Preferred audio language code, empty for "best".
         :param on_progress: Callback that receives :class:`Progress` updates.
         :param cancel_event: Set this event to abort the running download.
+        :param duration: Video length in seconds; enables a real percentage
+            while ffmpeg converts or merges.
+        :param estimated_size: Expected download size in bytes; used to refuse
+            the download up front when the disk cannot hold it.
         :return: The path of the finished file, if yt-dlp reported one.
         :raises DownloadCanceled: When ``cancel_event`` was set.
         :raises DownloadFailed: When yt-dlp reported an error.
@@ -460,6 +481,10 @@ class Downloader:
                     produced["path"] = filename
                 emit(Progress(phase="postprocessing", percent=None))
 
+        watcher = _FfmpegProgressWatcher(
+            path=target_dir / ".youtube-clipster-progress.txt", duration=duration, emit=emit
+        )
+
         def postprocessor_hook(status: Dict[str, Any]) -> None:
             """Report post-processing phases (conversion / merging)."""
             check_cancel()
@@ -468,14 +493,23 @@ class Downloader:
             info = status.get("info_dict")
             if isinstance(info, dict) and isinstance(info.get("filepath"), str):
                 produced["path"] = info["filepath"]
-            if state != "started":
-                return
+
             if "ExtractAudio" in name or "VideoConvertor" in name:
-                emit(Progress(phase="converting", percent=None))
+                phase = "converting"
             elif "Merger" in name:
-                emit(Progress(phase="merging", percent=None))
-            elif name not in ("MoveFiles", "MoveFilesAfterDownload"):
-                emit(Progress(phase="postprocessing", percent=None))
+                phase = "merging"
+            elif name in ("MoveFiles", "MoveFilesAfterDownload"):
+                return
+            else:
+                phase = "postprocessing"
+
+            if state == "started":
+                emit(Progress(phase=phase, percent=None))
+                if phase in ("converting", "merging"):
+                    # ffmpeg now starts writing to the progress file.
+                    watcher.start(phase)
+            else:
+                watcher.stop()
 
         options = self._base_options()
         options.update(self._format_selector(media_format, language))
@@ -488,8 +522,24 @@ class Downloader:
                 "overwrites": False,
                 "progress_hooks": [progress_hook],
                 "postprocessor_hooks": [postprocessor_hook],
+                # Every ffmpeg post-processor reports its position to this file.
+                "postprocessor_args": {"ffmpeg": watcher.ffmpeg_args()},
             }
         )
+
+        # A download writes the source and then the converted file, so roughly
+        # twice the estimated size has to fit. Failing here beats downloading
+        # eighty megabytes and only then running out of room during conversion.
+        if estimated_size > 0:
+            available = free_space(target_dir)
+            needed = int(estimated_size * 2.2)
+            if 0 < available < needed:
+                message = (
+                    "Not enough space in {0}: about {1} needed, {2} free "
+                    "(No space left on device)"
+                ).format(target_dir, _bytes_text(needed), _bytes_text(available))
+                log.error("%s", message)
+                raise DownloadFailed(message, "diskfull")
 
         log.info("Starting download: format=%s language=%s target=%s", media_format, language or "best", target_dir)
         emit(Progress(phase="preparing", percent=0.0))
@@ -507,7 +557,10 @@ class Downloader:
             message = str(exc)
             kind = classify_error(message)
             log.error("Download failed (%s): %s", kind, message)
+            _discard(produced["path"])
             raise DownloadFailed(message, kind) from exc
+        finally:
+            watcher.cleanup()
 
         emit(Progress(phase="finished", percent=100.0))
         result = produced["path"]
@@ -516,6 +569,205 @@ class Downloader:
             return Path(result)
         log.info("Download finished.")
         return None
+
+
+class _FfmpegProgressWatcher:
+    """Turns ffmpeg's ``-progress`` output into percentages.
+
+    yt-dlp offers no progress for its post-processors: ``real_run_ffmpeg`` waits
+    for ffmpeg to exit and only then returns its output.  ffmpeg itself can write
+    machine readable progress to a file though, and that file is passed in via
+    ``postprocessor_args`` - so this watcher just polls it.  No yt-dlp internals
+    are touched, which keeps the whole thing safe across yt-dlp updates.
+    """
+
+    #: How often the progress file is read, in seconds.
+    INTERVAL = 0.3
+
+    def __init__(self, path: Path, duration: Optional[int], emit: ProgressCallback) -> None:
+        """
+        :param path: File ffmpeg writes its progress to.
+        :param duration: Video length in seconds, used as the 100 % mark.
+        :param emit: Callback that receives the :class:`Progress` updates.
+        """
+        self.path = path
+        self.duration = duration if isinstance(duration, int) and duration > 0 else 0
+        self._emit = emit
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._phase = "converting"
+
+    def start(self, phase: str) -> None:
+        """Begin watching for one post-processor run.
+
+        :param phase: ``converting`` or ``merging``, forwarded in the updates.
+        :return: None
+        """
+        self.stop()
+        self._phase = phase
+        self._stop = threading.Event()
+        # Each post-processor appends to the same file, so start from scratch to
+        # keep the "last value wins" parsing correct.
+        try:
+            self.path.write_text("", encoding="utf-8")
+        except OSError:
+            pass
+        self._thread = threading.Thread(target=self._run, name="clipster-ffmpeg-progress", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop watching and forget the thread."""
+        self._stop.set()
+        thread, self._thread = self._thread, None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+
+    def cleanup(self) -> None:
+        """Stop watching and remove the progress file."""
+        self.stop()
+        try:
+            self.path.unlink()
+        except OSError:
+            pass
+
+    def ffmpeg_args(self) -> List[str]:
+        """Return the ffmpeg arguments that enable the progress output."""
+        return ["-progress", str(self.path), "-nostats"]
+
+    def _run(self) -> None:
+        """Poll the progress file until ffmpeg is done."""
+        while not self._stop.wait(self.INTERVAL):
+            seconds = self._read_position()
+            if seconds is None:
+                continue
+            percent: Optional[float] = None
+            if self.duration:
+                percent = max(0.0, min(99.0, seconds * 100.0 / self.duration))
+            self._safe_emit(Progress(phase=self._phase, percent=percent, detail=self._detail(seconds)))
+
+    def _detail(self, seconds: float) -> str:
+        """Return an ``M:SS / M:SS`` line so the remaining work is visible.
+
+        :param seconds: Media position ffmpeg has reached.
+        :return: The detail line, or just the position when the length is unknown.
+        """
+        if self.duration:
+            return "{0} / {1}".format(_clock(seconds), _clock(self.duration))
+        return _clock(seconds)
+
+    def _read_position(self) -> Optional[float]:
+        """Return the media position ffmpeg last reported, in seconds.
+
+        :return: The position, or ``None`` while ffmpeg has not reported one.
+        """
+        try:
+            text = self.path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        # ffmpeg keeps appending blocks, so the last usable value is the current
+        # one. Note that out_time_ms actually holds microseconds.
+        for line in reversed(text.splitlines()):
+            key, _, value = line.partition("=")
+            if key not in ("out_time_us", "out_time_ms"):
+                continue
+            value = value.strip()
+            if not value or value == "N/A":
+                continue
+            try:
+                return int(value) / 1_000_000.0
+            except ValueError:
+                continue
+        return None
+
+    def _safe_emit(self, progress: Progress) -> None:
+        """Forward an update without ever letting a UI error stop ffmpeg."""
+        try:
+            self._emit(progress)
+        except Exception:  # pragma: no cover - defensive
+            log.debug("Conversion progress callback failed", exc_info=True)
+
+
+def _estimated_size(info: Dict[str, Any]) -> int:
+    """Return yt-dlp's size estimate for a video in bytes.
+
+    :param info: The raw metadata dictionary from yt-dlp.
+    :return: The size, or ``0`` when yt-dlp does not know it.
+    """
+    for key in ("filesize", "filesize_approx"):
+        value = info.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+    # Fall back to the largest single format, which is what a merge would pull.
+    largest = 0
+    for stream in info.get("formats") or []:
+        if not isinstance(stream, dict):
+            continue
+        for key in ("filesize", "filesize_approx"):
+            value = stream.get(key)
+            if isinstance(value, (int, float)) and value > largest:
+                largest = int(value)
+    return largest
+
+
+def free_space(target: Path) -> int:
+    """Return the free bytes on the file system holding ``target``.
+
+    :param target: A directory on the file system to measure.
+    :return: Free bytes, or ``0`` when it cannot be determined.
+    """
+    try:
+        return shutil.disk_usage(str(target)).free
+    except OSError:
+        return 0
+
+
+def _clock(seconds: float) -> str:
+    """Return ``M:SS`` or ``H:MM:SS`` for a number of seconds.
+
+    :param seconds: The amount of time.
+    :return: The formatted value.
+    """
+    total = max(0, int(seconds))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return "{0}:{1:02d}:{2:02d}".format(hours, minutes, secs)
+    return "{0}:{1:02d}".format(minutes, secs)
+
+
+def _discard(path: Optional[str]) -> None:
+    """Delete a half-finished intermediate file after a failed download.
+
+    yt-dlp removes the downloaded source once the conversion succeeded; when it
+    fails the source stays behind and can easily be a hundred megabytes.
+
+    :param path: The file yt-dlp reported, or ``None``.
+    :return: None
+    """
+    if not path:
+        return
+    target = Path(path)
+    try:
+        if target.is_file():
+            size = target.stat().st_size
+            target.unlink()
+            log.info("Removed the leftover source file %s (%s).", target.name, _bytes_text(size))
+    except OSError as exc:
+        log.debug("Could not remove %s: %s", target, exc)
+
+
+def _bytes_text(size: int) -> str:
+    """Return a compact human readable byte count.
+
+    :param size: The amount in bytes.
+    :return: For example ``143.2 MB``.
+    """
+    value = float(max(0, size))
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024.0 or unit == "GB":
+            return "{0:.0f} {1}".format(value, unit) if unit == "B" else "{0:.1f} {1}".format(value, unit)
+        value /= 1024.0
+    return "{0:.1f} GB".format(value)
 
 
 def _speed_text(status: Dict[str, Any]) -> str:

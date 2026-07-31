@@ -13,9 +13,9 @@ compatible with old interpreters so it can report a useful error instead of a
 
 Usage::
 
-    python3 youtube-clipster.py              # install what is missing, then start
-    python3 youtube-clipster.py --check      # only run the dependency check
-    python3 youtube-clipster.py --help       # all options
+    python3 run.py              # install what is missing, then start
+    python3 run.py --check      # only run the dependency check
+    python3 run.py --help       # all options
 
 Author:  Joachim Ruf, Loresoft.de
 License: GPLv3 - the author's name must be credited upon publication and modification.
@@ -64,7 +64,7 @@ def _main():
     except ImportError as exc:
         _fail(
             "The 'clipster' package could not be imported (%s).\n"
-            "        Make sure youtube-clipster.py stays next to the 'clipster' folder." % exc
+            "        Make sure run.py stays next to the 'clipster' folder." % exc
         )
         return 1
 

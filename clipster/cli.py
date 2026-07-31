@@ -1,6 +1,6 @@
 """Command line interface, bootstrap logic and process relaunch.
 
-``youtube-clipster.py`` calls :func:`bootstrap_main` with the *system* Python:
+``run.py`` calls :func:`bootstrap_main` with the *system* Python:
 dependencies are checked and installed, then the program restarts itself inside
 the managed virtual environment where ``yt-dlp`` lives.  ``python -m clipster``
 calls :func:`main` directly and expects a ready environment.
@@ -12,7 +12,7 @@ import argparse
 import os
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import List, Optional, Sequence
 
 from . import APP_TITLE, APP_VERSION, i18n, installer, paths, shortcuts
@@ -28,7 +28,7 @@ log = logging_setup.get_logger(__name__)
 def build_parser() -> argparse.ArgumentParser:
     """Return the argument parser shared by both entry points."""
     parser = argparse.ArgumentParser(
-        prog="youtube-clipster",
+        prog="run.py",
         description="Loresoft YouTube Clipster - download YouTube videos by copying a link.",
     )
     parser.add_argument("--version", action="version", version=APP_TITLE)
@@ -149,13 +149,28 @@ def _create_shortcut() -> int:
     return 0
 
 
+def _started_without_console() -> bool:
+    """Return ``True`` when this process runs under ``pythonw.exe``.
+
+    :return: ``False`` on every platform other than Windows.
+    """
+    if not paths.IS_WINDOWS:
+        return False
+    # PureWindowsPath rather than Path: it splits on backslashes on every
+    # platform, which keeps this check verifiable outside Windows.
+    return PureWindowsPath(sys.executable).name.lower().startswith("pythonw")
+
+
 def _relaunch_in_venv(arguments: List[str]) -> int:
     """Restart the bootstrap script with the virtual environment interpreter.
 
     :param arguments: The original command line arguments.
     :return: The exit code of the relaunched process.
     """
-    interpreter = paths.venv_python()
+    # Started from the desktop shortcut the parent is pythonw.exe, which has no
+    # console. Relaunching into python.exe would pop one open for the whole
+    # session, so the console-less interpreter is matched.
+    interpreter = paths.venv_python(gui=_started_without_console())
     script = paths.bootstrap_script()
 
     if os.environ.get(_RELAUNCH_ENV):

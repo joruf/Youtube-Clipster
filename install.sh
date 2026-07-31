@@ -3,9 +3,9 @@
 # Loresoft YouTube Clipster - Linux / macOS starter.
 #
 # Finds a suitable Python 3, installs it if necessary, and hands over to
-# youtube-clipster.py, which installs every remaining dependency itself.
+# run.py, which installs every remaining dependency itself.
 #
-# Usage:  ./install.sh [--check] [--help] [any other youtube-clipster.py option]
+# Usage:  ./install.sh [--check] [--help] [any other run.py option]
 #
 # Author:  Joachim Ruf, Loresoft.de
 # License: GPLv3
@@ -13,7 +13,7 @@
 set -u
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-ENTRY="$SCRIPT_DIR/youtube-clipster.py"
+ENTRY="$SCRIPT_DIR/run.py"
 MIN_MAJOR=3
 MIN_MINOR=8
 
@@ -59,7 +59,7 @@ install_python() {
 }
 
 if [ ! -f "$ENTRY" ]; then
-    error "youtube-clipster.py not found next to this script ($SCRIPT_DIR)."
+    error "run.py not found next to this script ($SCRIPT_DIR)."
     exit 1
 fi
 

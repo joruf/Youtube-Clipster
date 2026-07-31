@@ -3,7 +3,7 @@
 A cross-platform (Linux / Windows / macOS), clipboard-driven YouTube downloader.
 
 The package is deliberately importable with the standard library alone, so the
-bootstrap installer (``youtube-clipster.py``) can reuse :mod:`clipster.installer`
+bootstrap installer (``run.py``) can reuse :mod:`clipster.installer`
 before any third-party dependency exists.  Modules that need ``yt-dlp`` or
 ``tkinter`` import them lazily.
 

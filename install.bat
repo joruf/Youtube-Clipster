@@ -6,7 +6,7 @@ REM ---------------------------------------------------------------------
 REM Loresoft YouTube Clipster - Windows starter.
 REM
 REM Finds a suitable Python 3, offers to install it via winget if missing,
-REM and hands over to youtube-clipster.py, which installs every remaining
+REM and hands over to run.py, which installs every remaining
 REM dependency (yt-dlp, FFmpeg) itself.
 REM
 REM Usage:  install.bat [--check] [--help] [any other option]
@@ -16,11 +16,11 @@ REM License: GPLv3
 REM ---------------------------------------------------------------------
 
 cd /d "%~dp0"
-set "ENTRY=%~dp0youtube-clipster.py"
+set "ENTRY=%~dp0run.py"
 set "PYTHON="
 
 if not exist "%ENTRY%" (
-    echo [ERROR] youtube-clipster.py was not found in %~dp0
+    echo [ERROR] run.py was not found in %~dp0
     pause
     exit /b 1
 )

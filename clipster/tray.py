@@ -88,6 +88,10 @@ class TrayIcon:
         self._thread: Optional[threading.Thread] = None
         self._ready = threading.Event()
         self._failed = False
+        #: ``False`` when the active backend cannot render a menu at all.
+        self.has_menu = True
+        #: Name of the pystray backend in use, for the log and the about page.
+        self.backend = ""
 
     # ------------------------------------------------------------------
     @property
@@ -112,6 +116,19 @@ class TrayIcon:
         except Exception as exc:
             log.warning("System tray is unavailable (icon: %s).", exc)
             return False
+
+        self.backend = getattr(pystray.Icon, "__module__", "").rsplit(".", 1)[-1].lstrip("_")
+        # pystray's X11 backend sets HAS_MENU = False - it can show an icon but
+        # no menu, which would leave the user without a way to quit. Detect that
+        # instead of silently shipping a dead icon.
+        self.has_menu = bool(getattr(pystray.Icon, "HAS_MENU", True))
+        if not self.has_menu:
+            log.warning(
+                "The '%s' tray backend cannot show a menu, so there is no quit entry. "
+                "Install PyGObject and the AppIndicator typelib to get one; "
+                "clicking the icon opens the main window in the meantime.",
+                self.backend or "unknown",
+            )
 
         menu = pystray.Menu(
             pystray.MenuItem(self._messages["tray_show"], self._handle_show, default=True),
@@ -139,7 +156,8 @@ class TrayIcon:
             return False
         if self._failed:
             return False
-        log.info("System tray icon active.")
+        log.info("System tray icon active (backend: %s, menu: %s).",
+                 self.backend or "unknown", "yes" if self.has_menu else "no")
         return True
 
     def _setup(self, icon: Any) -> None:

@@ -42,7 +42,7 @@ class Config:
     #: Allow the small status window with the quit button at all.
     show_status_window: bool = True
     #: Open the download folder in the file manager after a finished download.
-    open_folder_after_download: bool = True
+    open_folder_after_download: bool = False
     #: Explicit file manager command; empty means the OS default handler.
     file_manager: str = ""
     #: Empty the clipboard after a successful download.

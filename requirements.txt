@@ -1,7 +1,7 @@
 # Runtime dependencies of Loresoft YouTube Clipster.
 #
 # Generated from clipster/dependencies.py - edit that table, not this file.
-# youtube-clipster.py installs these automatically into a private virtual
+# run.py installs these automatically into a private virtual
 # environment. Install them manually only if you manage the environment
 # yourself:  pip install -r requirements.txt
 #

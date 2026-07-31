@@ -1,7 +1,7 @@
 """Entry point for ``python -m clipster``.
 
 Assumes the environment is already prepared (yt-dlp and FFmpeg available).
-Use ``youtube-clipster.py`` when the dependency check should run as well.
+Use ``run.py`` when the dependency check should run as well.
 """
 
 from __future__ import annotations
