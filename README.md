@@ -532,7 +532,13 @@ cat ~/.local/share/YoutubeClipster/youtube-clipster.log
 ```bash
 # Cross-platform contract tests (no GUI / display needed)
 python3 -m unittest tests.test_cross_platform_contract -v
+
+# Full suite
+python3 -m unittest discover -s tests -v
 ```
+
+CI runs the contract tests and full suite on Ubuntu 22.04/24.04 and `windows-latest`
+(Python 3.11 and 3.12) on every push and pull request.
 
 ### Multi-OS matrix (local Linux host)
 
