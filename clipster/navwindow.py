@@ -268,6 +268,7 @@ class NavWindow:
         languages: List[str],
         default_format: str = "mp3",
         ask_language: bool = True,
+        original: str = "",
     ) -> None:
         """Ask for format and audio track in one step.
 
@@ -277,9 +278,10 @@ class NavWindow:
         :param prompt: The prompt the worker thread is waiting on.
         :param title: The video title.
         :param duration: Video length in seconds, ``0`` when unknown.
-        :param languages: Available audio track languages.
+        :param languages: Available audio track languages, the original first.
         :param default_format: Preselected format (``mp3`` or ``mp4``).
         :param ask_language: Offer the audio track selector at all.
+        :param original: Code of the track the video was published with.
         :return: None
         """
         self._prompt = prompt
@@ -322,7 +324,12 @@ class NavWindow:
         offer_language = ask_language and len(languages) > 1
         if offer_language:
             self._language.set("")
-            values = [self.messages["lang_best"]] + [self.messages.language_label(code) for code in languages]
+            values = [self.messages["lang_best"]]
+            for code in languages:
+                label = self.messages.language_label(code)
+                if code == original:
+                    label = self.messages.format("lang_original", language=label)
+                values.append(label)
             codes = [""] + list(languages)
             ttk.Label(self._form, text=self.messages["nav_audio"], style="Muted.TLabel").grid(
                 row=1, column=0, sticky="w", padx=(0, PAD_SMALL)

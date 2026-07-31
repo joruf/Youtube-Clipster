@@ -460,6 +460,7 @@ class ClipsterApp:
             info.audio_languages,
             self.config.default_format,
             self.config.ask_audio_language,
+            info.original_language(),
         )
         cancel = self._cancel_event or threading.Event()
         answer = prompt.wait(self._quit_event, cancel, nav.cancel_event)

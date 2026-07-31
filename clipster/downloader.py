@@ -9,6 +9,7 @@ platform.
 from __future__ import annotations
 
 import re
+import shutil
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,12 +23,18 @@ from .logging_setup import get_logger
 
 log = get_logger(__name__)
 
-#: Matches every YouTube URL flavour we want to react to.
-YOUTUBE_URL_RE = re.compile(
-    r"https?://(?:(?:www|m|music)\.)?youtube\.com/(?:watch\?\S*?\bv=|shorts/|live/|embed/|v/)[A-Za-z0-9_-]{11}\S*"
-    r"|https?://youtu\.be/[A-Za-z0-9_-]{11}\S*",
-    re.IGNORECASE,
+#: Patterns that isolate the 11 character video id, most specific first.  The
+#: query based ones are order independent, so a shared link that puts ``list``
+#: or ``si`` before ``v`` still resolves.
+_VIDEO_ID_PATTERNS = (
+    re.compile(r"youtu\.be/([A-Za-z0-9_-]{11})", re.IGNORECASE),
+    re.compile(r"youtube\.com/(?:shorts|embed|live|v)/([A-Za-z0-9_-]{11})", re.IGNORECASE),
+    re.compile(r"youtube\.com/watch\?[^\s]*?\bv=([A-Za-z0-9_-]{11})", re.IGNORECASE),
+    re.compile(r"[?&]v=([A-Za-z0-9_-]{11})", re.IGNORECASE),
 )
+
+#: Every recognised link is reduced to this canonical form.
+_CANONICAL_URL = "https://www.youtube.com/watch?v={0}"
 
 _BOT_PATTERNS = (
     "confirm you are not a bot",
@@ -49,16 +56,34 @@ _UNAVAILABLE_PATTERNS = (
 _TITLE_SANITIZE_RE = re.compile(r"[\r\n\t]+")
 
 
-def extract_youtube_url(text: str) -> Optional[str]:
-    """Return the first YouTube URL contained in ``text``.
+def extract_video_id(text: str) -> Optional[str]:
+    """Return the YouTube video id contained in ``text``.
 
     :param text: Arbitrary clipboard content.
-    :return: The matched URL, or ``None`` when the text holds no YouTube link.
+    :return: The 11 character id, or ``None`` when the text holds no link.
     """
-    if not text:
+    if not text or "youtu" not in text.lower():
         return None
-    match = YOUTUBE_URL_RE.search(text.strip())
-    return match.group(0) if match else None
+    for pattern in _VIDEO_ID_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return match.group(1)
+    return None
+
+
+def extract_youtube_url(text: str) -> Optional[str]:
+    """Return a canonical watch URL for the YouTube link in ``text``.
+
+    The link is normalised to ``https://www.youtube.com/watch?v=<id>``.  That
+    drops ``list``/``index``/``si`` parameters, so a video copied out of a
+    playlist or a radio mix is downloaded on its own and the same video copied
+    twice in different forms is recognised as the same link.
+
+    :param text: Arbitrary clipboard content.
+    :return: The canonical URL, or ``None`` when the text holds no YouTube link.
+    """
+    video_id = extract_video_id(text)
+    return _CANONICAL_URL.format(video_id) if video_id else None
 
 
 class DownloadCanceled(Exception):
@@ -67,6 +92,21 @@ class DownloadCanceled(Exception):
 
 class MetadataError(Exception):
     """Raised when the video information could not be fetched."""
+
+
+#: yt-dlp's name for each engine, keyed by the executable we look for.
+_JS_RUNTIMES = (("qjs", "quickjs"), ("node", "node"), ("deno", "deno"))
+
+
+def _js_runtime() -> Optional[str]:
+    """Return the JavaScript engine yt-dlp should use, or ``None``.
+
+    :return: ``quickjs``, ``node``, ``deno`` or ``None`` when none is installed.
+    """
+    for executable, name in _JS_RUNTIMES:
+        if shutil.which(executable):
+            return name
+    return None
 
 
 def _import_yt_dlp() -> Any:
@@ -98,6 +138,16 @@ class DownloadFailed(Exception):
 
 
 @dataclass
+class AudioTrack:
+    """One selectable audio track of a video."""
+
+    #: Language code as reported by yt-dlp, e.g. ``de`` or ``en-US``.
+    code: str
+    #: ``True`` for the track the video was originally published with.
+    original: bool = False
+
+
+@dataclass
 class VideoInfo:
     """The subset of yt-dlp metadata the UI needs."""
 
@@ -105,7 +155,17 @@ class VideoInfo:
     title: str
     duration: Optional[int] = None
     uploader: str = ""
+    #: Language codes, the original track first.
     audio_languages: List[str] = field(default_factory=list)
+    #: The same tracks with the "is the original" flag kept.
+    audio_tracks: List[AudioTrack] = field(default_factory=list)
+
+    def original_language(self) -> str:
+        """Return the code of the original audio track, or an empty string."""
+        for track in self.audio_tracks:
+            if track.original:
+                return track.code
+        return ""
 
 
 @dataclass
@@ -195,7 +255,16 @@ class Downloader:
             "retries": 5,
             "fragment_retries": 5,
             "ignoreerrors": False,
+            # Asking two player clients makes YouTube hand out the dubbed audio
+            # tracks and the full format list far more reliably.
+            "extractor_args": {"youtube": {"player_client": ["default", "web_embedded"]}},
         }
+        runtime = _js_runtime()
+        if runtime:
+            # Signature decryption needs a JavaScript engine. yt-dlp defaults to
+            # deno alone, so the engine that is actually installed has to be
+            # named. The API wants {runtime: {config}}, not a list.
+            options["js_runtimes"] = {runtime: {}}
         if self.config.user_agent.strip():
             options["http_headers"] = {"User-Agent": self.config.user_agent.strip()}
         if self._ffmpeg_location:
@@ -235,23 +304,37 @@ class Downloader:
 
         raw_title = str(info.get("title") or self.messages["fallback_title"])
         title = _TITLE_SANITIZE_RE.sub(" ", raw_title).strip() or self.messages["fallback_title"]
-        languages = self._audio_languages(info)
+        tracks = self._audio_tracks(info)
         log.info("Title: %s", title)
-        if languages:
-            log.debug("Available audio tracks: %s", ", ".join(languages))
+        if tracks:
+            log.debug(
+                "Available audio tracks: %s",
+                ", ".join("{0}{1}".format(t.code, " (original)" if t.original else "") for t in tracks),
+            )
 
         return VideoInfo(
             url=url,
             title=title,
             duration=info.get("duration") if isinstance(info.get("duration"), int) else None,
             uploader=str(info.get("uploader") or ""),
-            audio_languages=languages,
+            audio_languages=[track.code for track in tracks],
+            audio_tracks=tracks,
         )
 
     @staticmethod
-    def _audio_languages(info: Dict[str, Any]) -> List[str]:
-        """Return the distinct audio track languages offered by a video."""
-        languages: List[str] = []
+    def _audio_tracks(info: Dict[str, Any]) -> List["AudioTrack"]:
+        """Return the audio tracks of a video, the original one first.
+
+        YouTube dubs are ordinary audio formats that differ only in their
+        ``language``.  yt-dlp marks the track the video was published with by
+        giving it the highest ``language_preference``, which is the only
+        reliable way to tell an original track from a dub - so it is kept and
+        used to sort, instead of listing the languages alphabetically.
+
+        :param info: The raw metadata dictionary from yt-dlp.
+        :return: One entry per language, original first, then alphabetical.
+        """
+        best: Dict[str, int] = {}
         for stream in info.get("formats") or []:
             if not isinstance(stream, dict):
                 continue
@@ -260,12 +343,26 @@ class Downloader:
             language = stream.get("language")
             if not isinstance(language, str):
                 continue
-            normalized = language.strip()
-            if not normalized or normalized.lower() in ("none", "null", "na"):
+            code = language.strip()
+            if not code or code.lower() in ("none", "null", "na", "und"):
                 continue
-            if normalized not in languages:
-                languages.append(normalized)
-        return sorted(languages)
+            preference = stream.get("language_preference")
+            preference = preference if isinstance(preference, int) else -1
+            if code not in best or preference > best[code]:
+                best[code] = preference
+
+        if not best:
+            return []
+        highest = max(best.values())
+        # Only call a track "original" when it actually stands out; a video with
+        # a single track or with no preference data has no dubs to distinguish.
+        distinguishable = len(set(best.values())) > 1
+        tracks = [
+            AudioTrack(code=code, original=distinguishable and preference == highest)
+            for code, preference in best.items()
+        ]
+        tracks.sort(key=lambda track: (not track.original, track.code))
+        return tracks
 
     # ------------------------------------------------------------------
     def _format_selector(self, media_format: str, language: str) -> Dict[str, Any]:
