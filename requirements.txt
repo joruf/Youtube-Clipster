@@ -1,0 +1,18 @@
+# Runtime dependencies of Loresoft YouTube Clipster.
+#
+# Generated from clipster/dependencies.py - edit that table, not this file.
+# youtube-clipster.py installs these automatically into a private virtual
+# environment. Install them manually only if you manage the environment
+# yourself:  pip install -r requirements.txt
+#
+# Not listed here because they are not Python packages:
+#   * FFmpeg  - installed by the bootstrapper (package manager / ZIP download)
+#   * tkinter - part of CPython (Linux: install the python3-tk package)
+
+yt-dlp>=2024.1.1
+
+# Optional - without these the program still runs, only the named
+# feature is unavailable.
+pystray>=0.19
+Pillow>=9.0
+python-xlib>=0.33; sys_platform == "linux"

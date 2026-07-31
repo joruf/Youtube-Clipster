@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "Loresoft YouTube Clipster configuration.",
+    "",
+    "The active file is created automatically on the first start at:",
+    "  Linux/macOS : ~/.local/share/YoutubeClipster/config.json",
+    "  Windows     : %LOCALAPPDATA%\\YoutubeClipster\\config.json",
+    "",
+    "Copy this file to 'config.json' next to youtube-clipster.py to use a",
+    "portable, per-checkout configuration instead. Unknown keys are ignored.",
+    "Delete the file to restore the defaults."
+  ],
+
+  "language": "en",
+  "download_dir": "",
+  "interval_sec": 2.0,
+  "show_startup_notification": true,
+  "default_format": "mp3",
+  "open_view_after_download": false,
+  "history_limit": 100,
+  "use_tray": true,
+  "start_minimized": true,
+  "show_status_window": true,
+  "open_folder_after_download": true,
+  "file_manager": "",
+  "clear_clipboard_after_download": true,
+  "ask_audio_language": true,
+  "no_playlist": true,
+  "restrict_filenames": false,
+  "output_template": "%(title)s.%(ext)s",
+  "user_agent": "",
+  "ask_desktop_shortcut": true,
+  "autostart": false,
+  "update_check_hours": 24,
+  "log_level": "INFO"
+}

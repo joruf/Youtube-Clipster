@@ -1,2 +1,15 @@
-
+# Runtime artefacts
 youtube-clipster.lock
+*.log
+
+# Local, per-checkout configuration (portable mode)
+config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Loresoft YouTube Clipster - logo source. Regenerate the raster files with
+     tools/make_logo.py after changing this file. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>YouTube Clipster</title>
+  <rect x="23" y="23" width="466" height="466" rx="113" ry="113"
+        fill="#15161a" stroke="#383c46" stroke-width="6"/>
+  <path d="M 140 125 H 372 L 256 310 Z"
+        fill="#e5322d" stroke="#e5322d" stroke-width="28"
+        stroke-linejoin="round" stroke-linecap="round"/>
+  <rect x="136" y="346" width="240" height="51" rx="25" ry="25" fill="#c8241f"/>
+</svg>

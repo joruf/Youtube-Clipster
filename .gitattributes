@@ -1,2 +1,13 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Line endings must match the platform that executes the file
+*.bat  text eol=crlf
+*.ps1  text eol=crlf
+*.sh   text eol=lf
+*.py   text eol=lf
+
+# Binary assets
+*.png  binary
+*.jpg  binary
+*.ico  binary
