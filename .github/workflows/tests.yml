@@ -1,0 +1,88 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest version the project promises and the current one.
+        python: ["3.8", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install the system parts the tests need
+        run: |
+          sudo apt-get update
+          # tkinter for the interface, xvfb to give it a display,
+          # the GI stack so the tray backend can actually start.
+          sudo apt-get install -y --no-install-recommends \
+            python3-tk xvfb ffmpeg xclip \
+            python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1
+
+      - name: Install the Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run the test suite
+        # xvfb-run provides the display the GUI and tray tests need.
+        run: xvfb-run -a python -m pytest -q
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install the Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run the test suite without the GUI
+        # The runner has no interactive desktop session, so the windows and the
+        # tray icon cannot be created. Everything else must still hold, and the
+        # Windows specific paths and quoting are covered without a display.
+        run: python -m pytest -q -m "not gui"
+
+  generated-files:
+    name: Generated files are up to date
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: requirements.txt still matches the dependency table
+        run: |
+          python -c "from clipster import dependencies as d; print(d.requirements_text(), end='')" \
+            > /tmp/requirements.expected
+          diff -u requirements.txt /tmp/requirements.expected
+
+      - name: The logo files match tools/make_logo.py
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "Pillow>=9.0"
+          python tools/make_logo.py
+          git diff --exit-code -- assets/icons

@@ -10,7 +10,6 @@
     "portable, per-checkout configuration instead. Unknown keys are ignored.",
     "Delete the file to restore the defaults."
   ],
-
   "language": "en",
   "download_dir": "",
   "interval_sec": 2.0,
@@ -20,7 +19,6 @@
   "history_limit": 100,
   "use_tray": true,
   "start_minimized": true,
-  "show_status_window": true,
   "open_folder_after_download": false,
   "file_manager": "",
   "clear_clipboard_after_download": true,

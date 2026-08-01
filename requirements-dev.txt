@@ -1,0 +1,12 @@
+# Development dependencies - not needed to run YouTube Clipster.
+#
+#   python3 -m pip install -r requirements-dev.txt
+#   python3 -m pytest
+#
+# The runtime dependencies are generated from clipster/dependencies.py into
+# requirements.txt; install both to run the whole suite including the GUI and
+# tray tests.
+
+-r requirements.txt
+
+pytest>=7.0

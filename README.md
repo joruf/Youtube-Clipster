@@ -160,6 +160,13 @@ The track question only appears when the video really offers several languages *
 `ask_audio_language` is on. Otherwise the track is picked automatically: the only one that exists,
 or – with several – the one the video was published with, which is marked `· original` in the list.
 
+**Copying several links in a row** is fine: they queue up and run one after another instead of being
+dropped, up to twenty waiting at a time.
+
+**A video that is already there** is not fetched twice. When the same link in the same format was
+downloaded before and the file still exists, the window says so and offers to open it, its folder, or
+to download it again anyway.
+
 ![Choose format](assets/screenshots/nav-choose.png)
 
 ### 2. Watch it download
@@ -258,7 +265,6 @@ For a **portable setup** copy `config.example.json` to `config.json` **next to
 | `history_limit` | `100` | Maximum number of entries kept in the download list |
 | `use_tray` | `true` | Place an icon in the system tray |
 | `start_minimized` | `true` | Start in the tray without showing any window |
-| `show_status_window` | `true` | Allow the view window to be shown at startup |
 | `open_folder_after_download` | `false` | Open the target folder when a download finished |
 | `file_manager` | `""` | Explicit file manager (e.g. `"nemo"`); empty uses the OS default |
 | `clear_clipboard_after_download` | `true` | Empty the clipboard so the link is not processed twice |
@@ -330,6 +336,35 @@ python3 run.py --autostart off       # disable
 
 ---
 
+## Tests
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest
+```
+
+Roughly 290 tests, all offline and finished in well under a minute. They never
+touch your real configuration or download list - an autouse fixture redirects the
+application data directory into a temporary folder for every single test.
+
+| Selection | Command |
+|---|---|
+| Everything except the interface | `pytest -m "not gui"` |
+| Only the interface | `pytest -m gui` |
+| Including the two that talk to YouTube | `pytest -m network` |
+| A single file | `pytest tests/test_downloader.py` |
+
+Tests marked `gui` build the real windows and need a display; without one they
+skip themselves, so the suite also passes over SSH. Run them headless with
+`xvfb-run -a python3 -m pytest`.
+
+The suite runs on every push through
+[`.github/workflows/tests.yml`](.github/workflows/tests.yml): Linux on the oldest
+and the newest supported Python, Windows without the GUI tests, plus a check that
+`requirements.txt` and the logo files still match their generators.
+
+---
+
 ## Project structure
 
 ```
@@ -339,6 +374,9 @@ youtube-clipster/
 ├── install.bat              # Windows starter (finds or installs Python)
 ├── requirements.txt         # generated from clipster/dependencies.py
 ├── config.example.json      # documented example configuration
+├── requirements-dev.txt     # pytest, for the test suite
+├── pytest.ini               # test configuration and markers
+├── tests/                   # the test suite (see "Tests" above)
 ├── tools/make_logo.py       # regenerates the logo (SVG + PNG + ICO)
 └── clipster/
     ├── cli.py               # argument parsing, bootstrap, relaunch into the venv

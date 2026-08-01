@@ -39,8 +39,6 @@ class Config:
     use_tray: bool = True
     #: Start without showing the status window (only when the tray works).
     start_minimized: bool = True
-    #: Allow the small status window with the quit button at all.
-    show_status_window: bool = True
     #: Open the download folder in the file manager after a finished download.
     open_folder_after_download: bool = False
     #: Explicit file manager command; empty means the OS default handler.
@@ -85,11 +83,6 @@ class Config:
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
-    @classmethod
-    def _field_names(cls) -> set:
-        """Return the names of all serialisable fields."""
-        return {item.name for item in fields(cls) if item.name != "path"}
-
     @classmethod
     def from_dict(cls, data: Dict[str, Any], path: Path) -> "Config":
         """Build a configuration from raw JSON data.

@@ -13,6 +13,7 @@ then shows the progress.  Every outcome is appended to the
 
 from __future__ import annotations
 
+import collections
 import signal
 import threading
 from pathlib import Path
@@ -41,7 +42,14 @@ log = get_logger(__name__)
 
 
 class ClipsterApp:
-    """Watches the clipboard and drives one download at a time."""
+    """Watches the clipboard and drives one download at a time.
+
+    Links copied while a download runs are not dropped: they queue up and start
+    one after another.
+    """
+
+    #: Upper bound for the waiting list, so a stuck download cannot pile up.
+    MAX_QUEUE = 20
 
     def __init__(self, config: Config, messages: Messages) -> None:
         """
@@ -74,6 +82,12 @@ class ClipsterApp:
         self._cancel_event: Optional[threading.Event] = None
         self._quit_event = threading.Event()
         self._forced_format = ""
+        #: Set when the user asked for a download that already exists.
+        self._force_redownload = False
+        #: The link being processed right now, so it is not queued again.
+        self._current_url = ""
+        #: Links copied while a download runs, processed one after another.
+        self._queue: "collections.deque[tuple]" = collections.deque()
 
         self.gui.on_quit = self.request_quit
         self.gui.on_nav_closed = self._nav_closed
@@ -149,7 +163,7 @@ class ClipsterApp:
         program, so it is forced visible in that case.
         """
         if self._tray_active:
-            if self.config.start_minimized or not self.config.show_status_window:
+            if self.config.start_minimized:
                 log.info("Started in the system tray.")
                 return
             self.gui.show_view()
@@ -157,8 +171,8 @@ class ClipsterApp:
 
         if self.config.use_tray:
             log.warning("No system tray available - showing the view window instead.")
-        if not self.config.show_status_window:
-            log.warning("'show_status_window' is off but there is no tray icon - showing it anyway.")
+        elif self.config.start_minimized:
+            log.warning("Without a tray icon the window is the only way to quit - showing it.")
         self.gui.show_view()
 
     def _post_start(self) -> None:
@@ -203,6 +217,7 @@ class ClipsterApp:
             return
         self._quitting = True
         self._quit_event.set()
+        self._queue.clear()
         if self._cancel_event is not None:
             self._cancel_event.set()
         try:
@@ -281,12 +296,8 @@ class ClipsterApp:
         if not target:
             self.gui.show_error(self.messages["error_title"], self.messages["error_not_a_link"])
             return
-        if self._busy:
-            self.gui.show_error(self.messages["error_title"], self.messages["error_busy"])
-            return
         log.info("Download requested from the view window.")
-        self._forced_format = media_format
-        self._start_worker(target)
+        self._enqueue(target, media_format)
 
     # ------------------------------------------------------------------
     # The download list
@@ -345,17 +356,55 @@ class ClipsterApp:
         """Check the clipboard for a new YouTube link and reschedule itself."""
         if self._quitting:
             return
-        if not self._busy:
-            current = self.clipboard.read()
-            if current != self._last_seen:
-                self._last_seen = current
-                url = extract_youtube_url(current)
-                if url:
-                    log.info("New YouTube link detected in the clipboard.")
-                    log.debug("Target URL: %s", url)
-                    self._forced_format = ""
-                    self._start_worker(url)
+        # Watched even while a download runs, otherwise a link copied in the
+        # meantime would be lost for good.
+        current = self.clipboard.read()
+        if current != self._last_seen:
+            self._last_seen = current
+            url = extract_youtube_url(current)
+            if url:
+                log.info("New YouTube link detected in the clipboard.")
+                log.debug("Target URL: %s", url)
+                self._enqueue(url, "")
         self.gui.root.after(self.config.poll_interval_ms(), self._poll_clipboard)
+
+    def _enqueue(self, url: str, media_format: str, force: bool = False) -> None:
+        """Start the download, or line it up behind the running one.
+
+        :param url: The canonical YouTube URL.
+        :param media_format: Forced format, empty to ask the user.
+        :param force: Download again even when the file is already there.
+        :return: None
+        """
+        if not self._busy:
+            self._forced_format = media_format
+            self._force_redownload = force
+            self._start_worker(url)
+            return
+        if url == self._current_url and not force:
+            log.debug("%s is downloading right now - ignored.", url)
+            return
+        if any(queued == url for queued, _, _ in self._queue):
+            log.debug("%s is already waiting - ignored.", url)
+            return
+        if len(self._queue) >= self.MAX_QUEUE:
+            log.warning("The waiting list is full (%s); %s was dropped.", self.MAX_QUEUE, url)
+            return
+        # The flag travels with the entry, otherwise a deliberate "download
+        # again" would be met with "already downloaded" once its turn comes.
+        self._queue.append((url, media_format, force))
+        log.info("A download is running - %s links are now waiting.", len(self._queue))
+        self._set_status(self.messages.format("status_queued", count=len(self._queue)))
+
+    def _start_next(self) -> None:
+        """Take the next waiting link, if there is one."""
+        if self._quitting or self._busy or not self._queue:
+            return
+        url, media_format, force = self._queue.popleft()
+        log.info("Starting the next waiting download (%s left).", len(self._queue))
+        self._forced_format = media_format
+        self._force_redownload = force
+        self._start_worker(url)
 
     def _start_worker(self, url: str) -> None:
         """Open the navigation window and hand the URL to the pipeline.
@@ -367,6 +416,7 @@ class ClipsterApp:
         if nav is None:  # pragma: no cover - windows are built in __init__
             return
         self._busy = True
+        self._current_url = url
         self._set_status(self.messages["status_working"])
         nav.begin(self.messages["link_received"])
         self._cancel_event = threading.Event()
@@ -383,10 +433,16 @@ class ClipsterApp:
         self._cancel_event = None
         self._worker = None
         self._forced_format = ""
+        self._force_redownload = False
+        self._current_url = ""
         # Re-sync so clearing the clipboard cannot re-trigger the same link.
         self._last_seen = self.clipboard.read()
         self._busy = False
         self._set_status(self.messages.format(status_key, **kwargs))
+        if self._queue:
+            # A short delay lets the user see the result before the next
+            # question replaces it.
+            self.gui.root.after(1200, self._start_next)
 
     def _set_status(self, text: str) -> None:
         """Mirror the current status into the tray tooltip.
@@ -437,6 +493,12 @@ class ClipsterApp:
             media_format = answer.get("format") or "mp3"
             language = answer.get("language") or ""
             log.debug("Selected format: %s, audio track: %s", media_format, language or "best")
+
+            existing = self.history.find_download(url, media_format)
+            if existing is not None and not self._force_redownload:
+                log.info("%s is already downloaded - offering the existing file.", existing.name)
+                self.bridge.post(self._offer_existing, nav, info, existing, url, media_format)
+                return
 
             self._run_download(url, info, media_format, language)
         except Exception:  # pragma: no cover - defensive, keeps the app alive
@@ -492,6 +554,31 @@ class ClipsterApp:
             # here so the download never relies on yt-dlp guessing.
             answer["language"] = self._auto_language(info)
         return answer
+
+    def _offer_existing(self, nav: Any, info: VideoInfo, entry: HistoryEntry,
+                        url: str, media_format: str) -> None:
+        """Show the file that is already there instead of fetching it again.
+
+        :param nav: The navigation window.
+        :param info: The fetched video metadata.
+        :param entry: The earlier download.
+        :param url: The YouTube URL, for the "download again" button.
+        :param media_format: The chosen format, likewise.
+        :return: None
+        """
+        target = entry.file_path()
+        if target is None:  # vanished between the lookup and now
+            self._enqueue(url, media_format, force=True)
+            return
+
+        def again() -> None:
+            """Start the same download once more, on the user's request."""
+            nav.hide()
+            self._enqueue(url, media_format, force=True)
+
+        detail = "{0}  ·  {1}".format(entry.name, format_size(entry.size)) if entry.size else entry.name
+        nav.already_downloaded(info.title, target, detail, again)
+        self._finish_worker("status_done", title=_trim(entry.name, 55))
 
     def _run_download(self, url: str, info: VideoInfo, media_format: str, language: str) -> None:
         """Download the video and report the outcome.

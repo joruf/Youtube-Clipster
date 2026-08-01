@@ -105,7 +105,11 @@ class TkBridge:
         self._root = root
         self._interval = interval_ms
         self._queue: "queue.Queue[_Task]" = queue.Queue()
-        self._owner_thread: Optional[int] = None
+        # The bridge belongs to the thread that built the widgets, exactly like
+        # Tk itself.  Recording it here and not only in start() means a call
+        # made before the queue runs still executes directly instead of being
+        # refused as "bridge not running".
+        self._owner_thread: Optional[int] = threading.get_ident()
         self._running = False
 
     def start(self) -> None:

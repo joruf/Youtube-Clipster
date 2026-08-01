@@ -54,9 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
     runtime.add_argument("--config", metavar="FILE", help="path to an alternative config.json")
     runtime.add_argument("--lang", metavar="CODE", help="UI language, e.g. de or en")
     runtime.add_argument("--download-dir", metavar="DIR", help="target directory for downloads")
-    runtime.add_argument("--no-window", action="store_true", help="hide the small status window")
+    runtime.add_argument("--no-window", action="store_true",
+                         help="start in the tray without opening the view window")
     runtime.add_argument("--no-tray", action="store_true", help="do not place an icon in the system tray")
-    runtime.add_argument("--show-window", action="store_true", help="start with the status window open")
+    runtime.add_argument("--show-window", action="store_true",
+                         help="open the view window at startup")
     return parser
 
 
@@ -214,7 +216,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.download_dir:
         config.download_dir = args.download_dir
     if args.no_window:
-        config.show_status_window = False
+        config.start_minimized = True
     if args.no_tray:
         config.use_tray = False
     if args.show_window:

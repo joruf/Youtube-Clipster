@@ -176,6 +176,28 @@ class History:
         self.save()
         return entry
 
+    def find_download(self, url: str, media_format: str = "") -> Optional[HistoryEntry]:
+        """Return an earlier successful download of ``url`` whose file is still there.
+
+        Used to avoid fetching and converting a video a second time when the
+        same link is copied again.  The format has to match: the same video as
+        MP3 and as MP4 are two different downloads.
+
+        :param url: The canonical YouTube URL.
+        :param media_format: ``mp3`` or ``mp4``; empty matches any format.
+        :return: The matching entry, or ``None``.
+        """
+        if not url:
+            return None
+        for entry in self._entries:
+            if not entry.succeeded or entry.url != url:
+                continue
+            if media_format and entry.media_format != media_format:
+                continue
+            if entry.file_path() is not None:
+                return entry
+        return None
+
     def clear(self) -> None:
         """Drop every entry and save the empty list."""
         self._entries = []

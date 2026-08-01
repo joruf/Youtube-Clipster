@@ -478,6 +478,41 @@ class NavWindow:
             )
         self._resize()
 
+    def already_downloaded(self, title: str, path: Path, detail: str,
+                           on_again: Callable[[], None]) -> None:
+        """Report that this video is already on disk instead of fetching it again.
+
+        :param title: The video title.
+        :param path: The file that already exists.
+        :param detail: Muted second line, usually name and size.
+        :param on_again: Called when the user wants it downloaded once more.
+        :return: None
+        """
+        self._clear_form()
+        self._clear_buttons()
+        self._stop_bar()
+        self._bar.pack_forget()
+        self._result_path = path
+
+        self._headline.configure(text=_shorten(title))
+        if not self._status.winfo_ismapped():
+            self._status.pack(anchor="w", fill="x", pady=(PAD_SMALL, 0))
+        self._status.configure(text=self.messages["nav_already"], style="Success.TLabel")
+        self._detail.configure(text=detail)
+        if not self._detail.winfo_ismapped():
+            self._detail.pack(anchor="w", fill="x")
+
+        self._buttons.pack(fill="x", pady=(PAD, 0))
+        ttk.Button(self._buttons, text=self.messages["nav_close"], style="Accent.TButton",
+                   command=self._closed).pack(side="right")
+        ttk.Button(self._buttons, text=self.messages["history_open"],
+                   command=self._on_open_file).pack(side="right", padx=(0, PAD_SMALL))
+        ttk.Button(self._buttons, text=self.messages["history_folder"],
+                   command=self._on_open_folder).pack(side="right", padx=(0, PAD_SMALL))
+        ttk.Button(self._buttons, text=self.messages["nav_download_again"],
+                   command=on_again).pack(side="left")
+        self._resize()
+
     def result_path(self) -> Optional[Path]:
         """Return the file of the last finished download, if any."""
         return self._result_path
