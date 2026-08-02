@@ -22,9 +22,12 @@ from clipster.downloader import (
     _FfmpegProgressWatcher,
     _js_runtime,
     classify_error,
+    cookies_are_configured,
     extract_video_id,
     extract_youtube_url,
     free_space,
+    sanitize_error_detail,
+    user_facing_ytdlp_error,
 )
 
 CANONICAL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -105,6 +108,7 @@ def test_video_id_is_extracted() -> None:
     "message,expected",
     [
         ("Sign in to confirm you are not a bot", "bot"),
+        ("ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies-from-browser", "bot"),
         ("HTTP Error 429: Too Many Requests", "bot"),
         ("ERROR: Video unavailable", "unavailable"),
         ("This video is not available in your country", "unavailable"),
@@ -127,6 +131,74 @@ def test_a_bare_ffmpeg_failure_is_not_called_a_full_disk() -> None:
 def test_a_plain_write_error_is_not_called_a_full_disk() -> None:
     """It can just as well be a network problem."""
     assert classify_error("write error") == "generic"
+
+
+_BOT_SAMPLE = (
+    "ERROR: [youtube] dQw4w9WgXcQ: Sign in to confirm you're not a bot. "
+    "Use --cookies-from-browser or --cookies for the authentication. "
+    "See https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp "
+    "for how to manually pass cookies. Also see "
+    "https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies "
+    "for tips about exporting cookies from your browser"
+)
+
+
+def test_sanitize_error_detail_strips_wiki_urls() -> None:
+    cleaned = sanitize_error_detail(_BOT_SAMPLE)
+    assert "http" not in cleaned.lower()
+    assert "Sign in to confirm" in cleaned
+    assert len(cleaned) < len(_BOT_SAMPLE)
+
+
+def test_user_facing_playback_bot_hides_raw_ytdlp(messages) -> None:
+    text = user_facing_ytdlp_error(
+        _BOT_SAMPLE,
+        messages,
+        cookies_configured=False,
+        context="playback",
+    )
+    assert text == messages["discover_playback_bot"]
+    assert "Sign in to confirm" not in text
+    assert "github.com" not in text
+    assert "cookies-from-browser" not in text
+
+
+def test_user_facing_playback_bot_with_cookies(messages) -> None:
+    text = user_facing_ytdlp_error(
+        _BOT_SAMPLE,
+        messages,
+        cookies_configured=True,
+        context="playback",
+    )
+    assert text == messages["discover_playback_bot_with_cookies"]
+    assert "still blocked" in text.lower() or "trotzdem" in text.lower() or "sent" in text.lower()
+
+
+def test_user_facing_download_and_discover_bot_keys(messages) -> None:
+    assert user_facing_ytdlp_error(
+        _BOT_SAMPLE, messages, cookies_configured=False, context="download"
+    ) == messages["error_bot_detected"]
+    assert user_facing_ytdlp_error(
+        _BOT_SAMPLE, messages, cookies_configured=True, context="download"
+    ) == messages["error_bot_with_cookies"]
+    assert user_facing_ytdlp_error(
+        _BOT_SAMPLE, messages, cookies_configured=False, context="discover"
+    ) == messages["discover_blocked"]
+    assert user_facing_ytdlp_error(
+        _BOT_SAMPLE, messages, cookies_configured=True, context="discover"
+    ) == messages["discover_blocked_with_cookies"]
+
+
+def test_cookies_are_configured_requires_ack_and_source(config: Config) -> None:
+    assert cookies_are_configured(config) is False
+    config.cookies_from_browser = "firefox"
+    assert cookies_are_configured(config) is False
+    config.cookies_risk_acknowledged = True
+    assert cookies_are_configured(config) is True
+    config.cookies_from_browser = ""
+    assert cookies_are_configured(config) is False
+    config.cookies_file = "/tmp/cookies.txt"
+    assert cookies_are_configured(config) is True
 
 
 # ----------------------------------------------------------------------
@@ -185,6 +257,42 @@ def test_video_info_reports_its_original_language() -> None:
 def test_two_player_clients_are_requested(config: Config, messages) -> None:
     options = Downloader(config, messages)._base_options()
     assert options["extractor_args"]["youtube"]["player_client"] == ["default", "web_embedded"]
+
+
+def test_cookies_from_browser_are_passed_to_ytdlp(config: Config, messages) -> None:
+    config.cookies_risk_acknowledged = True
+    config.cookies_from_browser = "firefox"
+    options = Downloader(config, messages)._base_options()
+    assert options["cookiesfrombrowser"] == ("firefox",)
+
+
+def test_cookies_file_is_passed_to_ytdlp(config: Config, messages, tmp_path: Path) -> None:
+    cookie_path = tmp_path / "cookies.txt"
+    cookie_path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    config.cookies_risk_acknowledged = True
+    config.cookies_file = str(cookie_path)
+    options = Downloader(config, messages)._base_options()
+    assert options["cookiefile"] == str(cookie_path)
+    # Contents must never appear in options keys beyond the path.
+    assert "Netscape" not in str(options)
+
+
+def test_cookies_are_omitted_until_risk_acknowledged(config: Config, messages, tmp_path: Path) -> None:
+    cookie_path = tmp_path / "cookies.txt"
+    cookie_path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    config.cookies_from_browser = "firefox"
+    config.cookies_file = str(cookie_path)
+    config.cookies_risk_acknowledged = False
+    options = Downloader(config, messages)._base_options()
+    assert "cookiesfrombrowser" not in options
+    assert "cookiefile" not in options
+
+
+def test_cookies_off_by_default(config: Config, messages) -> None:
+    options = Downloader(config, messages)._base_options()
+    assert "cookiesfrombrowser" not in options
+    assert "cookiefile" not in options
+    assert config.cookies_risk_acknowledged is False
 
 
 def test_the_javascript_runtime_is_passed_as_a_dict(config: Config, messages) -> None:

@@ -17,7 +17,7 @@ import collections
 import signal
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import APP_SHORT_NAME, APP_TITLE, paths, shortcuts
 from .bridge import Prompt, TkBridge
@@ -30,12 +30,28 @@ from .downloader import (
     MetadataError,
     Progress,
     VideoInfo,
+    cookies_are_configured,
     extract_youtube_url,
+    user_facing_ytdlp_error,
 )
+from .discover import (
+    DiscoverOutcome,
+    DiscoverTrack,
+    discover_tracks,
+    resolve_discover_seeds,
+    seed_from_track,
+)
+from .discover_taste import DiscoverTaste, VOTE_DOWN
 from .gui import Gui
 from .history import STATUS_CANCELED, STATUS_FAILED, STATUS_OK, History, HistoryEntry, format_size
 from .i18n import Messages
 from .logging_setup import get_logger
+from .terms import (
+    accept_app_terms,
+    accept_streaming_terms,
+    app_terms_accepted,
+    streaming_terms_accepted,
+)
 from .tray import TrayIcon
 from . import updater
 
@@ -62,6 +78,7 @@ class ClipsterApp:
         self.download_dir = config.resolved_download_dir()
 
         self.history = History(limit=config.history_limit).load()
+        self.taste = DiscoverTaste().load()
         self.gui = Gui(messages, config, self.download_dir)
         self.bridge = TkBridge(self.gui.root)
         self.clipboard = Clipboard(self.gui.root)
@@ -101,6 +118,7 @@ class ClipsterApp:
         self.gui.on_view_closed = self._view_closed
         self.gui.on_play_entry = self._play_entry
         self.gui.on_delete_entry = self._delete_entry
+        self.gui.on_hide_entry = self._hide_entry
         self.gui.on_reveal_entry = self._reveal_entry
         self.gui.on_clear_history = self._clear_history
         self.gui.on_open_folder = self._open_download_folder
@@ -110,7 +128,24 @@ class ClipsterApp:
         self.gui.on_install_update = self._install_update
         self.gui.on_open_result = self._open_result
         self.gui.on_reveal_result = self._reveal_result
+        self.gui.on_discover_refresh = self._discover_refresh
+        self.gui.on_discover_download = self._discover_download
+        self.gui.on_discover_pick_folder = self._discover_pick_folder
+        self.gui.on_discover_extend = self._discover_extend
+        self.gui.on_discover_like = self._discover_like
+        self.gui.on_discover_dislike = self._discover_dislike
+        self.gui.on_show_terms = self._show_terms
         self.gui.build_windows()
+        if self.gui.view is not None and self.gui.view.discover is not None:
+            self.gui.view.discover.player.set_options_provider(self.downloader._base_options)
+            self.gui.view.discover.ensure_terms = self._ensure_streaming_terms
+
+        self._discover_cancel = threading.Event()
+        self._discover_busy = False
+        self._discover_extending = False
+        #: Ignore tray "show" callbacks until startup visibility has been applied
+        #: (some backends fire activate while the icon is created).
+        self._tray_show_armed = False
 
     @property
     def _busy(self) -> bool:
@@ -142,6 +177,7 @@ class ClipsterApp:
         if self.config.use_tray:
             self._tray_active = self.tray.start()
         self._apply_initial_visibility()
+        self._tray_show_armed = True
 
         # Ignore whatever is already in the clipboard at startup.
         self._last_seen = self.clipboard.read()
@@ -184,10 +220,13 @@ class ClipsterApp:
         """Decide whether the view window is shown at startup.
 
         Without a working tray icon the window is the only way to quit the
-        program, so it is forced visible in that case.
+        program, so it is forced visible in that case.  Tray + start_minimized
+        must not deiconify the Streaming/view window — only the tray icon
+        (and an optional toast) belong on screen.
         """
         if self._tray_active:
             if self.config.start_minimized:
+                self.gui.hide_view()
                 log.info("Started in the system tray.")
                 return
             self.gui.show_view()
@@ -199,14 +238,69 @@ class ClipsterApp:
             log.warning("Without a tray icon the window is the only way to quit - showing it.")
         self.gui.show_view()
 
+    def _keep_tray_start_hidden(self) -> None:
+        """Re-hide the view after modal startup dialogs when tray-start is on."""
+        if self._tray_active and self.config.start_minimized:
+            self.gui.hide_view()
+
     def _post_start(self) -> None:
         """Run the one-off tasks that need a live event loop."""
-        if self.config.show_startup_notification and not self.tray.notify(self.messages["started"]):
-            self.gui.toast(self.messages["started"])
+        if not self._ensure_app_terms():
+            return
+        # Terms (or other modals) must not leave Streaming open behind them.
+        self._keep_tray_start_hidden()
+        # No OS balloon / toast for "started" — especially noisy when tray-minimized.
         self._sync_autostart()
         self._maybe_offer_desktop_shortcut()
+        self._keep_tray_start_hidden()
         if self.config.check_updates and updater.due(self.config.update_check_hours):
             self._check_updates(announce=False)
+
+    def _ensure_app_terms(self) -> bool:
+        """Require acceptance of the general terms before normal startup continues."""
+        if app_terms_accepted(self.config):
+            return True
+        accepted = self.gui.ask_terms_acceptance(
+            title_key="terms_app_title",
+            body_key="terms_app_body",
+        )
+        if not accepted:
+            log.info("User declined the general terms of use.")
+            self.request_quit()
+            return False
+        accept_app_terms(self.config)
+        log.info("User accepted the general terms of use (v%s).", self.config.terms_app_version)
+        return True
+
+    def _ensure_streaming_terms(self) -> bool:
+        """Require Streaming-specific terms before Discover actions run."""
+        if streaming_terms_accepted(self.config):
+            return True
+        accepted = self.gui.ask_terms_acceptance(
+            title_key="terms_streaming_title",
+            body_key="terms_streaming_body",
+        )
+        if not accepted:
+            log.info("User declined the Streaming terms of use.")
+            page = self.gui.view.discover if self.gui.view is not None else None
+            if page is not None:
+                page.set_status(self.messages["terms_streaming_declined"], "warn")
+            else:
+                self.gui.toast(self.messages["terms_streaming_declined"])
+            return False
+        accept_streaming_terms(self.config)
+        log.info(
+            "User accepted the Streaming terms of use (v%s).",
+            self.config.terms_streaming_version,
+        )
+        return True
+
+    def _show_terms(self) -> None:
+        """Open the combined terms documents from the About page."""
+        self.gui.show_terms_document(
+            title_key="terms_app_title",
+            body_keys=("terms_app_body", "terms_streaming_body"),
+        )
 
     # ------------------------------------------------------------------
     # Updates
@@ -323,6 +417,7 @@ class ClipsterApp:
             return
         self._quitting = True
         self._quit_event.set()
+        self._discover_cancel.set()
         self._queue.clear()
         self._cancel_all()
         try:
@@ -334,7 +429,10 @@ class ClipsterApp:
         """Release every resource after the event loop has ended."""
         self._quitting = True
         self._quit_event.set()
+        self._discover_cancel.set()
         self._cancel_all()
+        if self.gui.view is not None and self.gui.view.discover is not None:
+            self.gui.view.discover.destroy_player()
         for worker in list(self._active.values()):
             if worker.is_alive():
                 worker.join(timeout=5.0)
@@ -352,6 +450,9 @@ class ClipsterApp:
     # ------------------------------------------------------------------
     def _show_view(self) -> None:
         """Bring the view window up from the tray."""
+        if not self._tray_show_armed:
+            log.debug("Ignoring tray show before startup visibility is ready.")
+            return
         self.gui.show_view()
 
     def _nav_closed(self) -> None:
@@ -407,6 +508,316 @@ class ClipsterApp:
         log.info("Download requested from the view window.")
         self._enqueue(target, media_format)
 
+    def _discover_refresh(self, folder: Optional[Path] = None) -> None:
+        """Search for related songs on a worker thread.
+
+        Seeds prefer the download history.  When that is empty, media files in
+        the download folder are used.  Passing ``folder`` forces a scan of that
+        directory (songs the user likes, even without Clipster history).
+        """
+        if not self._ensure_streaming_terms():
+            return
+        if self._discover_busy:
+            return
+        view = self.gui.view
+        page = view.discover if view is not None else None
+        if page is None:
+            return
+        seeds, source = resolve_discover_seeds(
+            self.history.entries,
+            self.download_dir,
+            folder=folder,
+            min_folder_seeds=self.config.discover_min_folder_seeds,
+        )
+        seeds = self.taste.merge_seeds(seeds)
+        if not seeds:
+            page.show_empty("discover_no_seeds")
+            return
+        mode = page.selected_mode()
+        self.config.discover_mode = mode
+        self.config.save()
+        self._discover_cancel.clear()
+        self._discover_busy = True
+        if source == "folder" and folder is not None:
+            loading = self.messages.format("discover_loading_folder", path=str(folder))
+        elif source == "download_dir":
+            loading = self.messages.format(
+                "discover_loading_folder", path=str(self.download_dir)
+            )
+        else:
+            loading = self.messages["discover_loading"]
+        page.set_busy(True, loading)
+        page.begin_discover()
+        exclude = set(self.taste.excluded_ids()) | page.video_ids()
+
+        def on_progress(current: int, total: int, title: str) -> None:
+            self.bridge.post(page.show_progress, current, total, title)
+
+        def on_batch(tracks: List[DiscoverTrack]) -> None:
+            self.bridge.post(self._discover_batch, list(tracks))
+
+        def worker() -> None:
+            try:
+                outcome = discover_tracks(
+                    seeds,
+                    self.config,
+                    mode=mode,
+                    base_options=self.downloader._base_options(),
+                    cancel_check=self._discover_cancel.is_set,
+                    progress=on_progress,
+                    on_batch=on_batch,
+                    exclude_ids=exclude,
+                )
+            except Exception as exc:
+                log.exception("Discover search failed")
+                self.bridge.post(self._discover_failed, str(exc))
+                return
+            self.bridge.post(self._discover_ready, outcome)
+
+        threading.Thread(target=worker, name="clipster-discover", daemon=True).start()
+
+    def _discover_batch(self, tracks: List[DiscoverTrack]) -> None:
+        """Append tracks as soon as a seed batch arrives during Find Similar."""
+        if not self._discover_busy:
+            return
+        page = self.gui.view.discover if self.gui.view is not None else None
+        if page is None or not tracks:
+            return
+        filtered = self.taste.filter_tracks(tracks)
+        if not filtered:
+            return
+        page.append_tracks(filtered, update_status=False)
+
+    def _discover_ready(self, outcome: DiscoverOutcome) -> None:
+        """Show Discover results and status on the UI thread."""
+        self._discover_busy = False
+        page = self.gui.view.discover if self.gui.view is not None else None
+        if page is None:
+            return
+        outcome.tracks = self.taste.filter_tracks(outcome.tracks)
+        # Keep rows already streamed in; only append anything still missing
+        # (e.g. suffix-relaxed fallback that arrives at the end).
+        known = page.video_ids()
+        missing = [track for track in outcome.tracks if track.video_id not in known]
+        if missing:
+            page.append_tracks(missing, update_status=False)
+        queue_count = len(page._tracks) if page._tracks else len(outcome.tracks)
+        status, level = self._discover_status_text(outcome, queue_count=queue_count)
+        page.finish_discover(status=status, level=level)
+
+    def _discover_pick_folder(self) -> None:
+        """Ask for a folder of liked songs and run Discover from its files."""
+        if not self._ensure_streaming_terms():
+            return
+        if self._discover_busy:
+            return
+        view = self.gui.view
+        if view is None or view.window is None:
+            return
+        from tkinter import filedialog
+
+        chosen = filedialog.askdirectory(
+            parent=view.window,
+            title=self.messages["discover_from_folder"],
+            initialdir=str(self.download_dir),
+        )
+        if not chosen:
+            return
+        self._discover_refresh(folder=Path(chosen))
+
+    def _discover_like(self, track: DiscoverTrack) -> None:
+        """Remember a thumbs-up and load more songs like this one."""
+        self.taste.like(track)
+        page = self.gui.view.discover if self.gui.view is not None else None
+        if page is not None:
+            page.set_status(self.messages["discover_liked"], "ok")
+        if self._discover_busy or self._discover_extending:
+            return
+        self._discover_extend(track)
+
+    def _discover_dislike(self, track: DiscoverTrack) -> None:
+        """Remember a thumbs-down, drop the track, and skip ahead."""
+        self.taste.dislike(track)
+        page = self.gui.view.discover if self.gui.view is not None else None
+        if page is None:
+            return
+        # Drop near-duplicates first so play_next does not land on another dislike.
+        for item in list(page._tracks):
+            if item.video_id and item.video_id != track.video_id and self.taste.is_blocked(item):
+                page.remove_track(item.video_id, play_next=False)
+        page.remove_track(track.video_id, play_next=True)
+        page.set_status(self.messages["discover_disliked"], "info")
+
+    def _discover_extend(self, track: DiscoverTrack) -> None:
+        """Fetch more related songs from ``track`` and append them to the list."""
+        if self._discover_busy or self._discover_extending:
+            # Keep _extend_requested / resume-after-extend so a later finish can continue.
+            return
+        view = self.gui.view
+        page = view.discover if view is not None else None
+        if page is None:
+            return
+        if self.taste.vote_for(track.video_id) == VOTE_DOWN:
+            page.mark_extend_idle()
+            return
+        mode = page.selected_mode()
+        exclude = page.video_ids() | self.taste.excluded_ids()
+        batch = max(1, int(self.config.discover_extend_count))
+        self._discover_extending = True
+
+        def worker() -> None:
+            try:
+                outcome = discover_tracks(
+                    [seed_from_track(track)],
+                    self.config,
+                    mode=mode,
+                    base_options=self.downloader._base_options(),
+                    cancel_check=self._discover_cancel.is_set,
+                    exclude_ids=exclude,
+                    limit=batch,
+                )
+            except Exception as exc:
+                log.exception("Discover extend failed")
+                self.bridge.post(self._discover_extend_failed, str(exc))
+                return
+            self.bridge.post(self._discover_extend_ready, outcome)
+
+        threading.Thread(target=worker, name="clipster-discover-extend", daemon=True).start()
+
+    def _discover_extend_ready(self, outcome: DiscoverOutcome) -> None:
+        """Append topped-up Discover tracks on the UI thread."""
+        self._discover_extending = False
+        page = self.gui.view.discover if self.gui.view is not None else None
+        if page is None:
+            return
+        page.set_loading(False)
+        outcome.tracks = self.taste.filter_tracks(outcome.tracks)
+        if outcome.blocked and not outcome.tracks:
+            if outcome.error_summary:
+                log.warning("Discover extend blocked by YouTube: %s", outcome.error_summary)
+            page.mark_extend_idle()
+            page.set_status(self.messages["discover_blocked"], "error")
+            return
+        added = page.append_tracks(outcome.tracks)
+        if added:
+            page.set_status(
+                self.messages.format(
+                    "discover_extended",
+                    added=added,
+                    count=len(page._tracks),
+                ),
+                "ok",
+            )
+        elif outcome.blocked:
+            page.set_status(self.messages["discover_blocked_partial"], "warn")
+        else:
+            page.mark_extend_idle()
+            page.set_status(self.messages["discover_extend_empty"], "warn")
+
+    def _discover_extend_failed(self, details: str) -> None:
+        """Show a Discover top-up error on the UI thread."""
+        self._discover_extending = False
+        page = self.gui.view.discover if self.gui.view is not None else None
+        if page is not None:
+            page.mark_extend_idle()
+            page.set_loading(False)
+            page.set_status(
+                user_facing_ytdlp_error(
+                    details,
+                    self.messages,
+                    cookies_configured=cookies_are_configured(self.config),
+                    context="discover",
+                ),
+                "error",
+            )
+
+    def _discover_status_text(
+        self,
+        outcome: DiscoverOutcome,
+        *,
+        queue_count: Optional[int] = None,
+    ) -> Tuple[str, str]:
+        """Build the Status-box message for a finished Discover run.
+
+        :param outcome: Finished Discover search result.
+        :param queue_count: Optional live queue size when batches already filled the list.
+        """
+        count = len(outcome.tracks) if queue_count is None else max(0, int(queue_count))
+        has_tracks = count > 0 or bool(outcome.tracks)
+        cookies_on = cookies_are_configured(self.config)
+        if outcome.blocked and not has_tracks:
+            if outcome.error_summary:
+                log.warning("Discover blocked by YouTube: %s", outcome.error_summary)
+            key = "discover_blocked_with_cookies" if cookies_on else "discover_blocked"
+            return self.messages[key], "error"
+        if outcome.blocked and has_tracks:
+            base = self.messages.format("discover_results", count=count or len(outcome.tracks))
+            return "{0} — {1}".format(base, self.messages["discover_blocked_partial"]), "warn"
+        genre_note = ""
+        if outcome.detected_genres:
+            genre_note = self.messages.format(
+                "discover_genres_detected",
+                genres=", ".join(outcome.detected_genres),
+            )
+        if outcome.suffix_relaxed and has_tracks:
+            base = self.messages.format("discover_results", count=count or len(outcome.tracks))
+            ending = self.config.discover_search_suffix.strip() or "lyrics"
+            note = self.messages.format("discover_suffix_relaxed", suffix=ending)
+            parts = [base, note]
+            if genre_note:
+                parts.append(genre_note)
+            return " — ".join(parts), "warn"
+        if has_tracks:
+            base = self.messages.format("discover_results", count=count or len(outcome.tracks))
+            parts = [base]
+            if genre_note:
+                parts.append(genre_note)
+            if outcome.genre_adapted:
+                parts.append(self.messages["discover_genre_adapted"])
+            return " — ".join(parts), "ok"
+        if outcome.raw_hits and self.config.discover_require_suffix:
+            ending = self.config.discover_search_suffix.strip() or "lyrics"
+            return self.messages.format("discover_filtered_empty", suffix=ending, count=outcome.raw_hits), "warn"
+        if outcome.warnings:
+            detail = outcome.error_summary or outcome.warnings[0]
+            return (
+                user_facing_ytdlp_error(
+                    detail,
+                    self.messages,
+                    cookies_configured=cookies_on,
+                    context="discover",
+                ),
+                "error",
+            )
+        if outcome.canceled:
+            return self.messages["discover_canceled"], "warn"
+        return self.messages["discover_empty"], "warn"
+
+    def _discover_failed(self, details: str) -> None:
+        """Show a Discover error on the UI thread."""
+        self._discover_busy = False
+        page = self.gui.view.discover if self.gui.view is not None else None
+        if page is not None:
+            page.show_error(details)
+
+    def _discover_download(self, track: DiscoverTrack) -> None:
+        """Queue an automatic download with the configured defaults.
+
+        Format and language dialogs are skipped: the default format from Settings
+        is used and the original / best audio track is chosen automatically.
+        """
+        if not self._ensure_streaming_terms():
+            return
+        target = extract_youtube_url(track.url)
+        if not target:
+            self.gui.show_error(self.messages["error_title"], self.messages["error_not_a_link"])
+            return
+        media_format = self.config.default_format if self.config.default_format in ("mp3", "mp4") else "mp3"
+        log.info("Discover auto-download: %s (%s)", track.title, media_format)
+        # Stay on Streaming — do not jump to the Downloads tab.
+        self.gui.show_view("discover")
+        self._enqueue(target, media_format)
+
     # ------------------------------------------------------------------
     # The download list
     # ------------------------------------------------------------------
@@ -449,6 +860,15 @@ class ClipsterApp:
                     self.messages.format("history_delete_failed", details=exc),
                 )
                 return
+        self.history.remove(entry)
+        self.gui.render_history(self.history.entries)
+
+    def _hide_entry(self, entry: HistoryEntry) -> None:
+        """Remove ``entry`` from the Downloads list but keep the file on disk.
+
+        :param entry: The row to hide.
+        :return: None
+        """
         self.history.remove(entry)
         self.gui.render_history(self.history.entries)
 
@@ -649,9 +1069,13 @@ class ClipsterApp:
                 info = self.downloader.fetch_info(url)
             except MetadataError as exc:
                 self.bridge.post(self._question_answered)
-                details = _short_error(exc)
-                log.error("Video information could not be loaded: %s", details)
-                message = self.messages.format("error_metadata", details=details)
+                log.error("Video information could not be loaded: %s", exc)
+                message = user_facing_ytdlp_error(
+                    str(exc),
+                    self.messages,
+                    cookies_configured=cookies_are_configured(self.config),
+                    context="metadata",
+                )
                 self._nav_post(url, "finish", message, STATUS_FAILED)
                 self._store(url=url, status=STATUS_FAILED, error=message, error_kind="metadata")
                 self.bridge.post(self._finish_worker, url, "status_failed")
@@ -849,7 +1273,11 @@ class ClipsterApp:
         if self.config.open_folder_after_download:
             shortcuts.open_folder(self.download_dir, self.config.file_manager)
         if self.config.open_view_after_download:
-            self.bridge.post(self.gui.show_view, "downloads")
+            # Keep Streaming visible when the download was started from there.
+            page = "downloads"
+            if self.gui.view is not None and self.gui.view.current_page == "discover":
+                page = "discover"
+            self.bridge.post(self.gui.show_view, page)
 
         log.info("%s (%s)", self.messages["progress_finished"], name)
         self.bridge.post(self._finish_worker, url, "status_done", title=_trim(name, 55))
@@ -927,13 +1355,12 @@ class ClipsterApp:
         :param error: The raised error.
         :return: The message shown to the user and stored in the history.
         """
-        if error.kind == "diskfull":
-            return self.messages.format("error_disk_full", details=_short_error(error))
-        if error.kind == "bot":
-            return self.messages["error_bot_detected"]
-        if error.kind == "unavailable":
-            return self.messages["error_unavailable"]
-        return self.messages.format("error_generic", details=_short_error(error))
+        return user_facing_ytdlp_error(
+            str(error),
+            self.messages,
+            cookies_configured=cookies_are_configured(self.config),
+            context="download",
+        )
 
     def _open_download_folder(self) -> None:
         """Open the configured download folder in the file manager."""

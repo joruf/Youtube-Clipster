@@ -19,15 +19,16 @@ from __future__ import annotations
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Sequence
 
-from . import APP_SHORT_NAME, paths, theme
+from . import APP_SHORT_NAME, i18n, paths, theme
 from .config import Config
+from .discover import DiscoverTrack
 from .history import HistoryEntry
 from .i18n import Messages
 from .logging_setup import get_logger
 from .navwindow import NavWindow
-from .theme import PAD
+from .theme import PAD, PAD_SMALL
 from .viewwindow import ViewWindow
 
 log = get_logger(__name__)
@@ -53,6 +54,7 @@ class Gui:
         self.on_play_entry: Optional[Callable[[HistoryEntry], None]] = None
         self.on_reveal_entry: Optional[Callable[[HistoryEntry], None]] = None
         self.on_delete_entry: Optional[Callable[[HistoryEntry], None]] = None
+        self.on_hide_entry: Optional[Callable[[HistoryEntry], None]] = None
         self.on_clear_history: Optional[Callable[[], None]] = None
         self.on_open_folder: Optional[Callable[[], None]] = None
         self.on_submit_url: Optional[Callable[[str, str], None]] = None
@@ -61,6 +63,13 @@ class Gui:
         self.on_install_update: Optional[Callable[[], None]] = None
         self.on_open_result: Optional[Callable[[], None]] = None
         self.on_reveal_result: Optional[Callable[[], None]] = None
+        self.on_discover_refresh: Optional[Callable[[], None]] = None
+        self.on_discover_download: Optional[Callable[[DiscoverTrack], None]] = None
+        self.on_discover_pick_folder: Optional[Callable[[], None]] = None
+        self.on_discover_extend: Optional[Callable[[DiscoverTrack], None]] = None
+        self.on_discover_like: Optional[Callable[[DiscoverTrack], None]] = None
+        self.on_discover_dislike: Optional[Callable[[DiscoverTrack], None]] = None
+        self.on_show_terms: Optional[Callable[[], None]] = None
 
         self.root = tk.Tk()
         self.root.withdraw()
@@ -120,12 +129,20 @@ class Gui:
             on_play_entry=self._play_entry,
             on_reveal_entry=self._reveal_entry,
             on_delete_entry=self._delete_entry,
+            on_hide_entry=self._hide_entry,
             on_clear_history=self._clear_history,
             on_open_folder=self._open_folder,
             on_submit_url=self._submit_url,
             on_save_settings=self._save_settings,
             on_check_updates=self._check_updates,
             on_install_update=self._install_update,
+            on_discover_refresh=self._discover_refresh,
+            on_discover_download=self._discover_download,
+            on_discover_pick_folder=self._discover_pick_folder,
+            on_discover_extend=self._discover_extend,
+            on_discover_like=self._discover_like,
+            on_discover_dislike=self._discover_dislike,
+            on_show_terms=self._show_terms,
         )
 
     # ------------------------------------------------------------------
@@ -154,15 +171,14 @@ class Gui:
             self.on_play_entry(entry)
 
     def _delete_entry(self, entry: HistoryEntry) -> None:
-        """Ask for confirmation, then forward the "delete" button of a row.
-
-        Deleting removes the file from the disk, so it is never done silently.
-        """
-        question = self.messages.format("history_delete_confirm", name=entry.name)
-        if not self.ask_yes_no(self.messages["history_delete"], question):
-            return
+        """Forward the "delete" button of a table row (file + list, no prompt)."""
         if self.on_delete_entry is not None:
             self.on_delete_entry(entry)
+
+    def _hide_entry(self, entry: HistoryEntry) -> None:
+        """Forward the "hide" button — drop the row, keep the file on disk."""
+        if self.on_hide_entry is not None:
+            self.on_hide_entry(entry)
 
     def _reveal_entry(self, entry: HistoryEntry) -> None:
         """Forward the "folder" button of a table row."""
@@ -198,11 +214,46 @@ class Gui:
 
     def _install_update(self) -> None:
         """Ask for confirmation, then forward the install request."""
-        if not self.ask_yes_no(self.messages["update_install"],
-                               self.messages["update_confirm"]):
+        if self.on_install_update is None:
             return
-        if self.on_install_update is not None:
-            self.on_install_update()
+        if not self.ask_yes_no(self.messages["update_install"], self.messages["update_confirm"]):
+            return
+        self.on_install_update()
+
+    def _discover_refresh(self) -> None:
+        """Forward the Discover refresh button."""
+        if self.on_discover_refresh is not None:
+            self.on_discover_refresh()
+
+    def _discover_pick_folder(self) -> None:
+        """Forward the Discover "from folder" button."""
+        if self.on_discover_pick_folder is not None:
+            self.on_discover_pick_folder()
+
+    def _discover_extend(self, track: DiscoverTrack) -> None:
+        """Forward a request to top up the Discover playlist."""
+        if self.on_discover_extend is not None:
+            self.on_discover_extend(track)
+
+    def _discover_like(self, track: DiscoverTrack) -> None:
+        """Forward a Streaming thumbs-up."""
+        if self.on_discover_like is not None:
+            self.on_discover_like(track)
+
+    def _discover_dislike(self, track: DiscoverTrack) -> None:
+        """Forward a Streaming thumbs-down."""
+        if self.on_discover_dislike is not None:
+            self.on_discover_dislike(track)
+
+    def _discover_download(self, track: DiscoverTrack) -> None:
+        """Forward a Discover auto-download request."""
+        if self.on_discover_download is not None:
+            self.on_discover_download(track)
+
+    def _show_terms(self) -> None:
+        """Forward the About-page request to show the terms documents."""
+        if self.on_show_terms is not None:
+            self.on_show_terms()
 
     def show_update_state(self, text: str, offer_install: bool, busy: bool = False) -> None:
         """Pass the update situation on to the about page.
@@ -231,7 +282,8 @@ class Gui:
     def show_view(self, page: Optional[str] = None) -> None:
         """Show the large window.
 
-        :param page: Optionally switch to ``downloads``, ``settings`` or ``about``.
+        :param page: Optionally switch to ``discover``, ``downloads``,
+            ``settings`` or ``about``.
         :return: None
         """
         if self.view is not None:
@@ -266,6 +318,249 @@ class Gui:
         :return: ``True`` when the user confirmed.
         """
         return bool(messagebox.askyesno(title=title, message=question, parent=self._dialog_parent()))
+
+    def ask_terms_acceptance(
+        self,
+        title_key: str,
+        body_key: str,
+        checkbox_key: str = "terms_checkbox",
+        accept_key: str = "terms_accept",
+        decline_key: str = "terms_decline",
+    ) -> bool:
+        """Show versioned terms with a required checkbox before Accept.
+
+        The dialog can switch between English and German display text without
+        changing ``config.language``.  The acceptance checkbox state is kept.
+
+        :param title_key: Locale key for the dialog title.
+        :param body_key: Locale key for the scrollable terms body.
+        :param checkbox_key: Locale key for the agreement checkbox.
+        :param accept_key: Locale key for the Accept button.
+        :param decline_key: Locale key for the Decline button.
+        :return: ``True`` when the user checked the box and accepted.
+        """
+        result = {"accepted": False}
+        parent = self._dialog_parent()
+        dialog = tk.Toplevel(parent)
+        dialog.withdraw()
+        dialog.transient(parent)
+        dialog.configure(background=self.palette.base)
+        dialog.resizable(True, True)
+
+        frame = ttk.Frame(dialog, style="Panel.TFrame", padding=PAD)
+        frame.pack(fill="both", expand=True)
+
+        title_label = ttk.Label(frame, text="", style="Title.TLabel")
+        title_label.pack(anchor="w")
+        lang_row = self._pack_terms_language_row(frame)
+
+        text = self._build_terms_text_widget(frame)
+        agreed = tk.BooleanVar(value=False)
+        accept_btn = ttk.Button(frame, text="", style="Accent.TButton", state="disabled")
+
+        def _sync_accept(*_args: object) -> None:
+            accept_btn.configure(state="normal" if agreed.get() else "disabled")
+
+        checkbox = ttk.Checkbutton(
+            frame,
+            text="",
+            variable=agreed,
+            command=_sync_accept,
+            style="TCheckbutton",
+        )
+        checkbox.pack(anchor="w", pady=(PAD, 0))
+
+        buttons = ttk.Frame(frame, style="Panel.TFrame")
+        buttons.pack(fill="x", pady=(PAD, 0))
+        decline_btn = ttk.Button(buttons, text="", style="Row.TButton")
+
+        def accept() -> None:
+            if not agreed.get():
+                return
+            result["accepted"] = True
+            dialog.destroy()
+
+        def decline() -> None:
+            result["accepted"] = False
+            dialog.destroy()
+
+        accept_btn.configure(command=accept)
+        decline_btn.configure(command=decline)
+        accept_btn.pack(side="right")
+        decline_btn.pack(side="right", padx=(0, PAD))
+
+        def apply_language(code: str) -> None:
+            msgs = i18n.load(code)
+            title = msgs[title_key]
+            body = msgs[body_key]
+            dialog.title(title)
+            title_label.configure(text=title)
+            self._set_terms_text(text, body)
+            checkbox.configure(text=msgs[checkbox_key])
+            accept_btn.configure(text=msgs[accept_key])
+            decline_btn.configure(text=msgs[decline_key])
+            self._refresh_terms_language_labels(lang_row, msgs)
+            _sync_accept()
+
+        lang_var = self._bind_terms_language_row(lang_row, apply_language)
+        apply_language(lang_var.get())
+
+        dialog._terms_text = text  # type: ignore[attr-defined]
+        dialog._terms_lang_var = lang_var  # type: ignore[attr-defined]
+        dialog._terms_agreed = agreed  # type: ignore[attr-defined]
+        dialog._terms_apply_language = apply_language  # type: ignore[attr-defined]
+
+        dialog.protocol("WM_DELETE_WINDOW", decline)
+        dialog.update_idletasks()
+        width = max(560, dialog.winfo_reqwidth())
+        height = max(420, dialog.winfo_reqheight())
+        dialog.geometry("{0}x{1}".format(width, height))
+        dialog.deiconify()
+        dialog.grab_set()
+        dialog.focus_set()
+        dialog.wait_window()
+        return bool(result["accepted"])
+
+    def show_terms_document(
+        self,
+        title_key: str,
+        body_keys: Sequence[str],
+        close_key: str = "terms_close",
+    ) -> None:
+        """Show a read-only scrollable terms document (About page).
+
+        Supports switching the displayed language without changing
+        ``config.language``.
+
+        :param title_key: Locale key for the dialog title.
+        :param body_keys: Locale keys joined with blank lines into the body.
+        :param close_key: Locale key for the Close button.
+        :return: None
+        """
+        parent = self._dialog_parent()
+        dialog = tk.Toplevel(parent)
+        dialog.withdraw()
+        dialog.transient(parent)
+        dialog.configure(background=self.palette.base)
+        dialog.resizable(True, True)
+
+        frame = ttk.Frame(dialog, style="Panel.TFrame", padding=PAD)
+        frame.pack(fill="both", expand=True)
+        title_label = ttk.Label(frame, text="", style="Title.TLabel")
+        title_label.pack(anchor="w")
+        lang_row = self._pack_terms_language_row(frame)
+
+        text = self._build_terms_text_widget(frame)
+        close_btn = ttk.Button(frame, text="", style="Accent.TButton", command=dialog.destroy)
+        close_btn.pack(anchor="e", pady=(PAD, 0))
+
+        def apply_language(code: str) -> None:
+            msgs = i18n.load(code)
+            title = msgs[title_key]
+            body = "\n\n".join(msgs[key] for key in body_keys)
+            dialog.title(title)
+            title_label.configure(text=title)
+            self._set_terms_text(text, body)
+            close_btn.configure(text=msgs[close_key])
+            self._refresh_terms_language_labels(lang_row, msgs)
+
+        lang_var = self._bind_terms_language_row(lang_row, apply_language)
+        apply_language(lang_var.get())
+
+        dialog._terms_text = text  # type: ignore[attr-defined]
+        dialog._terms_lang_var = lang_var  # type: ignore[attr-defined]
+        dialog._terms_apply_language = apply_language  # type: ignore[attr-defined]
+
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.update_idletasks()
+        dialog.geometry("{0}x{1}".format(max(560, dialog.winfo_reqwidth()), max(420, dialog.winfo_reqheight())))
+        dialog.deiconify()
+        dialog.grab_set()
+        dialog.wait_window()
+
+    def _terms_initial_language(self) -> str:
+        """Return the UI language to use when a terms dialog opens."""
+        code = (self.messages.language or i18n.DEFAULT_LANGUAGE).lower()
+        return code if code in ("en", "de") else i18n.DEFAULT_LANGUAGE
+
+    def _pack_terms_language_row(self, frame: ttk.Frame) -> ttk.Frame:
+        """Create the English/Deutsch toggle row (widgets bound later)."""
+        row = ttk.Frame(frame, style="Panel.TFrame")
+        row.pack(anchor="w", pady=(PAD_SMALL, 0))
+        return row
+
+    def _bind_terms_language_row(
+        self,
+        row: ttk.Frame,
+        apply_language: Callable[[str], None],
+    ) -> tk.StringVar:
+        """Fill the language row and wire it to ``apply_language``.
+
+        :param row: Empty language toggle row.
+        :param apply_language: Called with ``en`` or ``de`` when the user toggles.
+        :return: The language StringVar (initialised from the current UI language).
+        """
+        lang_var = tk.StringVar(value=self._terms_initial_language())
+        buttons: List[ttk.Radiobutton] = []
+
+        def on_toggle() -> None:
+            apply_language(lang_var.get())
+
+        for code, key in (("en", "terms_lang_en"), ("de", "terms_lang_de")):
+            button = ttk.Radiobutton(
+                row,
+                text=self.messages[key],
+                value=code,
+                variable=lang_var,
+                command=on_toggle,
+                style="TRadiobutton",
+            )
+            button.pack(side="left", padx=(0, PAD))
+            buttons.append(button)
+        row._terms_lang_buttons = buttons  # type: ignore[attr-defined]
+        return lang_var
+
+    def _refresh_terms_language_labels(self, row: ttk.Frame, msgs: Messages) -> None:
+        """Update English/Deutsch control captions for the active display locale."""
+        buttons = getattr(row, "_terms_lang_buttons", None)
+        if not buttons:
+            return
+        for button, key in zip(buttons, ("terms_lang_en", "terms_lang_de")):
+            button.configure(text=msgs[key])
+
+    def _build_terms_text_widget(self, frame: ttk.Frame) -> tk.Text:
+        """Create the scrollable terms body Text widget."""
+        text_wrap = ttk.Frame(frame, style="Panel.TFrame")
+        text_wrap.pack(fill="both", expand=True, pady=(PAD, 0))
+        scroll = ttk.Scrollbar(text_wrap)
+        scroll.pack(side="right", fill="y")
+        text = tk.Text(
+            text_wrap,
+            wrap="word",
+            height=18,
+            width=72,
+            yscrollcommand=scroll.set,
+            background=self.palette.panel,
+            foreground=self.palette.text,
+            insertbackground=self.palette.text,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=self.palette.border,
+            padx=8,
+            pady=8,
+        )
+        text.pack(side="left", fill="both", expand=True)
+        scroll.configure(command=text.yview)
+        return text
+
+    @staticmethod
+    def _set_terms_text(text: tk.Text, body: str) -> None:
+        """Replace the scrollable terms body without touching other dialog state."""
+        text.configure(state="normal")
+        text.delete("1.0", "end")
+        text.insert("1.0", body)
+        text.configure(state="disabled")
 
     def show_error(self, title: str, text: str) -> None:
         """Show a modal error box.

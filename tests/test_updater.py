@@ -215,6 +215,8 @@ def test_the_restart_command_points_at_the_entry_point() -> None:
 
 def test_the_restart_clears_the_relaunch_marker(monkeypatch) -> None:
     """Otherwise the fresh process would refuse to enter its environment."""
+    import subprocess
+
     seen: dict = {}
     monkeypatch.setattr(paths, "IS_WINDOWS", True)
     monkeypatch.setenv("YOUTUBE_CLIPSTER_RELAUNCHED", "1")
@@ -222,3 +224,4 @@ def test_the_restart_clears_the_relaunch_marker(monkeypatch) -> None:
                         lambda command, **kwargs: seen.update(kwargs) or None)
     updater.restart()
     assert "YOUTUBE_CLIPSTER_RELAUNCHED" not in seen["env"]
+    assert seen.get("creationflags") == getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)

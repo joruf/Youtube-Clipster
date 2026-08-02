@@ -215,6 +215,55 @@ def test_with_a_tray_and_start_minimized_no_window_appears(app) -> None:
     assert not app.gui.view_visible()
 
 
+def test_post_start_keeps_view_hidden_in_tray_mode(app, monkeypatch) -> None:
+    """Terms / startup dialogs must not leave Streaming open in tray-start mode."""
+    from clipster.terms import accept_app_terms
+
+    accept_app_terms(app.config)
+    app._tray_active = True
+    app._tray_show_armed = True
+    app.config.start_minimized = True
+    app.config.check_updates = False
+    app.gui.show_view()
+    assert app.gui.view_visible()
+    monkeypatch.setattr(app, "_maybe_offer_desktop_shortcut", lambda: None)
+    monkeypatch.setattr(app, "_sync_autostart", lambda: None)
+
+    app._post_start()
+
+    assert not app.gui.view_visible()
+
+
+def test_post_start_never_notifies_started(app, monkeypatch) -> None:
+    """Startup must not show an OS balloon or toast for the 'started' message."""
+    from clipster.terms import accept_app_terms
+
+    accept_app_terms(app.config)
+    app.config.show_startup_notification = True  # even if the flag is on
+    app.config.check_updates = False
+    notified: list[str] = []
+    toasted: list[str] = []
+    monkeypatch.setattr(app.tray, "notify", lambda message: notified.append(message) or True)
+    monkeypatch.setattr(app.gui, "toast", toasted.append)
+    monkeypatch.setattr(app, "_maybe_offer_desktop_shortcut", lambda: None)
+    monkeypatch.setattr(app, "_sync_autostart", lambda: None)
+
+    app._post_start()
+
+    assert notified == []
+    assert toasted == []
+
+
+def test_tray_show_ignored_before_armed(app) -> None:
+    app._tray_show_armed = False
+    app.gui.hide_view()
+    app._show_view()
+    assert not app.gui.view_visible()
+    app._tray_show_armed = True
+    app._show_view()
+    assert app.gui.view_visible()
+
+
 def test_with_a_tray_and_start_minimized_off_the_window_appears(app) -> None:
     app._tray_active = True
     app.config.start_minimized = False
@@ -228,6 +277,29 @@ def test_without_a_tray_the_window_always_appears(app) -> None:
     app.config.start_minimized = True
     app._apply_initial_visibility()
     assert app.gui.view_visible()
+
+
+def test_discover_status_text_for_blocked(app) -> None:
+    from clipster.discover import DiscoverOutcome
+
+    outcome = DiscoverOutcome(blocked=True, error_summary="Sign in to confirm you're not a bot")
+    text, level = app._discover_status_text(outcome)
+    assert level == "error"
+    assert "cookie" in text.lower() or "Settings" in text or "Einstellung" in text
+    assert "Sign in to confirm" not in text
+    assert "github.com" not in text
+
+
+def test_discover_status_text_for_blocked_with_cookies(app) -> None:
+    from clipster.discover import DiscoverOutcome
+
+    app.config.cookies_risk_acknowledged = True
+    app.config.cookies_from_browser = "firefox"
+    outcome = DiscoverOutcome(blocked=True, error_summary="Sign in to confirm you're not a bot")
+    text, level = app._discover_status_text(outcome)
+    assert level == "error"
+    assert text == app.messages["discover_blocked_with_cookies"]
+    assert "Sign in to confirm" not in text
 
 
 # ----------------------------------------------------------------------
@@ -420,6 +492,17 @@ def test_a_file_that_cannot_be_deleted_keeps_its_row(app, tmp_path: Path, monkey
     app._delete_entry(entry)
     assert errors, "the user has to be told"
     assert len(app.history) == 1, "the row stays as long as the file does"
+
+
+def test_hiding_removes_the_entry_but_keeps_the_file(app, tmp_path: Path) -> None:
+    target = tmp_path / "keep.mp3"
+    target.write_bytes(b"x")
+    entry = app.history.add(
+        HistoryEntry(name="keep.mp3", path=str(target), url=URL_A, media_format="mp3", status=STATUS_OK)
+    )
+    app._hide_entry(entry)
+    assert target.exists()
+    assert len(app.history) == 0
 
 
 def test_playing_a_missing_file_reports_it(app, tmp_path: Path, monkeypatch) -> None:

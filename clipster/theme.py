@@ -221,6 +221,47 @@ def apply(root: tk.Misc, palette: Palette = PALETTE) -> Palette:
         bordercolor=[("active", palette.accent)],
     )
 
+    # Larger transport controls for the Streaming player bar.
+    style.configure(
+        "Player.TButton",
+        background=palette.elevated,
+        foreground=palette.text,
+        bordercolor=palette.border,
+        lightcolor=palette.elevated,
+        darkcolor=palette.elevated,
+        borderwidth=1,
+        relief="flat",
+        padding=(PAD_SMALL + 4, PAD_SMALL),
+        font=face["heading"],
+    )
+    style.map(
+        "Player.TButton",
+        background=[("disabled", palette.panel), ("pressed", palette.active), ("active", palette.active)],
+        foreground=[("disabled", palette.muted)],
+        bordercolor=[("active", palette.accent)],
+    )
+    style.configure(
+        "PlayerAccent.TButton",
+        background=palette.accent,
+        foreground=palette.on_accent,
+        bordercolor=palette.accent,
+        lightcolor=palette.accent,
+        darkcolor=palette.accent,
+        borderwidth=0,
+        relief="flat",
+        padding=(PAD, PAD_SMALL + 2),
+        font=face["heading"],
+    )
+    style.map(
+        "PlayerAccent.TButton",
+        background=[
+            ("disabled", palette.elevated),
+            ("pressed", palette.accent_active),
+            ("active", palette.accent_hover),
+        ],
+        foreground=[("disabled", palette.muted)],
+    )
+
     # Sidebar entries behave like flat toggles.
     style.configure(
         "Sidebar.TButton",

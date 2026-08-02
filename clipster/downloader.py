@@ -40,9 +40,17 @@ _BOT_PATTERNS = (
     "confirm you are not a bot",
     "confirm you're not a bot",
     "sign in to confirm",
+    "cookies-from-browser",
     "http error 429",
     "too many requests",
+    "has blocked",
+    "blocked your",
+    "rate-limit",
+    "rate limit",
 )
+
+#: Drop yt-dlp wiki / support URLs from UI details (full text stays in the log).
+_URL_IN_ERROR_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
 #: Only unambiguous wordings belong here - a wrong "the disk is full" is worse
 #: than the generic message, so a bare "write error" is deliberately absent.
@@ -235,6 +243,82 @@ def classify_error(message: str) -> str:
     return "generic"
 
 
+def cookies_are_configured(config: Config) -> bool:
+    """Return ``True`` when cookies would actually be passed to yt-dlp.
+
+    Requires both risk acknowledgement and a browser or cookies.txt path.
+
+    :param config: Active user configuration.
+    :return: Whether yt-dlp would receive cookie options.
+    """
+    if not config.cookies_risk_acknowledged:
+        return False
+    return bool(config.cookies_from_browser.strip() or config.cookies_file.strip())
+
+
+def sanitize_error_detail(message: str, limit: int = 200) -> str:
+    """Return a compact single-line detail for the UI (no URLs).
+
+    :param message: Raw yt-dlp or exception text.
+    :param limit: Maximum characters after cleanup.
+    :return: Short detail suitable for a status line.
+    """
+    text = _URL_IN_ERROR_RE.sub("", message or "")
+    text = " ".join(text.split()).strip(" :-")
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def user_facing_ytdlp_error(
+    message: str,
+    messages: Messages,
+    *,
+    cookies_configured: bool = False,
+    context: str = "download",
+) -> str:
+    """Map a raw yt-dlp error to a short localized UI string.
+
+    Bot / cookie failures never dump wiki URLs into the status line; the full
+    text belongs in the log only.
+
+    :param message: Raw error text (or a short sentinel such as ``no_player``).
+    :param messages: Active translation table.
+    :param cookies_configured: Whether cookies were already set in Settings.
+    :param context: ``download``, ``playback``, ``discover``, or ``metadata``.
+    :return: Localized message for the user.
+    """
+    kind = classify_error(message)
+    if kind == "bot":
+        if context == "playback":
+            key = (
+                "discover_playback_bot_with_cookies"
+                if cookies_configured
+                else "discover_playback_bot"
+            )
+        elif context == "discover":
+            key = (
+                "discover_blocked_with_cookies"
+                if cookies_configured
+                else "discover_blocked"
+            )
+        else:
+            key = "error_bot_with_cookies" if cookies_configured else "error_bot_detected"
+        return messages[key]
+    if kind == "unavailable":
+        return messages["error_unavailable"]
+    if kind == "diskfull":
+        return messages.format("error_disk_full", details=sanitize_error_detail(message))
+    detail = sanitize_error_detail(message) or "?"
+    if context == "playback":
+        return messages.format("discover_playback_failed_detail", details=detail)
+    if context == "discover":
+        return messages.format("discover_failed", details=detail)
+    if context == "metadata":
+        return messages.format("error_metadata", details=detail)
+    return messages.format("error_generic", details=detail)
+
+
 class Downloader:
     """Fetches metadata and downloads audio or video with yt-dlp."""
 
@@ -281,6 +365,16 @@ class Downloader:
             options["js_runtimes"] = {runtime: {}}
         if self.config.user_agent.strip():
             options["http_headers"] = {"User-Agent": self.config.user_agent.strip()}
+        if self.config.cookies_risk_acknowledged:
+            browser = self.config.cookies_from_browser.strip().lower()
+            if browser:
+                # yt-dlp expects a tuple; never log cookie values — only the browser name.
+                options["cookiesfrombrowser"] = (browser,)
+                log.debug("yt-dlp cookiesfrombrowser=%s", browser)
+            cookie_path = self.config.cookies_file.strip()
+            if cookie_path:
+                options["cookiefile"] = str(Path(cookie_path).expanduser())
+                log.debug("yt-dlp cookiefile configured (path only, contents not logged)")
         if self._ffmpeg_location:
             options["ffmpeg_location"] = self._ffmpeg_location
         return options

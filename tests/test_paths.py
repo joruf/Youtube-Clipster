@@ -64,6 +64,8 @@ def test_the_posix_interpreter(as_linux) -> None:
 
 def test_the_bundled_ffmpeg_is_an_exe_on_windows(as_windows) -> None:
     assert str(paths.bundled_ffmpeg_exe()).endswith("ffmpeg.exe")
+    assert str(paths.bundled_ffplay_exe()).endswith("ffplay.exe")
+    assert str(paths.bundled_mpv_exe()).endswith("mpv.exe")
 
 
 def test_the_download_list_lives_next_to_the_configuration() -> None:

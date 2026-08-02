@@ -76,16 +76,51 @@ def bootstrap_main(argv: Optional[Sequence[str]] = None) -> int:
     logging_setup.configure(verbose=args.verbose)
 
     use_venv = not args.no_venv
+    splash = None
 
     if not args.skip_checks:
         print(_banner(), file=sys.stderr)
-        report = installer.bootstrap(
-            auto_install=not args.no_auto_install,
-            use_venv=use_venv,
-            force_update=args.update,
-            recreate_venv=args.reinstall,
-            update_check_hours=_configured_update_hours(args.config),
-        )
+        # Visible feedback while packages install — otherwise a double-click
+        # on run.py looks like nothing is happening.
+        try:
+            from .setup_ui import open_setup_splash
+
+            config_path = Path(args.config).expanduser() if args.config else paths.config_file()
+            language = "en"
+            if config_path.is_file():
+                try:
+                    language = Config.load(config_path).language or "en"
+                except Exception:
+                    language = "en"
+            if args.lang:
+                language = args.lang
+            messages = i18n.load(language)
+            splash = open_setup_splash(messages)
+        except Exception as exc:
+            log.debug("Setup splash could not be opened: %s", exc)
+            splash = None
+
+        def on_progress(message: str) -> None:
+            print("  {0}".format(message), file=sys.stderr, flush=True)
+            if splash is not None:
+                splash.set_status(message)
+
+        try:
+            if splash is not None:
+                splash.set_status(messages.get("setup_checking", "Checking dependencies..."))
+            report = installer.bootstrap(
+                auto_install=not args.no_auto_install,
+                use_venv=use_venv,
+                force_update=args.update,
+                recreate_venv=args.reinstall,
+                update_check_hours=_configured_update_hours(args.config),
+                on_progress=on_progress,
+            )
+        finally:
+            if splash is not None:
+                splash.close()
+                splash = None
+
         if not report.ok:
             _report_failures(report)
             return 1

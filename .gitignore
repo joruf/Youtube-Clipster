@@ -5,6 +5,12 @@ youtube-clipster.lock
 # Local, per-checkout configuration (portable mode)
 config.json
 
+# Local user data (must not be committed)
+history.json
+discover_taste.json
+cookies.txt
+*.lnk
+
 # Python
 __pycache__/
 *.py[cod]

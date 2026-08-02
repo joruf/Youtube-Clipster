@@ -80,7 +80,37 @@ class TestModuleImports(unittest.TestCase):
         import clipster.history  # noqa: F401
         import clipster.i18n  # noqa: F401
         import clipster.logging_setup  # noqa: F401
+        import clipster.player  # noqa: F401
+        import clipster.recommend  # noqa: F401
+        import clipster.setup_ui  # noqa: F401
         import clipster.singleinstance  # noqa: F401
+        import clipster.spectrum  # noqa: F401
+        import clipster.visualizer  # noqa: F401
+
+
+class TestWindowsOptionalDeps(unittest.TestCase):
+    """Optional Streaming extras must not block Windows bootstrap."""
+
+    def test_mpv_is_optional_in_dependency_table(self) -> None:
+        mpv = dependencies.find("mpv")
+        self.assertIsNotNone(mpv)
+        assert mpv is not None
+        self.assertEqual(mpv.level, "optional")
+
+    def test_bundled_player_paths_use_exe_suffix_on_windows(self) -> None:
+        with mock.patch.object(paths, "IS_WINDOWS", True):
+            self.assertTrue(str(paths.bundled_ffmpeg_exe()).endswith("ffmpeg.exe"))
+            self.assertTrue(str(paths.bundled_ffplay_exe()).endswith("ffplay.exe"))
+            self.assertTrue(str(paths.bundled_mpv_exe()).endswith("mpv.exe"))
+
+    def test_ensure_mpv_missing_stays_ok_on_windows(self) -> None:
+        from clipster.installer import ensure_mpv
+
+        with mock.patch("clipster.installer.find_mpv", return_value=None):
+            with mock.patch.object(paths, "IS_WINDOWS", True):
+                step = ensure_mpv(auto_install=True)
+        self.assertTrue(step.ok)
+        self.assertIn("mpv", step.hint.lower())
 
 
 if __name__ == "__main__":

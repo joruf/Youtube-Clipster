@@ -35,6 +35,7 @@ from typing import List, Optional, Tuple
 
 from . import APP_URL, config as config_module, paths
 from .logging_setup import get_logger
+from .shortcuts import _no_window
 
 log = get_logger(__name__)
 
@@ -290,7 +291,8 @@ def restart() -> None:
     # The child must not inherit "you already relaunched" from this process.
     environment.pop("YOUTUBE_CLIPSTER_RELAUNCHED", None)
     if paths.IS_WINDOWS:
-        subprocess.Popen(command, env=environment, close_fds=True)
+        # Match installer/player: under pythonw.exe a console child would flash.
+        subprocess.Popen(command, env=environment, close_fds=True, **_no_window())
         return
     os.execve(command[0], command, environment)
 
@@ -307,6 +309,7 @@ def _run(command: List[str], cwd: Path, timeout: float = 60.0) -> Tuple[int, str
         completed = subprocess.run(
             command, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=timeout, check=False, universal_newlines=True,
+            **_no_window(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, str(exc)

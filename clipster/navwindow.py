@@ -73,6 +73,7 @@ class NavWindow:
         self._prompt: Optional[Prompt] = None
         self._bar_mode = "determinate"
         self._result_path: Optional[Path] = None
+        self._auto_close_job: Optional[str] = None
 
         self.window = tk.Toplevel(master)
         self.window.withdraw()
@@ -128,6 +129,7 @@ class NavWindow:
         self.cancel_event = threading.Event()
         self._prompt = None
         self._result_path = None
+        self._cancel_auto_close()
         self._headline.configure(text=_shorten(headline), style="Bold.TLabel")
         self._meta.configure(text="")
         self._status.configure(text=self.messages["fetching_metadata"], style="TLabel")
@@ -172,6 +174,7 @@ class NavWindow:
 
     def hide(self) -> None:
         """Hide the window and stop the progress animation."""
+        self._cancel_auto_close()
         self._stop_bar()
         self._bar.pack_forget()
         try:
@@ -477,6 +480,24 @@ class NavWindow:
                 side="right", padx=(0, PAD_SMALL)
             )
         self._resize()
+        if status == STATUS_OK:
+            # Brief success flash, then dismiss so Streaming / Downloads stay in focus.
+            self._auto_close_job = self.window.after(1500, self._auto_close)
+
+    def _cancel_auto_close(self) -> None:
+        """Cancel a pending auto-close after a successful download."""
+        if self._auto_close_job is None:
+            return
+        try:
+            self.window.after_cancel(self._auto_close_job)
+        except tk.TclError:  # pragma: no cover
+            pass
+        self._auto_close_job = None
+
+    def _auto_close(self) -> None:
+        """Hide the navigation window after a successful download."""
+        self._auto_close_job = None
+        self._on_close()
 
     def already_downloaded(self, title: str, path: Path, detail: str,
                            on_again: Callable[[], None]) -> None:

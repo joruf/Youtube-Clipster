@@ -27,8 +27,8 @@ class Config:
     download_dir: str = ""
     #: Clipboard polling interval in seconds.
     interval_sec: float = 2.0
-    #: Show a short notification window on startup.
-    show_startup_notification: bool = True
+    #: Show a short notification window on startup (off by default; unused on tray start).
+    show_startup_notification: bool = False
     #: Format preselected in the navigation window (``mp3`` or ``mp4``).
     default_format: str = "mp3"
     #: Open the view window automatically once a download finished.
@@ -61,6 +61,14 @@ class Config:
     output_template: str = "%(title)s.%(ext)s"
     #: Custom HTTP user agent; empty means the yt-dlp default.
     user_agent: str = ""
+    #: Browser name for yt-dlp ``cookiesfrombrowser`` (empty = off).
+    cookies_from_browser: str = ""
+    #: Path to a Netscape cookies.txt for yt-dlp; empty = unused. Never log contents.
+    cookies_file: str = ""
+    #: User acknowledged cookie / ToS risk; required before cookies are passed to yt-dlp.
+    cookies_risk_acknowledged: bool = False
+    #: UTC ISO timestamp when cookie risk was acknowledged (empty when not acknowledged).
+    cookies_risk_acknowledged_at: str = ""
     #: Ask once whether a desktop shortcut should be created.
     ask_desktop_shortcut: bool = True
     #: Start YouTube Clipster automatically when the user logs in.
@@ -69,6 +77,34 @@ class Config:
     update_check_hours: int = 24
     #: Console log level (``DEBUG``, ``INFO``, ``WARNING``, ``ERROR``).
     log_level: str = "INFO"
+    #: Word appended to Discover searches (for example ``lyrics``); empty disables it.
+    discover_search_suffix: str = "lyrics"
+    #: Keep only Discover results whose title contains the search suffix.
+    discover_require_suffix: bool = True
+    #: How Discover finds tracks: ``search``, ``related``, ``deezer``, or ``listenbrainz``.
+    discover_mode: str = "related"
+    #: Maximum number of Discover results shown in the list.
+    discover_max_results: int = 40
+    #: How many search hits to request per seed title from the download history.
+    discover_results_per_seed: int = 6
+    #: Prefer the download folder as Discover seeds once it holds at least this many songs.
+    discover_min_folder_seeds: int = 5
+    #: Request more Discover songs when this many tracks remain after the current one.
+    discover_extend_remaining: int = 3
+    #: How many extra songs to fetch when the playlist is topped up.
+    discover_extend_count: int = 8
+    #: Stream video inside the Streaming player when a video backend is available.
+    discover_play_video: bool = False
+    #: Audio-stage visualizer mode (see :mod:`clipster.visualizer`).
+    discover_visualizer: str = "pulse"
+    #: Accepted revision of the general terms of use (empty = not accepted).
+    terms_app_version: str = ""
+    #: UTC ISO timestamp when the general terms were accepted.
+    terms_app_accepted_at: str = ""
+    #: Accepted revision of the Streaming-specific terms (empty = not accepted).
+    terms_streaming_version: str = ""
+    #: UTC ISO timestamp when the Streaming terms were accepted.
+    terms_streaming_accepted_at: str = ""
 
     #: Path this configuration was loaded from; not serialised.
     path: Path = field(default_factory=paths.config_file, compare=False, repr=False)
@@ -119,6 +155,9 @@ class Config:
                 log.warning("Ignoring invalid value for '%s' in %s", item.name, path)
                 continue
             setattr(config, item.name, coerced)
+        from .visualizer import normalize_visualizer
+
+        config.discover_visualizer = normalize_visualizer(config.discover_visualizer)
         return config
 
     @classmethod

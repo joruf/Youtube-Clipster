@@ -15,9 +15,11 @@ edition (`windows/*.bat`) have been replaced by the `clipster/` package.
 - **Two windows, each with one job**
   - a small **navigation window** that opens when you copy a link: pick format and audio track,
     watch the progress, see the result
-  - a large **view window** with the download list, the settings and the about page
+  - a large **view window** with Streaming, the download list, settings and about
+- **Streaming** – find similar songs from your downloads or a music folder, play Audio or Video
+  in-tab, Stage visualizer (default **Beat ring** / `pulse`), likes/dislikes
 - **Download list** – name, length, size, date and status of every download, with per-row
-  *Open* and *Folder* buttons, status filters and a problem description when something failed
+  *Play*, *Folder* and *Hide* buttons, status filters and a problem description when something failed
 - **Dark, modern interface** – one colour scheme (`clipster/theme.py`), identical on every platform
 - **Format selection** – audio (MP3) or video (MP4), with a preselectable default
 - **Audio track selection** – offered when a video has several languages
@@ -27,6 +29,22 @@ edition (`windows/*.bat`) have been replaced by the `clipster/` package.
 - **Multi-language** – English and German (`clipster/locales/*.json`)
 - **Single instance** – a second start is refused with a clear message
 - **Desktop integration** – optional desktop shortcut and login autostart
+
+---
+
+## Screenshots
+
+Anonymized captures of the real Tk UI (fixture data only):
+
+![Streaming — queue, Audio player, Beat ring stage](docs/images/streaming.png)
+
+![Downloads history](docs/images/downloads.png)
+
+![Settings](docs/images/settings.png)
+
+![Terms of use](docs/images/terms.png)
+
+More detail: [User guide](docs/USER_GUIDE.md) · [Technical documentation](docs/TECHNICAL.md)
 
 ---
 
@@ -305,10 +323,20 @@ For a **portable setup** copy `config.example.json` to `config.json` **next to
 | `restrict_filenames` | `false` | ASCII-only file names (old `--restrict-filenames` behaviour) |
 | `output_template` | `"%(title)s.%(ext)s"` | yt-dlp output template |
 | `user_agent` | `""` | Custom HTTP user agent |
+| `cookies_from_browser` | `""` | Browser for yt-dlp cookies (`firefox`, `chrome`, …; empty = off) |
+| `cookies_file` | `""` | Path to a Netscape cookies.txt for yt-dlp |
 | `ask_desktop_shortcut` | `true` | Ask once whether a desktop shortcut should be created |
 | `autostart` | `false` | Start automatically at login |
 | `update_check_hours` | `24` | Hours between two yt-dlp update checks (`0` = every start) |
 | `log_level` | `"INFO"` | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
+| `discover_search_suffix` | `"lyrics"` | Word appended to Streaming searches; empty disables it |
+| `discover_require_suffix` | `true` | Keep only Streaming results whose title contains the suffix |
+| `discover_mode` | `"related"` | `search`, `related`, `deezer`, or `listenbrainz` |
+| `discover_max_results` | `40` | Maximum Streaming results shown |
+| `discover_play_video` | `false` | Prefer video in the Streaming player when a backend is available |
+| `discover_visualizer` | `"pulse"` | Stage mode (`off`, `text`, `waveform`, `cover`, `pulse`, `spectrum`, `visualizer`) |
+
+See [`config.example.json`](config.example.json) and [Technical documentation](docs/TECHNICAL.md#configuration-keys-overview) for the full key list (including terms acceptance fields).
 
 The log file lives next to the configuration:
 `~/.local/share/YoutubeClipster/youtube-clipster.log` (Windows: `%LOCALAPPDATA%\…`).
@@ -397,28 +425,42 @@ and the newest supported Python, Windows without the GUI tests, plus a check tha
 
 ---
 
+## Documentation
+
+| Doc | Contents |
+|-----|----------|
+| [User guide](docs/USER_GUIDE.md) | Install, first start, clipboard downloads, Streaming, settings, troubleshooting |
+| [Technical documentation](docs/TECHNICAL.md) | Architecture, module map, config keys, testing |
+| [Screenshots](docs/images/) | Anonymized UI captures (`streaming.png`, `downloads.png`, …) |
+
 ## Project structure
 
 ```
 youtube-clipster/
-├── run.py      # bootstrapper: dependency check, relaunch, start
+├── run.py                   # bootstrapper: dependency check, relaunch, start
 ├── install.sh               # Linux/macOS starter (finds or installs Python)
 ├── install.bat              # Windows starter (finds or installs Python)
 ├── requirements.txt         # generated from clipster/dependencies.py
 ├── config.example.json      # documented example configuration
 ├── requirements-dev.txt     # pytest, for the test suite
 ├── pytest.ini               # test configuration and markers
+├── docs/                    # USER_GUIDE.md, TECHNICAL.md, images/
 ├── tests/                   # the test suite (see "Tests" above)
 ├── tools/make_logo.py       # regenerates the logo (SVG + PNG + ICO)
+├── tools/capture_screenshots.py  # anonymized UI screenshots for docs
 └── clipster/
     ├── cli.py               # argument parsing, bootstrap, relaunch into the venv
     ├── dependencies.py      # THE dependency definition - what is needed and why
     ├── installer.py         # reads that table and installs what is missing
-    ├── app.py               # clipboard monitor and download pipeline
+    ├── app.py               # clipboard monitor, download pipeline, Streaming wiring
     ├── theme.py             # the dark colour scheme and every ttk style
     ├── gui.py               # owns the hidden Tk root and both windows
     ├── navwindow.py         # small window: format, progress, result
-    ├── viewwindow.py        # large window: list, settings, about
+    ├── viewwindow.py        # large window: Streaming, list, settings, about
+    ├── discover.py          # related-song search and DiscoverTrack
+    ├── discover_page.py     # Streaming UI (queue, player, stage)
+    ├── player.py            # in-tab Streaming playback
+    ├── visualizer.py        # stage visualizer modes (default: pulse)
     ├── bridge.py            # marshals GUI calls onto the Tk thread (incl. Prompt)
     ├── downloader.py        # yt-dlp integration (metadata, download, progress)
     ├── history.py           # the persistent download list (history.json)
@@ -427,6 +469,7 @@ youtube-clipster/
     ├── singleinstance.py    # flock (POSIX) and named mutex (Windows)
     ├── shortcuts.py         # desktop shortcut, autostart, open file / reveal folder
     ├── config.py            # JSON configuration
+    ├── terms.py             # versioned terms acceptance
     ├── i18n.py              # translations
     ├── paths.py             # platform paths
     ├── logging_setup.py     # console and file logging

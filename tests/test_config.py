@@ -28,6 +28,9 @@ def test_every_value_survives_a_round_trip(tmp_path: Path) -> None:
     config.default_format = "mp4"
     config.open_view_after_download = True
     config.download_dir = "/tmp/somewhere"
+    config.cookies_risk_acknowledged = True
+    config.cookies_risk_acknowledged_at = "2026-08-02T12:00:00+00:00"
+    config.cookies_from_browser = "firefox"
     config.save()
 
     again = Config.load(target)
@@ -37,6 +40,9 @@ def test_every_value_survives_a_round_trip(tmp_path: Path) -> None:
     assert again.default_format == "mp4"
     assert again.open_view_after_download is True
     assert again.download_dir == "/tmp/somewhere"
+    assert again.cookies_risk_acknowledged is True
+    assert again.cookies_risk_acknowledged_at == "2026-08-02T12:00:00+00:00"
+    assert again.cookies_from_browser == "firefox"
 
 
 def test_the_download_folder_is_not_opened_by_default() -> None:
@@ -49,8 +55,17 @@ def test_defaults_that_the_interface_relies_on() -> None:
     assert config.history_limit == 100
     assert config.use_tray is True
     assert config.start_minimized is True
+    assert config.show_startup_notification is False
     assert config.ask_audio_language is True
     assert config.no_playlist is True
+    assert config.discover_play_video is False
+    assert config.discover_visualizer == "pulse"
+    assert config.cookies_from_browser == ""
+    assert config.cookies_file == ""
+    assert config.cookies_risk_acknowledged is False
+    assert config.cookies_risk_acknowledged_at == ""
+    assert config.terms_app_version == ""
+    assert config.terms_streaming_version == ""
 
 
 @pytest.mark.parametrize(

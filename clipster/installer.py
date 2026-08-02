@@ -15,6 +15,8 @@ tkinter       Linux: distribution package; Windows/macOS: part of the installer.
 venv          ``python -m venv`` into the application data directory.
 yt-dlp        ``pip install -U yt-dlp`` inside that virtual environment.
 FFmpeg        Linux/macOS: package manager; Windows: official ZIP download.
+mpv           Optional (in-tab Streaming video). Linux/macOS: package manager;
+              Windows: hint only — copy ``mpv.exe`` next to bundled FFmpeg.
 Clipboard     Linux only: ``xclip`` or ``wl-clipboard``.
 JS runtime    Linux only, optional: ``quickjs`` (helps some yt-dlp extractors).
 ============  ==================================================================
@@ -33,12 +35,13 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from . import config as config_module
 from . import dependencies
 from . import paths
 from .logging_setup import get_logger
+from .shortcuts import _no_window
 
 log = get_logger(__name__)
 
@@ -133,6 +136,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
         install=["apt-get", "install", "-y"],
         packages={
             "ffmpeg": "ffmpeg",
+            "mpv": "mpv",
             "tk": "python3-tk",
             "venv": "python3-venv",
             "pip": "python3-pip",
@@ -149,6 +153,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
         install=["dnf", "install", "-y"],
         packages={
             "ffmpeg": "ffmpeg-free",
+            "mpv": "mpv",
             "tk": "python3-tkinter",
             "venv": "python3-libs",
             "pip": "python3-pip",
@@ -165,6 +170,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
         install=["pacman", "-S", "--needed", "--noconfirm"],
         packages={
             "ffmpeg": "ffmpeg",
+            "mpv": "mpv",
             "tk": "tk",
             "venv": "python",
             "pip": "python-pip",
@@ -181,6 +187,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
         install=["zypper", "--non-interactive", "install"],
         packages={
             "ffmpeg": "ffmpeg",
+            "mpv": "mpv",
             "tk": "python3-tk",
             "venv": "python3-venv",
             "pip": "python3-pip",
@@ -197,6 +204,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
         install=["apk", "add"],
         packages={
             "ffmpeg": "ffmpeg",
+            "mpv": "mpv",
             "tk": "python3-tkinter",
             "venv": "python3",
             "pip": "py3-pip",
@@ -213,6 +221,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
         install=["brew", "install"],
         packages={
             "ffmpeg": "ffmpeg",
+            "mpv": "mpv",
             "tk": "python-tk",
             "venv": "python",
             "pip": "python",
@@ -273,12 +282,15 @@ def run_command(command: Sequence[str], echo: bool = True, timeout: Optional[flo
     log.debug("Running: %s", printable)
     lines: List[str] = []
     try:
+        # Under pythonw.exe (desktop double-click) every child would otherwise
+        # flash a console window during venv / pip / package installs.
         process = subprocess.Popen(
             list(command),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             universal_newlines=True,
             bufsize=1,
+            **_no_window(),
         )
     except OSError as exc:
         log.debug("Command %s could not be started: %s", printable, exc)
@@ -807,7 +819,13 @@ def find_ffmpeg() -> Optional[Path]:
     if bundled.is_file():
         return bundled
     found = shutil.which("ffmpeg")
-    return Path(found) if found else None
+    if found:
+        return Path(found)
+    if paths.IS_WINDOWS:
+        found = shutil.which("ffmpeg.exe")
+        if found:
+            return Path(found)
+    return None
 
 
 def ensure_ffmpeg(auto_install: bool = True) -> Step:
@@ -846,6 +864,66 @@ def ensure_ffmpeg(auto_install: bool = True) -> Step:
     if found is not None:
         return Step(name="FFmpeg", ok=True, detail="installed", changed=True)
     return Step(name="FFmpeg", ok=False, detail=result.tail(), hint=manual_install_hint([key]))
+
+
+def find_mpv() -> Optional[Path]:
+    """Return the mpv executable to use, preferring the private install."""
+    bundled = paths.bundled_mpv_exe()
+    if bundled.is_file():
+        return bundled
+    found = shutil.which("mpv")
+    if found:
+        return Path(found)
+    if paths.IS_WINDOWS:
+        found = shutil.which("mpv.exe")
+        if found:
+            return Path(found)
+    return None
+
+
+def ensure_mpv(auto_install: bool = True) -> Step:
+    """Offer mpv for in-tab Streaming video (optional).
+
+    Never fails the setup — Audio mode and downloads work without mpv; Video
+    mode then falls back to audio with a status hint.
+
+    :param auto_install: Allow installing mpv via the system package manager.
+    :return: The finished step (always ``ok``).
+    """
+    existing = find_mpv()
+    if existing is not None:
+        return Step(name="mpv (video, optional)", ok=True, detail=str(existing))
+
+    key = _system_key("mpv", "mpv")
+    if paths.IS_WINDOWS:
+        hint = "Download mpv from https://mpv.io/installation/ and copy mpv.exe to {0}".format(
+            paths.bundled_ffmpeg_bin()
+        )
+        return Step(
+            name="mpv (video, optional)",
+            ok=True,
+            detail="not installed - Video mode needs mpv for in-window picture",
+            hint=hint,
+        )
+
+    if not auto_install:
+        return Step(
+            name="mpv (video, optional)",
+            ok=True,
+            detail="not installed",
+            hint=manual_install_hint([key]),
+        )
+
+    result = install_system_packages([key])
+    found = find_mpv()
+    if found is not None:
+        return Step(name="mpv (video, optional)", ok=True, detail="installed", changed=True)
+    return Step(
+        name="mpv (video, optional)",
+        ok=True,
+        detail=result.tail() or "not installed",
+        hint=manual_install_hint([key]),
+    )
 
 
 def _download(url: str, target: Path) -> Optional[str]:
@@ -993,6 +1071,7 @@ def bootstrap(
     force_update: bool = False,
     recreate_venv: bool = False,
     update_check_hours: int = 24,
+    on_progress: Optional[Callable[[str], None]] = None,
 ) -> InstallReport:
     """Run every dependency check and install what is missing.
 
@@ -1001,23 +1080,36 @@ def bootstrap(
     :param force_update: Always check yt-dlp for a newer release.
     :param recreate_venv: Delete and rebuild the virtual environment.
     :param update_check_hours: Minimum hours between two yt-dlp update checks.
+    :param on_progress: Optional UI/console callback with a short status line.
     :return: The collected report.
     """
     report = InstallReport()
     paths.ensure_install_dir()
 
+    def note(message: str) -> None:
+        log.info("%s", message)
+        if on_progress is not None:
+            try:
+                on_progress(message)
+            except Exception:  # pragma: no cover - UI must not abort setup
+                log.debug("Bootstrap progress callback failed", exc_info=True)
+
+    note("Checking Python...")
     if not report.add(check_python()).ok:
         return report
 
+    note("Checking tkinter...")
     report.add(check_tkinter(auto_install=auto_install))
 
     interpreter = Path(sys.executable)
     if use_venv:
+        note("Preparing private virtual environment...")
         venv_step = report.add(ensure_venv(recreate=recreate_venv))
         if not venv_step.ok:
             return report
         interpreter = paths.venv_python()
 
+    note("Checking yt-dlp...")
     report.add(
         ensure_ytdlp(
             interpreter=interpreter,
@@ -1025,9 +1117,17 @@ def bootstrap(
             update_check_hours=update_check_hours,
         )
     )
+    note("Checking FFmpeg...")
     report.add(ensure_ffmpeg(auto_install=auto_install))
+    note("Checking mpv (optional, for in-tab video)...")
+    report.add(ensure_mpv(auto_install=auto_install))
+    note("Checking clipboard helper...")
     report.add(ensure_clipboard_tool(auto_install=auto_install))
+    note("Checking tray menu support...")
     report.add(ensure_tray_menu(interpreter=interpreter, auto_install=auto_install))
+    note("Checking system tray...")
     report.add(ensure_tray_support(interpreter=interpreter, auto_install=auto_install))
+    note("Checking JavaScript runtime...")
     report.add(ensure_js_runtime(auto_install=auto_install))
+    note("Dependency check finished.")
     return report

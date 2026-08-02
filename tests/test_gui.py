@@ -61,16 +61,162 @@ def test_showing_and_hiding_the_view(gui) -> None:
     assert not gui.view_visible()
 
 
-@pytest.mark.parametrize("page", ["downloads", "settings", "about"])
+@pytest.mark.parametrize("page", ["downloads", "discover", "settings", "about"])
 def test_every_page_can_be_selected(gui, page: str) -> None:
     gui.view.select_page(page)
     assert gui.view._page == page
 
 
+def test_discover_page_exists(gui) -> None:
+    assert gui.view.discover is not None
+    gui.view.select_page("discover")
+    assert gui.view._page == "discover"
+
+
+def test_discover_queue_rows_show_duration(gui, messages) -> None:
+    from clipster.discover import DiscoverTrack
+
+    gui.view.select_page("discover")
+    page = gui.view.discover
+    page.set_tracks(
+        [
+            DiscoverTrack(
+                url="https://www.youtube.com/watch?v=abcdefghijk",
+                video_id="abcdefghijk",
+                title="Known length",
+                uploader="Channel",
+                duration=225,
+            ),
+            DiscoverTrack(
+                url="https://www.youtube.com/watch?v=bcdefghijkl",
+                video_id="bcdefghijkl",
+                title="Unknown length",
+                uploader="Channel",
+                duration=0,
+            ),
+        ]
+    )
+    assert len(page._row_frames) == 2
+    known = page._row_frames[0].grid_slaves(row=0, column=3)[0]
+    unknown = page._row_frames[1].grid_slaves(row=0, column=3)[0]
+    assert known.cget("text") == "3:45"
+    assert unknown.cget("text") == "-"
+    header_duration = page._queue_header.grid_slaves(row=0, column=3)[0]
+    assert header_duration.cget("text") == messages["column_duration"]
+
+
+def test_discover_refresh_button_is_visible(gui, messages) -> None:
+    gui.view.select_page("discover")
+    page = gui.view.discover
+    assert page._refresh_btn.winfo_ismapped() or str(page._refresh_btn.cget("text"))
+    assert page._refresh_btn.cget("text") == messages["discover_refresh"]
+    assert page._folder_btn.cget("text") == messages["discover_from_folder"]
+    # Primary actions sit on their own row so a crowded options bar cannot hide them.
+    assert page._refresh_btn.winfo_manager() == "pack"
+    assert str(page._refresh_btn.pack_info().get("side", "")) == "left"
+
+
+def test_discover_visualizer_selector_persists(gui, messages) -> None:
+    from clipster.visualizer import VISUALIZER_MODES, VIZ_OFF, visualizer_locale_key, visualizer_mode_choices
+
+    gui.view.select_page("discover")
+    page = gui.view.discover
+    assert hasattr(page, "_viz_box")
+    raw_values = page._viz_box.cget("values")
+    values = list(raw_values) if raw_values else []
+    assert len(values) == 7
+    assert all(isinstance(item, str) and item.strip() for item in values)
+    expected_labels, label_to_mode, _mode_to_label = visualizer_mode_choices(messages)
+    assert tuple(values) == expected_labels
+    assert values[0] == messages[visualizer_locale_key(VIZ_OFF)]
+    assert values[1] == messages[visualizer_locale_key("text")]
+    assert len(label_to_mode) == len(VISUALIZER_MODES)
+    off_label = messages[visualizer_locale_key(VIZ_OFF)]
+    assert off_label in values
+    page._viz_var.set(off_label)
+    page._visualizer_selected()
+    assert page.config.discover_visualizer == VIZ_OFF
+    assert page.selected_visualizer() == VIZ_OFF
+    # Reload syncs the combobox from config and keeps all mode labels.
+    page.config.discover_visualizer = "spectrum"
+    page.reload_from_config()
+    assert page.selected_visualizer() == "spectrum"
+    assert len(page._viz_box.cget("values")) == 7
+
+
+def test_audio_play_ready_maps_stage_and_starts_generator(gui, messages) -> None:
+    """Audio backend play-ready must show the stage canvas and animate without PCM."""
+    from clipster.discover import DiscoverTrack
+    from clipster.player import BACKEND_AUDIO, PlayStartResult
+    from clipster.visualizer import VIZ_SPECTRUM, VIZ_WAVEFORM, visualizer_locale_key
+
+    gui.show_view()
+    gui.view.select_page("discover")
+    page = gui.view.discover
+    page._playback_mode_var.set("audio")
+    page.config.discover_play_video = False
+    page.config.discover_visualizer = VIZ_WAVEFORM
+    page.reload_from_config()
+
+    track = DiscoverTrack(
+        url="https://www.youtube.com/watch?v=abcdefghijk",
+        video_id="abcdefghijk",
+        title="Viz Test",
+        uploader="Channel",
+        duration=90,
+    )
+    page._tracks = [track]
+    page._selected = 0
+    page.player._playing = True
+    page.player._backend = BACKEND_AUDIO
+    page.player._stream_url = "http://example/stream.m4a"
+    page.player._process = type("Alive", (), {"poll": lambda self: None})()
+
+    page._on_play_ready(page._play_token, PlayStartResult(track=track, backend=BACKEND_AUDIO))
+    gui.root.update_idletasks()
+    gui.root.update()
+
+    assert page._eq_canvas.winfo_ismapped()
+    assert page._eq_canvas.winfo_width() > 1
+    assert page._eq_canvas.winfo_height() > 1
+    assert page._eq_job is not None
+
+    # Pump frames: generative fallback must leave drawable items on the canvas.
+    for _ in range(8):
+        gui.root.update()
+    assert len(page._eq_canvas.find_all()) >= 2
+    assert max(page._eq_levels, default=0.0) > 0.0 or page.selected_visualizer() == VIZ_WAVEFORM
+
+    # Switching Stage modes while "playing" must keep the ticker alive.
+    page._viz_var.set(messages[visualizer_locale_key(VIZ_SPECTRUM)])
+    page._visualizer_selected()
+    for _ in range(10):
+        gui.root.update()
+    assert page.selected_visualizer() == VIZ_SPECTRUM
+    assert page._eq_job is not None
+    assert page._eq_fake.playing is True
+    assert max(page._eq_levels) > 0.05
+    assert len(page._eq_canvas.find_all()) > 0
+
+    page.player._playing = False
+    page.player._process = None
+    page._stop_stage()
+    page._show_stage_idle()
+    gui.root.update_idletasks()
+
+
 def test_an_unknown_page_is_ignored(gui) -> None:
-    gui.view.select_page("downloads")
+    gui.view.select_page("discover")
     gui.view.select_page("no-such-page")
-    assert gui.view._page == "downloads"
+    assert gui.view._page == "discover"
+
+
+def test_streaming_is_the_default_leftmost_tab(gui, messages) -> None:
+    assert gui.view._page == "discover"
+    order = [key for key in gui.view._menu_buttons]
+    # Dict insertion order matches pack order in the menu.
+    assert order[:2] == ["discover", "downloads"]
+    assert gui.view._menu_buttons["discover"].cget("text") == messages["page_discover"]
 
 
 # ----------------------------------------------------------------------
@@ -135,25 +281,34 @@ def test_play_and_folder_are_disabled_when_the_file_is_gone(gui, sample_entries,
     for button in buttons:
         by_label.setdefault(str(button.cget("text")), []).append(button)
 
-    assert set(by_label) == {messages["history_play"], messages["history_folder"],
-                             messages["history_delete"]}
+    assert set(by_label) == {
+        messages["history_play"],
+        messages["history_folder"],
+        messages["history_hide"],
+        messages["history_delete"],
+    }
     for label in (messages["history_play"], messages["history_folder"]):
         assert all("disabled" in b.state() for b in by_label[label]), label
     assert all("disabled" not in b.state() for b in by_label[messages["history_delete"]])
+    assert all("disabled" not in b.state() for b in by_label[messages["history_hide"]])
 
 
-def test_deleting_a_row_asks_first(gui, sample_entries, monkeypatch) -> None:
+def test_deleting_a_row_needs_no_confirmation(gui, sample_entries) -> None:
     gui.render_history(sample_entries)
     deleted = []
     gui.on_delete_entry = deleted.append
 
-    monkeypatch.setattr(gui, "ask_yes_no", lambda *a: False)
-    gui._delete_entry(sample_entries[0])
-    assert not deleted, "a declined confirmation must keep the file"
-
-    monkeypatch.setattr(gui, "ask_yes_no", lambda *a: True)
     gui._delete_entry(sample_entries[0])
     assert deleted == [sample_entries[0]]
+
+
+def test_hiding_a_row_forwards_without_prompt(gui, sample_entries) -> None:
+    gui.render_history(sample_entries)
+    hidden = []
+    gui.on_hide_entry = hidden.append
+
+    gui._hide_entry(sample_entries[0])
+    assert hidden == [sample_entries[0]]
 
 
 @pytest.mark.xfail(reason="8-18 px left over: Tk distributes the slack of the "
@@ -233,11 +388,95 @@ def test_saving_writes_the_values_back(gui, config) -> None:
     gui.view._vars["history_limit"].set("42")
     gui.view._vars["interval_sec"].set("3,5")
     gui.view._vars["use_tray"].set(False)
+    gui.view._vars["startup_visibility"].set(gui.messages["settings_startup_window"])
     gui.view._save_settings()
     assert config.history_limit == 42
     assert config.interval_sec == pytest.approx(3.5), "a comma must work as a decimal point"
     assert config.use_tray is False
+    assert config.start_minimized is False
     assert saved
+
+
+def test_startup_tray_setting_enables_tray_icon(gui, config) -> None:
+    gui.view.select_page("settings")
+    gui.view._vars["use_tray"].set(False)
+    gui.view._vars["startup_visibility"].set(gui.messages["settings_startup_tray"])
+    gui.view._save_settings()
+    assert config.start_minimized is True
+    assert config.use_tray is True
+
+
+def test_discover_suffix_controls_live_on_settings(gui, config, messages) -> None:
+    """Suffix / require filter belong on Settings, not the Streaming toolbar."""
+    gui.view.select_page("discover")
+    discover_labels = _all_text(gui.view.discover)
+    assert messages["discover_require_suffix"] not in discover_labels
+    assert messages["settings_discover_suffix"] not in discover_labels
+
+    gui.view.select_page("settings")
+    assert "discover_search_suffix" in gui.view._vars
+    assert "discover_require_suffix" in gui.view._vars
+    gui.view._vars["discover_search_suffix"].set("karaoke")
+    gui.view._vars["discover_require_suffix"].set(False)
+    gui.view._save_settings()
+    assert config.discover_search_suffix == "karaoke"
+    assert config.discover_require_suffix is False
+
+
+def test_cookies_settings_round_trip(gui, config, messages) -> None:
+    gui.view.select_page("settings")
+    assert "cookies_from_browser" in gui.view._vars
+    assert "cookies_file" in gui.view._vars
+    assert "cookies_risk_acknowledged" in gui.view._vars
+    gui.view._vars["cookies_risk_acknowledged"].set(True)
+    gui.view._sync_cookies_controls()
+    gui.view._vars["cookies_from_browser"].set(messages["settings_cookies_browser_firefox"])
+    gui.view._vars["cookies_file"].set("/tmp/example-cookies.txt")
+    gui.view._save_settings()
+    assert config.cookies_risk_acknowledged is True
+    assert config.cookies_risk_acknowledged_at
+    assert config.cookies_from_browser == "firefox"
+    assert config.cookies_file == "/tmp/example-cookies.txt"
+    gui.view.select_page("downloads")
+    gui.view.select_page("settings")
+    assert gui.view._vars["cookies_risk_acknowledged"].get()
+    assert gui.view._vars["cookies_from_browser"].get() == messages["settings_cookies_browser_firefox"]
+    assert gui.view._vars["cookies_file"].get() == "/tmp/example-cookies.txt"
+    assert str(gui.view._cookies_browser_combo.cget("state")) == "readonly"
+
+
+def test_cookies_settings_require_risk_acknowledgement(gui, config, messages) -> None:
+    gui.view.select_page("settings")
+    assert str(gui.view._cookies_browser_combo.cget("state")) == "disabled"
+    gui.view._vars["cookies_from_browser"].set(messages["settings_cookies_browser_firefox"])
+    gui.view._vars["cookies_file"].set("/tmp/example-cookies.txt")
+    gui.view._vars["cookies_risk_acknowledged"].set(False)
+    gui.view._save_settings()
+    assert config.cookies_risk_acknowledged is False
+    assert config.cookies_risk_acknowledged_at == ""
+    assert config.cookies_from_browser == ""
+    assert config.cookies_file == ""
+
+
+def test_clearing_cookie_risk_ack_stops_saving_cookies(gui, config, messages) -> None:
+    gui.view.select_page("settings")
+    gui.view._vars["cookies_risk_acknowledged"].set(True)
+    gui.view._sync_cookies_controls()
+    gui.view._vars["cookies_from_browser"].set(messages["settings_cookies_browser_chrome"])
+    gui.view._vars["cookies_file"].set("/tmp/keep-me.txt")
+    gui.view._save_settings()
+    assert config.cookies_from_browser == "chrome"
+    stamped = config.cookies_risk_acknowledged_at
+    assert stamped
+
+    gui.view._vars["cookies_risk_acknowledged"].set(False)
+    gui.view._sync_cookies_controls()
+    gui.view._save_settings()
+    assert config.cookies_risk_acknowledged is False
+    assert config.cookies_risk_acknowledged_at == ""
+    assert config.cookies_from_browser == ""
+    assert config.cookies_file == ""
+    assert str(gui.view._cookies_browser_combo.cget("state")) == "disabled"
 
 
 def test_nonsense_input_keeps_the_previous_value(gui, config) -> None:
@@ -368,12 +607,15 @@ def test_the_result_offers_the_finished_file(gui, tmp_path: Path) -> None:
     gui.nav.finish("done", STATUS_OK, "detail", target)
     assert gui.nav.result_path() == target
     assert not gui.nav._bar.winfo_ismapped(), "a full bar looks like an empty one"
+    assert gui.nav._auto_close_job is not None
+    gui.nav._cancel_auto_close()
 
 
 def test_a_failed_result_offers_no_file(gui) -> None:
     gui.nav.begin("x")
     gui.nav.finish("it broke", STATUS_FAILED)
     assert gui.nav.result_path() is None
+    assert gui.nav._auto_close_job is None
 
 
 def test_closing_the_window_cancels_a_pending_question(gui) -> None:

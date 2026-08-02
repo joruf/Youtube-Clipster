@@ -76,6 +76,16 @@ def bundled_ffmpeg_exe() -> Path:
     return bundled_ffmpeg_bin() / ("ffmpeg.exe" if IS_WINDOWS else "ffmpeg")
 
 
+def bundled_ffplay_exe() -> Path:
+    """Return the path the privately installed ``ffplay`` executable would have."""
+    return bundled_ffmpeg_bin() / ("ffplay.exe" if IS_WINDOWS else "ffplay")
+
+
+def bundled_mpv_exe() -> Path:
+    """Return a privately installed ``mpv`` path if we ever ship one beside FFmpeg."""
+    return bundled_ffmpeg_bin() / ("mpv.exe" if IS_WINDOWS else "mpv")
+
+
 def bootstrap_script() -> Path:
     """Return the path of the bootstrap launcher ``run.py``."""
     return PROJECT_ROOT / "run.py"
@@ -115,6 +125,14 @@ def history_file() -> Path:
     checkout keeps its own history.
     """
     return config_file().with_name("history.json")
+
+
+def discover_taste_file() -> Path:
+    """Return the JSON file holding Streaming like / dislike votes.
+
+    Stored beside the active configuration, like the download history.
+    """
+    return config_file().with_name("discover_taste.json")
 
 
 #: Locations searched for the application icon, most specific first.

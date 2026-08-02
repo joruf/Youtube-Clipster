@@ -158,6 +158,15 @@ SYSTEM_DEPENDENCIES: Tuple[SystemDependency, ...] = (
         hint="Windows downloads a build automatically instead of using a package manager.",
     ),
     SystemDependency(
+        name="mpv",
+        executable="mpv",
+        level=LEVEL_OPTIONAL,
+        system_key="mpv",
+        feature="in-tab Streaming video inside the Clipster window",
+        feature_key="dep_mpv",
+        hint="Install mpv so Video mode paints into the Streaming stage (not a separate window).",
+    ),
+    SystemDependency(
         name="Clipboard helper",
         executable="xclip",
         alternatives=("xclip", "xsel", "wl-paste"),
