@@ -198,6 +198,19 @@ class History:
                 return entry
         return None
 
+    def remove(self, entry: HistoryEntry) -> bool:
+        """Drop one entry from the list and save.
+
+        :param entry: The entry to remove; matched by identity first.
+        :return: ``True`` when it was found.
+        """
+        for index, candidate in enumerate(self._entries):
+            if candidate is entry or candidate == entry:
+                del self._entries[index]
+                self.save()
+                return True
+        return False
+
     def clear(self) -> None:
         """Drop every entry and save the empty list."""
         self._entries = []

@@ -50,12 +50,15 @@ class Gui:
         self.on_quit: Optional[Callable[[], None]] = None
         self.on_nav_closed: Optional[Callable[[], None]] = None
         self.on_view_closed: Optional[Callable[[], None]] = None
-        self.on_open_entry: Optional[Callable[[HistoryEntry], None]] = None
+        self.on_play_entry: Optional[Callable[[HistoryEntry], None]] = None
         self.on_reveal_entry: Optional[Callable[[HistoryEntry], None]] = None
+        self.on_delete_entry: Optional[Callable[[HistoryEntry], None]] = None
         self.on_clear_history: Optional[Callable[[], None]] = None
         self.on_open_folder: Optional[Callable[[], None]] = None
         self.on_submit_url: Optional[Callable[[str, str], None]] = None
         self.on_save_settings: Optional[Callable[[], None]] = None
+        self.on_check_updates: Optional[Callable[[], None]] = None
+        self.on_install_update: Optional[Callable[[], None]] = None
         self.on_open_result: Optional[Callable[[], None]] = None
         self.on_reveal_result: Optional[Callable[[], None]] = None
 
@@ -114,12 +117,15 @@ class Gui:
             icon=self._icon,
             on_close=self._view_closed,
             on_quit=self._quit,
-            on_open_entry=self._open_entry,
+            on_play_entry=self._play_entry,
             on_reveal_entry=self._reveal_entry,
+            on_delete_entry=self._delete_entry,
             on_clear_history=self._clear_history,
             on_open_folder=self._open_folder,
             on_submit_url=self._submit_url,
             on_save_settings=self._save_settings,
+            on_check_updates=self._check_updates,
+            on_install_update=self._install_update,
         )
 
     # ------------------------------------------------------------------
@@ -142,10 +148,21 @@ class Gui:
         if self.on_view_closed is not None:
             self.on_view_closed()
 
-    def _open_entry(self, entry: HistoryEntry) -> None:
-        """Forward the "open" button of a table row."""
-        if self.on_open_entry is not None:
-            self.on_open_entry(entry)
+    def _play_entry(self, entry: HistoryEntry) -> None:
+        """Forward the "play" button of a table row."""
+        if self.on_play_entry is not None:
+            self.on_play_entry(entry)
+
+    def _delete_entry(self, entry: HistoryEntry) -> None:
+        """Ask for confirmation, then forward the "delete" button of a row.
+
+        Deleting removes the file from the disk, so it is never done silently.
+        """
+        question = self.messages.format("history_delete_confirm", name=entry.name)
+        if not self.ask_yes_no(self.messages["history_delete"], question):
+            return
+        if self.on_delete_entry is not None:
+            self.on_delete_entry(entry)
 
     def _reveal_entry(self, entry: HistoryEntry) -> None:
         """Forward the "folder" button of a table row."""
@@ -173,6 +190,30 @@ class Gui:
         """Forward the settings save request."""
         if self.on_save_settings is not None:
             self.on_save_settings()
+
+    def _check_updates(self) -> None:
+        """Forward the "look for a new version" button."""
+        if self.on_check_updates is not None:
+            self.on_check_updates()
+
+    def _install_update(self) -> None:
+        """Ask for confirmation, then forward the install request."""
+        if not self.ask_yes_no(self.messages["update_install"],
+                               self.messages["update_confirm"]):
+            return
+        if self.on_install_update is not None:
+            self.on_install_update()
+
+    def show_update_state(self, text: str, offer_install: bool, busy: bool = False) -> None:
+        """Pass the update situation on to the about page.
+
+        :param text: The line shown next to the button.
+        :param offer_install: Turn the button into "install and restart".
+        :param busy: Disable the button while something is running.
+        :return: None
+        """
+        if self.view is not None:
+            self.view.show_update_state(text, offer_install, busy)
 
     def _open_result(self) -> None:
         """Forward the "open file" button of the navigation window."""

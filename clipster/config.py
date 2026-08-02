@@ -35,6 +35,12 @@ class Config:
     open_view_after_download: bool = False
     #: Maximum number of entries kept in the download list.
     history_limit: int = 100
+    #: Look for a newer version on GitHub when the program starts.
+    check_updates: bool = True
+    #: Run several downloads at the same time instead of one after another.
+    parallel_downloads: bool = False
+    #: Upper bound while :attr:`parallel_downloads` is on.
+    max_parallel_downloads: int = 3
     #: Place an icon in the system tray (needs pystray).
     use_tray: bool = True
     #: Start without showing the status window (only when the tray works).

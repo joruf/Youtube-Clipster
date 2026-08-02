@@ -470,7 +470,7 @@ class NavWindow:
         ttk.Button(self._buttons, text=self.messages["nav_close"], style="Accent.TButton",
                    command=self._closed).pack(side="right")
         if path is not None:
-            ttk.Button(self._buttons, text=self.messages["history_open"], command=self._on_open_file).pack(
+            ttk.Button(self._buttons, text=self.messages["history_play"], command=self._on_open_file).pack(
                 side="right", padx=(0, PAD_SMALL)
             )
             ttk.Button(self._buttons, text=self.messages["history_folder"], command=self._on_open_folder).pack(
@@ -505,7 +505,7 @@ class NavWindow:
         self._buttons.pack(fill="x", pady=(PAD, 0))
         ttk.Button(self._buttons, text=self.messages["nav_close"], style="Accent.TButton",
                    command=self._closed).pack(side="right")
-        ttk.Button(self._buttons, text=self.messages["history_open"],
+        ttk.Button(self._buttons, text=self.messages["history_play"],
                    command=self._on_open_file).pack(side="right", padx=(0, PAD_SMALL))
         ttk.Button(self._buttons, text=self.messages["history_folder"],
                    command=self._on_open_folder).pack(side="right", padx=(0, PAD_SMALL))

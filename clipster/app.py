@@ -37,6 +37,7 @@ from .history import STATUS_CANCELED, STATUS_FAILED, STATUS_OK, History, History
 from .i18n import Messages
 from .logging_setup import get_logger
 from .tray import TrayIcon
+from . import updater
 
 log = get_logger(__name__)
 
@@ -74,33 +75,56 @@ class ClipsterApp:
         )
 
         self._last_seen = ""
-        self._busy = False
+        #: URLs whose worker thread is still running.
+        self._active: Dict[str, threading.Thread] = {}
+        #: Only one question may be on screen at a time - the window is single.
+        self._asking = False
         self._quitting = False
         self._tray_active = False
         self._minimize_hint_shown = False
-        self._worker: Optional[threading.Thread] = None
-        self._cancel_event: Optional[threading.Event] = None
+        self._cancel_events: Dict[str, threading.Event] = {}
         self._quit_event = threading.Event()
         self._forced_format = ""
         #: Set when the user asked for a download that already exists.
         self._force_redownload = False
-        #: The link being processed right now, so it is not queued again.
-        self._current_url = ""
+        #: The run the navigation window currently belongs to.
+        self._nav_owner = ""
+        #: An update check or installation is in flight.
+        self._checking_update = False
+        #: Set once an update was installed, so the shutdown restarts us.
+        self._restart_after_update = False
         #: Links copied while a download runs, processed one after another.
         self._queue: "collections.deque[tuple]" = collections.deque()
 
         self.gui.on_quit = self.request_quit
         self.gui.on_nav_closed = self._nav_closed
         self.gui.on_view_closed = self._view_closed
-        self.gui.on_open_entry = self._open_entry
+        self.gui.on_play_entry = self._play_entry
+        self.gui.on_delete_entry = self._delete_entry
         self.gui.on_reveal_entry = self._reveal_entry
         self.gui.on_clear_history = self._clear_history
         self.gui.on_open_folder = self._open_download_folder
         self.gui.on_submit_url = self._submit_url
         self.gui.on_save_settings = self._save_settings
+        self.gui.on_check_updates = self._check_updates
+        self.gui.on_install_update = self._install_update
         self.gui.on_open_result = self._open_result
         self.gui.on_reveal_result = self._reveal_result
         self.gui.build_windows()
+
+    @property
+    def _busy(self) -> bool:
+        """Return ``True`` while the pipeline cannot take another link right now."""
+        if self._asking:
+            # The navigation window shows a question; a second one would replace it.
+            return True
+        return len(self._active) >= self._parallel_limit()
+
+    def _parallel_limit(self) -> int:
+        """Return how many downloads may run at the same time."""
+        if not self.config.parallel_downloads:
+            return 1
+        return max(1, self.config.max_parallel_downloads)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -181,6 +205,88 @@ class ClipsterApp:
             self.gui.toast(self.messages["started"])
         self._sync_autostart()
         self._maybe_offer_desktop_shortcut()
+        if self.config.check_updates and updater.due(self.config.update_check_hours):
+            self._check_updates(announce=False)
+
+    # ------------------------------------------------------------------
+    # Updates
+    # ------------------------------------------------------------------
+    def _check_updates(self, announce: bool = True) -> None:
+        """Ask GitHub for the newest commit, without blocking the interface.
+
+        :param announce: Show the result even when nothing is new; the startup
+            check stays quiet unless there is something to report.
+        :return: None
+        """
+        if self._checking_update:
+            return
+        self._checking_update = True
+        self.gui.show_update_state(self.messages["update_checking"], False, busy=True)
+
+        def work() -> None:
+            """Talk to GitHub off the interface thread."""
+            info = updater.check()
+            self.bridge.post(self._update_checked, info, announce)
+
+        threading.Thread(target=work, name="clipster-update-check", daemon=True).start()
+
+    def _update_checked(self, info: "updater.UpdateInfo", announce: bool) -> None:
+        """Show what the check found.
+
+        :param info: The result of :func:`clipster.updater.check`.
+        :param announce: Report "nothing new" and failures as well.
+        :return: None
+        """
+        self._checking_update = False
+        if not info.known:
+            text = self.messages.format("update_failed", details=info.error or "?")
+            self.gui.show_update_state(text, False)
+            if announce:
+                log.warning("%s", text)
+            return
+        if info.available:
+            text = self.messages.format("update_available", summary=info.summary or info.remote)
+            self.gui.show_update_state(text, True)
+            log.info("%s", text)
+            if not self.tray.notify(text):
+                self.gui.toast(text)
+            return
+        text = self.messages.format("update_current", commit=info.remote)
+        self.gui.show_update_state(text, False)
+        if announce:
+            log.info("%s", text)
+
+    def _install_update(self) -> None:
+        """Fetch the new version and restart, once the user confirmed."""
+        if self._checking_update:
+            return
+        self._checking_update = True
+        self.gui.show_update_state(self.messages["update_installing"], False, busy=True)
+
+        def work() -> None:
+            """Do the fetching off the interface thread."""
+            ok, message = updater.apply()
+            self.bridge.post(self._update_applied, ok, message)
+
+        threading.Thread(target=work, name="clipster-update", daemon=True).start()
+
+    def _update_applied(self, ok: bool, message: str) -> None:
+        """Restart when the update worked, report the reason when it did not.
+
+        :param ok: Whether the new version was fetched.
+        :param message: Output of the update, for the log and the user.
+        :return: None
+        """
+        self._checking_update = False
+        if not ok:
+            text = self.messages.format("update_error", details=message)
+            log.error("%s", text)
+            self.gui.show_update_state(text, True)
+            self.gui.show_error(self.messages["error_title"], text)
+            return
+        log.info("Update installed: %s", message)
+        self._restart_after_update = True
+        self.request_quit()
 
     def _sync_autostart(self) -> None:
         """Make the autostart entry match the configuration."""
@@ -218,8 +324,7 @@ class ClipsterApp:
         self._quitting = True
         self._quit_event.set()
         self._queue.clear()
-        if self._cancel_event is not None:
-            self._cancel_event.set()
+        self._cancel_all()
         try:
             self.gui.root.quit()
         except Exception:  # pragma: no cover - interpreter already gone
@@ -229,15 +334,18 @@ class ClipsterApp:
         """Release every resource after the event loop has ended."""
         self._quitting = True
         self._quit_event.set()
-        if self._cancel_event is not None:
-            self._cancel_event.set()
-        worker = self._worker
-        if worker is not None and worker.is_alive():
-            worker.join(timeout=5.0)
+        self._cancel_all()
+        for worker in list(self._active.values()):
+            if worker.is_alive():
+                worker.join(timeout=5.0)
         self.tray.stop()
         self.bridge.stop()
         self.gui.destroy()
         log.info("%s", self.messages["stopped"])
+        if self._restart_after_update:
+            # Last thing before the process ends: the windows and the lock are
+            # gone, so the new instance can take over cleanly.
+            updater.restart()
 
     # ------------------------------------------------------------------
     # Window callbacks
@@ -311,14 +419,38 @@ class ClipsterApp:
         self.history.add(entry)
         self.gui.render_history(self.history.entries)
 
-    def _open_entry(self, entry: HistoryEntry) -> None:
-        """Play or open the file of a table row."""
+    def _play_entry(self, entry: HistoryEntry) -> None:
+        """Play the file of a table row with the system's default player."""
         target = entry.file_path()
         if target is None:
             self.gui.show_error(self.messages["error_title"], self.messages["history_missing"])
             self.gui.render_history(self.history.entries)
             return
         shortcuts.open_path(target)
+
+    def _delete_entry(self, entry: HistoryEntry) -> None:
+        """Delete the downloaded file and drop the row from the list.
+
+        An entry whose file is already gone is simply removed - that is the only
+        way to clear a failed attempt out of the list.
+
+        :param entry: The entry the user wants gone.
+        :return: None
+        """
+        target = entry.file_path()
+        if target is not None:
+            try:
+                target.unlink()
+                log.info("Deleted %s", target)
+            except OSError as exc:
+                log.error("Could not delete %s: %s", target, exc)
+                self.gui.show_error(
+                    self.messages["error_title"],
+                    self.messages.format("history_delete_failed", details=exc),
+                )
+                return
+        self.history.remove(entry)
+        self.gui.render_history(self.history.entries)
 
     def _reveal_entry(self, entry: HistoryEntry) -> None:
         """Open the folder of a table row and select the file."""
@@ -381,7 +513,7 @@ class ClipsterApp:
             self._force_redownload = force
             self._start_worker(url)
             return
-        if url == self._current_url and not force:
+        if url in self._active and not force:
             log.debug("%s is downloading right now - ignored.", url)
             return
         if any(queued == url for queued, _, _ in self._queue):
@@ -415,34 +547,77 @@ class ClipsterApp:
         nav = self.gui.nav
         if nav is None:  # pragma: no cover - windows are built in __init__
             return
-        self._busy = True
-        self._current_url = url
+        self._asking = True
+        self._nav_owner = url
+        self._cancel_events[url] = threading.Event()
         self._set_status(self.messages["status_working"])
         nav.begin(self.messages["link_received"])
-        self._cancel_event = threading.Event()
-        self._worker = threading.Thread(target=self._handle_url, args=(url,), name="clipster-download", daemon=True)
-        self._worker.start()
+        worker = threading.Thread(target=self._handle_url, args=(url,),
+                                  name="clipster-download", daemon=True)
+        self._active[url] = worker
+        worker.start()
 
-    def _finish_worker(self, status_key: str, **kwargs: object) -> None:
-        """Reset the state machine after a finished pipeline run.
+    def _finish_worker(self, url: str, status_key: str, **kwargs: object) -> None:
+        """Retire one finished run and let the next link in.
 
+        :param url: The URL whose run ended.
         :param status_key: Translation key for the tray tooltip.
         :param kwargs: Placeholder values for the status text.
         :return: None
         """
-        self._cancel_event = None
-        self._worker = None
+        self._active.pop(url, None)
+        self._cancel_events.pop(url, None)
+        if self._nav_owner == url:
+            self._nav_owner = ""
+            # A run that ends before its question was answered - a metadata
+            # error, a cancel - would otherwise leave the lock set for good.
+            self._asking = False
         self._forced_format = ""
         self._force_redownload = False
-        self._current_url = ""
         # Re-sync so clearing the clipboard cannot re-trigger the same link.
         self._last_seen = self.clipboard.read()
-        self._busy = False
         self._set_status(self.messages.format(status_key, **kwargs))
         if self._queue:
             # A short delay lets the user see the result before the next
             # question replaces it.
             self.gui.root.after(1200, self._start_next)
+
+    def _cancel_all(self) -> None:
+        """Signal every running download to stop."""
+        for event in list(self._cancel_events.values()):
+            event.set()
+
+    def _cancel_of(self, url: str) -> threading.Event:
+        """Return the cancel flag of one run, creating it when missing.
+
+        :param url: The URL of the run.
+        :return: Its cancel event.
+        """
+        return self._cancel_events.setdefault(url, threading.Event())
+
+    def _nav_post(self, url: str, method: str, *args: object) -> None:
+        """Call a navigation window method, but only for the owning run.
+
+        :param url: The URL of the run that wants to draw.
+        :param method: Name of the :class:`~clipster.navwindow.NavWindow` method.
+        :param args: Arguments for that method.
+        :return: None
+        """
+        nav = self.gui.nav
+        if nav is None or not self._owns_nav(url):
+            return
+        self.bridge.post(getattr(nav, method), *args)
+
+    def _owns_nav(self, url: str) -> bool:
+        """Return ``True`` when this run may write to the navigation window.
+
+        With several downloads in flight the single window belongs to the most
+        recently started one; the others keep going and report into the list.
+
+        :param url: The URL of the run.
+        :return: Whether the window may be touched.
+        """
+        return self._nav_owner == url
 
     def _set_status(self, text: str) -> None:
         """Mirror the current status into the tray tooltip.
@@ -467,21 +642,22 @@ class ClipsterApp:
         if nav is None:  # pragma: no cover
             return
         try:
-            self.bridge.post(nav.set_status, self.messages["fetching_metadata"])
-            self.bridge.post(nav.set_percent, None)
+            self._nav_post(url, "set_status", self.messages["fetching_metadata"])
+            self._nav_post(url, "set_percent", None)
 
             try:
                 info = self.downloader.fetch_info(url)
             except MetadataError as exc:
+                self.bridge.post(self._question_answered)
                 details = _short_error(exc)
                 log.error("Video information could not be loaded: %s", details)
                 message = self.messages.format("error_metadata", details=details)
-                self.bridge.post(nav.finish, message, STATUS_FAILED)
+                self._nav_post(url, "finish", message, STATUS_FAILED)
                 self._store(url=url, status=STATUS_FAILED, error=message, error_kind="metadata")
-                self.bridge.post(self._finish_worker, "status_failed")
+                self.bridge.post(self._finish_worker, url, "status_failed")
                 return
 
-            if self._aborted():
+            if self._aborted(url):
                 self._cancel_run(url, info)
                 return
 
@@ -503,8 +679,8 @@ class ClipsterApp:
             self._run_download(url, info, media_format, language)
         except Exception:  # pragma: no cover - defensive, keeps the app alive
             log.exception("Unexpected error while processing the link")
-            self.bridge.post(nav.finish, self.messages["error_title"], STATUS_FAILED)
-            self.bridge.post(self._finish_worker, "status_failed")
+            self._nav_post(url, "finish", self.messages["error_title"], STATUS_FAILED)
+            self.bridge.post(self._finish_worker, url, "status_failed")
 
     def _auto_language(self, info: VideoInfo) -> str:
         """Return the audio track to use without asking the user.
@@ -533,6 +709,7 @@ class ClipsterApp:
         """
         if self._forced_format:
             # Started from the view window toolbar, which already picked a format.
+            self.bridge.post(self._question_answered)
             return {"format": self._forced_format, "language": self._auto_language(info)}
         prompt = Prompt()
         self.bridge.post(
@@ -545,8 +722,9 @@ class ClipsterApp:
             self.config.ask_audio_language,
             info.original_language(),
         )
-        cancel = self._cancel_event or threading.Event()
+        cancel = self._cancel_of(info.url)
         answer = prompt.wait(self._quit_event, cancel, nav.cancel_event)
+        self.bridge.post(self._question_answered)
         if not isinstance(answer, dict):
             return None
         if not answer.get("language"):
@@ -578,7 +756,7 @@ class ClipsterApp:
 
         detail = "{0}  ·  {1}".format(entry.name, format_size(entry.size)) if entry.size else entry.name
         nav.already_downloaded(info.title, target, detail, again)
-        self._finish_worker("status_done", title=_trim(entry.name, 55))
+        self._finish_worker(url, "status_done", title=_trim(entry.name, 55))
 
     def _run_download(self, url: str, info: VideoInfo, media_format: str, language: str) -> None:
         """Download the video and report the outcome.
@@ -592,20 +770,21 @@ class ClipsterApp:
         nav = self.gui.nav
         if nav is None:  # pragma: no cover
             return
-        cancel_event = self._cancel_event or threading.Event()
-        self.bridge.call(nav.set_headline, info.title)
-        self.bridge.call(nav.show_progress, media_format, info.duration or 0)
+        cancel_event = self._cancel_of(url)
+        if self._owns_nav(url):
+            self.bridge.call(nav.set_headline, info.title)
+            self.bridge.call(nav.show_progress, media_format, info.duration or 0)
 
         def on_progress(progress: Progress) -> None:
             """Mirror a downloader progress update into the navigation window."""
-            if nav.cancel_event.is_set():
+            if self._owns_nav(url) and nav.cancel_event.is_set():
                 cancel_event.set()
-            self.bridge.post(nav.set_status, self._phase_text(progress, media_format), progress.detail)
-            self.bridge.post(nav.set_percent, progress.percent)
+            self._nav_post(url, "set_status", self._phase_text(progress, media_format), progress.detail)
+            self._nav_post(url, "set_percent", progress.percent)
 
         watcher = threading.Thread(
             target=_mirror_event,
-            args=(nav.cancel_event, cancel_event),
+            args=(nav.cancel_event if self._owns_nav(url) else threading.Event(), cancel_event),
             name="clipster-cancel-watch",
             daemon=True,
         )
@@ -629,7 +808,7 @@ class ClipsterApp:
             cancel_event.set()
             message = self._error_text(exc)
             log.error("Download failed: %s", _short_error(exc))
-            self.bridge.post(nav.finish, message, STATUS_FAILED)
+            self._nav_post(url, "finish", message, STATUS_FAILED)
             self._store(
                 url=url,
                 title=info.title,
@@ -639,15 +818,16 @@ class ClipsterApp:
                 error=message,
                 error_kind=exc.kind,
             )
-            self.bridge.post(self._finish_worker, "status_failed")
+            self.bridge.post(self._finish_worker, url, "status_failed")
             return
         finally:
             cancel_event.set()
 
         name = result.name if result is not None else info.title
         size = _file_size(result)
-        self.bridge.post(
-            nav.finish,
+        self._nav_post(
+            url,
+            "finish",
             self.messages["nav_done"],
             STATUS_OK,
             "{0}  ·  {1}".format(name, format_size(size)) if size else name,
@@ -672,7 +852,13 @@ class ClipsterApp:
             self.bridge.post(self.gui.show_view, "downloads")
 
         log.info("%s (%s)", self.messages["progress_finished"], name)
-        self.bridge.post(self._finish_worker, "status_done", title=_trim(name, 55))
+        self.bridge.post(self._finish_worker, url, "status_done", title=_trim(name, 55))
+
+    def _question_answered(self) -> None:
+        """Release the interactive lock so the next link may be picked up."""
+        self._asking = False
+        if self._queue:
+            self.gui.root.after(200, self._start_next)
 
     def _cancel_run(self, url: str, info: Optional[VideoInfo] = None, media_format: str = "") -> None:
         """Record a canceled run and reset the state machine.
@@ -682,9 +868,7 @@ class ClipsterApp:
         :param media_format: The chosen format, when it was already known.
         :return: None
         """
-        nav = self.gui.nav
-        if nav is not None:
-            self.bridge.post(nav.finish, self.messages["progress_canceled"], STATUS_CANCELED)
+        self._nav_post(url, "finish", self.messages["progress_canceled"], STATUS_CANCELED)
         self._store(
             url=url,
             title=info.title if info is not None else "",
@@ -692,7 +876,7 @@ class ClipsterApp:
             duration=(info.duration or 0) if info is not None else 0,
             status=STATUS_CANCELED,
         )
-        self.bridge.post(self._finish_worker, "status_canceled")
+        self.bridge.post(self._finish_worker, url, "status_canceled")
 
     def _store(self, **fields: object) -> None:
         """Queue one history entry for storage on the Tk thread.
@@ -705,14 +889,18 @@ class ClipsterApp:
             entry.name = entry.title or entry.url
         self.bridge.post(self._record, entry)
 
-    def _aborted(self) -> bool:
-        """Return ``True`` when the run should stop (quit or cancel pressed)."""
+    def _aborted(self, url: str) -> bool:
+        """Return ``True`` when this run should stop (quit or cancel pressed).
+
+        :param url: The URL of the run.
+        :return: Whether it must not continue.
+        """
         if self._quitting or self._quit_event.is_set():
             return True
         nav = self.gui.nav
-        if nav is not None and nav.cancel_event.is_set():
+        if nav is not None and self._owns_nav(url) and nav.cancel_event.is_set():
             return True
-        return self._cancel_event is not None and self._cancel_event.is_set()
+        return self._cancel_of(url).is_set()
 
     def _phase_text(self, progress: Progress, media_format: str) -> str:
         """Return the localized status text for a progress phase.

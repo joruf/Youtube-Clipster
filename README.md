@@ -160,8 +160,10 @@ The track question only appears when the video really offers several languages *
 `ask_audio_language` is on. Otherwise the track is picked automatically: the only one that exists,
 or – with several – the one the video was published with, which is marked `· original` in the list.
 
-**Copying several links in a row** is fine: they queue up and run one after another instead of being
-dropped, up to twenty waiting at a time.
+**Copying several links in a row** is fine: they queue up instead of being dropped, up to twenty
+waiting at a time. With `parallel_downloads` on they start straight away, up to
+`max_parallel_downloads` at once; the question about format and audio track stays one at a time,
+because there is only one navigation window.
 
 **A video that is already there** is not fetched twice. When the same link in the same format was
 downloaded before and the file still exists, the window says so and offers to open it, its folder, or
@@ -200,8 +202,10 @@ Open it from the tray icon, or let it open itself after every download
 
 - **Toolbar** – paste a link and press *Download* to start one by hand
 - **Sidebar** – filter by *All*, *Ready*, *Failed* or *Canceled*, with live counts
-- **Table** – name, length, size and date; *Open* plays the file, *Folder* reveals it in the file
-  manager. Both are disabled once a file has been moved or deleted.
+- **Table** – name, length, size and date, plus three buttons per row: *Play* opens the file in the
+  system's default player, *Folder* reveals it in the file manager, *Delete* removes the file from
+  the disk and the row from the list. The first two are disabled once a file has been moved or
+  deleted; *Delete* stays available, so a failed attempt can be cleared away.
 - **Failed rows** say what went wrong right under the name
 
 Settings are edited in the same window and written straight to `config.json`:
@@ -242,6 +246,31 @@ at startup and closing it quits the program, so there is always a way out.
 
 ---
 
+## Updates
+
+The about page shows whether the installation is current and updates it on request:
+
+![About page](assets/screenshots/view-about.png)
+
+The repository publishes neither releases nor tags, so "newer" means the head commit of `main`
+differs from the one this installation sits on. The check runs at startup at most once every
+`update_check_hours` and can be turned off with `check_updates`.
+
+Installing takes one of two routes:
+
+| Situation | What happens |
+|---|---|
+| Started from a git clone | `git pull --ff-only` |
+| Installed from an archive | the branch ZIP is downloaded and unpacked over the installation |
+
+Neither route can lose your work: the git route refuses to run when the working tree is dirty or has
+local commits, and the archive route never touches `config.json`, `history.json` or the `.git`
+folder. Your downloads live outside the installation anyway.
+
+Afterwards the program restarts itself.
+
+---
+
 ## Configuration
 
 The configuration is a JSON file that is created with defaults on the first start:
@@ -263,6 +292,9 @@ For a **portable setup** copy `config.example.json` to `config.json` **next to
 | `default_format` | `"mp3"` | Format preselected in the navigation window (`mp3` / `mp4`) |
 | `open_view_after_download` | `false` | Open the view window when a download finished |
 | `history_limit` | `100` | Maximum number of entries kept in the download list |
+| `check_updates` | `true` | Look for a newer version on GitHub at startup |
+| `parallel_downloads` | `false` | Run several downloads at the same time |
+| `max_parallel_downloads` | `3` | Upper bound while `parallel_downloads` is on |
 | `use_tray` | `true` | Place an icon in the system tray |
 | `start_minimized` | `true` | Start in the tray without showing any window |
 | `open_folder_after_download` | `false` | Open the target folder when a download finished |
@@ -390,6 +422,7 @@ youtube-clipster/
     ├── bridge.py            # marshals GUI calls onto the Tk thread (incl. Prompt)
     ├── downloader.py        # yt-dlp integration (metadata, download, progress)
     ├── history.py           # the persistent download list (history.json)
+    ├── updater.py           # checks GitHub, fetches, restarts
     ├── clipboard.py         # Win32 / wl-clipboard / xclip / xsel / pbpaste / Tk
     ├── singleinstance.py    # flock (POSIX) and named mutex (Windows)
     ├── shortcuts.py         # desktop shortcut, autostart, open file / reveal folder

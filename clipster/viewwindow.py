@@ -43,9 +43,8 @@ _COL_NAME_MIN = 150
 _COL_DURATION = 62
 _COL_SIZE = 78
 _COL_DATE = 118
-#: Width reserved for the scrollbar so header and rows stay aligned; matches
-#: the width configured for Vertical.TScrollbar in clipster.theme.
-_SCROLLBAR = 11
+#: Gap between two row buttons.
+_ROW_BUTTON_GAP = 4
 
 #: The sidebar filters, as ``(key, message key)``.
 _FILTERS = (
@@ -71,13 +70,21 @@ class _Scroller(ttk.Frame):
         :param palette: The colour scheme.
         """
         super().__init__(master, style="Panel.TFrame")
-        self._canvas = tk.Canvas(
-            self, background=palette.panel, highlightthickness=0, borderwidth=0, takefocus=0
-        )
-        self._scrollbar = ttk.Scrollbar(self, orient="vertical", command=self._canvas.yview)
-        self._canvas.configure(yscrollcommand=self._scrollbar.set)
-        self._canvas.pack(side="left", fill="both", expand=True)
+        # The scrollbar sits beside the whole column, so anything packed into
+        # `stack` - the heading strip included - is exactly as wide as the rows.
+        self._scrollbar = ttk.Scrollbar(self, orient="vertical")
         self._scrollbar.pack(side="right", fill="y")
+        #: Pack the heading strip in here; the canvas fills what is left.
+        self.stack = ttk.Frame(self, style="Panel.TFrame")
+        self.stack.pack(side="left", fill="both", expand=True)
+        # A real child of `stack`, not merely packed into it: with `in_` the
+        # canvas stays a child of the scroller and `stack` covers it.
+        self._canvas = tk.Canvas(
+            self.stack, background=palette.panel, highlightthickness=0, borderwidth=0, takefocus=0
+        )
+        self._canvas.pack(side="bottom", fill="both", expand=True)
+        self._scrollbar.configure(command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=self._scrollbar.set)
 
         #: Rows are added to this frame.
         self.body = ttk.Frame(self._canvas, style="Panel.TFrame")
@@ -138,12 +145,15 @@ class ViewWindow:
         icon: Optional[tk.PhotoImage],
         on_close: Callable[[], None],
         on_quit: Callable[[], None],
-        on_open_entry: Callable[[HistoryEntry], None],
+        on_play_entry: Callable[[HistoryEntry], None],
         on_reveal_entry: Callable[[HistoryEntry], None],
+        on_delete_entry: Callable[[HistoryEntry], None],
         on_clear_history: Callable[[], None],
         on_open_folder: Callable[[], None],
         on_submit_url: Callable[[str, str], None],
         on_save_settings: Callable[[], None],
+        on_check_updates: Callable[[], None],
+        on_install_update: Callable[[], None],
     ) -> None:
         """
         :param master: The hidden Tk root.
@@ -153,12 +163,15 @@ class ViewWindow:
         :param icon: Window icon, or ``None``.
         :param on_close: Called when the window is closed.
         :param on_quit: Called by the quit button.
-        :param on_open_entry: Play/open the file of a row.
+        :param on_play_entry: Play the file of a row in the default player.
         :param on_reveal_entry: Open the folder of a row.
+        :param on_delete_entry: Delete the file of a row and the row itself.
         :param on_clear_history: Empty the list.
         :param on_open_folder: Open the download folder.
         :param on_submit_url: Start a download for a pasted URL and format.
         :param on_save_settings: Persist the configuration after an edit.
+        :param on_check_updates: Ask GitHub whether a newer version exists.
+        :param on_install_update: Fetch the new version and restart.
         """
         self.messages = messages
         self.palette = palette
@@ -167,13 +180,20 @@ class ViewWindow:
 
         self._on_close = on_close
         self._on_quit = on_quit
-        self._on_open_entry = on_open_entry
+        self._on_play_entry = on_play_entry
         self._on_reveal_entry = on_reveal_entry
+        self._on_delete_entry = on_delete_entry
         self._on_clear_history = on_clear_history
         self._on_open_folder = on_open_folder
         self._on_submit_url = on_submit_url
         self._on_save_settings = on_save_settings
+        self._on_check_updates = on_check_updates
+        self._on_install_update = on_install_update
 
+        #: Width the three row buttons need; measured, because "Abspielen" is
+        #: wider than "Play" and a fixed number would clip in one language or
+        #: waste space in the other.
+        self._actions_width = 0
         self._entries: List[HistoryEntry] = []
         self._filter = "all"
         self._page = "downloads"
@@ -187,8 +207,8 @@ class ViewWindow:
         self.window.withdraw()
         self.window.title(APP_SHORT_NAME)
         self.window.configure(background=palette.base)
-        self.window.minsize(880, 620)
-        self.window.geometry("1020x720")
+        self.window.minsize(960, 620)
+        self.window.geometry("1120x720")
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
         if icon is not None:
             try:
@@ -292,22 +312,42 @@ class ViewWindow:
         table = ttk.Frame(body, style="TFrame", padding=(PAD, PAD_SMALL, PAD, 0))
         table.pack(side="left", fill="both", expand=True)
 
-        header = ttk.Frame(table, style="TFrame")
-        header.pack(fill="x", padx=(0, _SCROLLBAR))
+        self._actions_width = self._measure_actions(table)
+
+        self._scroller = _Scroller(table, self.palette)
+        self._scroller.pack(fill="both", expand=True)
+
+        header = ttk.Frame(self._scroller.stack, style="Panel.TFrame")
+        header.pack(side="top", fill="x")
+        self._header = header
         self._configure_columns(header)
+        # Empty grid columns are distributed differently from ones holding a
+        # widget, which left the headings out of step with their values. These
+        # two spacers give the heading strip the same structure as a row.
+        # The badge is narrower than its column, so a thin spacer with the same
+        # gap mirrors it; the action column has no gap and must claim its full
+        # measured width.
+        ttk.Frame(header, style="TFrame", width=1, height=1).grid(
+            row=0, column=0, sticky="ew", padx=(0, PAD_SMALL)
+        )
+        ttk.Frame(header, style="TFrame", width=self._actions_width, height=1).grid(
+            row=0, column=5, sticky="ew"
+        )
         for column, key, anchor in (
             (1, "column_name", "w"),
             (2, "column_duration", "e"),
             (3, "column_size", "e"),
             (4, "column_date", "w"),
         ):
-            ttk.Label(header, text=self.messages[key].upper(), style="Muted.TLabel", anchor=anchor).grid(
+            # width=1 keeps the heading from widening its column: the column
+            # sizes come from the constants above, and the label just stretches
+            # into whatever it gets. Otherwise a long heading such as "GRÖSSE"
+            # would push the header out of step with the values below.
+            ttk.Label(header, text=self.messages[key].upper(), style="Muted.TLabel",
+                      anchor=anchor, width=1).grid(
                 row=0, column=column, sticky="ew", padx=(0, PAD_SMALL), pady=(0, 6)
             )
-        ttk.Separator(table, orient="horizontal").pack(fill="x")
-
-        self._scroller = _Scroller(table, self.palette)
-        self._scroller.pack(fill="both", expand=True)
+        ttk.Separator(self._scroller.stack, orient="horizontal").pack(side="top", fill="x")
 
         footer = ttk.Frame(page, style="Toolbar.TFrame", padding=(PAD, PAD_SMALL))
         footer.pack(fill="x")
@@ -323,8 +363,50 @@ class ViewWindow:
         )
         return page
 
-    @staticmethod
-    def _configure_columns(frame: tk.Misc) -> None:
+    def show_update_state(self, text: str, offer_install: bool, busy: bool = False) -> None:
+        """Report the update situation on the about page.
+
+        :param text: The line shown next to the button.
+        :param offer_install: Turn the button into "install and restart".
+        :param busy: Disable the button while something is running.
+        :return: None
+        """
+        self._update_label.configure(text=text)
+        self._update_button.configure(
+            text=self.messages["update_install"] if offer_install else self.messages["update_check"],
+            command=self._on_install_update if offer_install else self._on_check_updates,
+            style="Accent.TButton" if offer_install else "Row.TButton",
+        )
+        try:
+            self._update_button.state(["disabled"] if busy else ["!disabled"])
+        except tk.TclError:  # pragma: no cover
+            pass
+
+    def _measure_actions(self, master: tk.Misc) -> int:
+        """Return the width the three row buttons occupy, in pixels.
+
+        Built once, measured and thrown away.  The header has no widget in that
+        column, so the width has to be reserved explicitly - otherwise the
+        weighted name column swallows the difference and every heading sits
+        left of its values.  Measuring beats a constant, because "Abspielen" is
+        wider than "Play".
+
+        :param master: Any widget of the right window, used as a parent.
+        :return: The required width including the gaps between the buttons.
+        """
+        probe = ttk.Frame(master, style="TFrame")
+        for index, key in enumerate(("history_play", "history_folder", "history_delete")):
+            ttk.Button(probe, text=self.messages[key], style="Row.TButton").pack(
+                side="left", padx=(_ROW_BUTTON_GAP if index else 0, 0)
+            )
+        # The assembled frame is measured, not the sum of its parts: only a
+        # layout pass knows the real geometry.
+        probe.update_idletasks()
+        width = probe.winfo_reqwidth()
+        probe.destroy()
+        return width
+
+    def _configure_columns(self, frame: tk.Misc) -> None:
         """Apply the shared column geometry to a header or row frame.
 
         :param frame: The frame whose columns are configured.
@@ -337,8 +419,7 @@ class ViewWindow:
         frame.columnconfigure(2, minsize=_COL_DURATION, weight=0)
         frame.columnconfigure(3, minsize=_COL_SIZE, weight=0)
         frame.columnconfigure(4, minsize=_COL_DATE, weight=0)
-        # The action column takes exactly what its two buttons need.
-        frame.columnconfigure(5, weight=0)
+        frame.columnconfigure(5, minsize=self._actions_width, weight=0)
 
     def set_filter(self, key: str) -> None:
         """Restrict the table to one status.
@@ -510,24 +591,26 @@ class ViewWindow:
         actions = ttk.Frame(row, style="Panel.TFrame")
         actions.grid(row=0, column=5, sticky="ne")
         available = entry.file_path() is not None
-        open_button = ttk.Button(
-            actions,
-            text=self.messages["history_open"],
-            style="Row.TButton",
-            width=8,
-            command=lambda e=entry: self._on_open_entry(e),
+
+        play_button = ttk.Button(
+            actions, text=self.messages["history_play"], style="Row.TButton",
+            command=lambda e=entry: self._on_play_entry(e),
         )
-        open_button.pack(side="left")
+        play_button.pack(side="left")
         folder_button = ttk.Button(
-            actions,
-            text=self.messages["history_folder"],
-            style="Row.TButton",
-            width=8,
+            actions, text=self.messages["history_folder"], style="Row.TButton",
             command=lambda e=entry: self._on_reveal_entry(e),
         )
-        folder_button.pack(side="left", padx=(6, 0))
+        folder_button.pack(side="left", padx=(_ROW_BUTTON_GAP, 0))
+        # Deleting stays possible for entries whose file is already gone, so a
+        # failed or stale row can be cleared away.
+        ttk.Button(
+            actions, text=self.messages["history_delete"], style="Row.TButton",
+            command=lambda e=entry: self._on_delete_entry(e),
+        ).pack(side="left", padx=(_ROW_BUTTON_GAP, 0))
+
         if not available:
-            for button in (open_button, folder_button):
+            for button in (play_button, folder_button):
                 try:
                     button.state(["disabled"])
                 except tk.TclError:  # pragma: no cover
@@ -641,6 +724,8 @@ class ViewWindow:
         self._add_entry(left, "settings_history_limit", "history_limit", width=8)
 
         for key, label in (
+            ("check_updates", "settings_check_updates"),
+            ("parallel_downloads", "settings_parallel"),
             ("open_view_after_download", "settings_open_view"),
             ("open_folder_after_download", "settings_open_folder"),
             ("clear_clipboard_after_download", "settings_clear_clipboard"),
@@ -726,6 +811,8 @@ class ViewWindow:
         self._vars["interval_sec"].set("{0:g}".format(self.config.interval_sec))
         self._vars["history_limit"].set(str(self.config.history_limit))
         for key in (
+            "check_updates",
+            "parallel_downloads",
             "open_view_after_download",
             "open_folder_after_download",
             "clear_clipboard_after_download",
@@ -753,6 +840,8 @@ class ViewWindow:
         self.config.interval_sec = _as_float(self._vars["interval_sec"].get(), self.config.interval_sec, 0.5, 60.0)
         self.config.history_limit = _as_int(self._vars["history_limit"].get(), self.config.history_limit, 1, 10000)
         for key in (
+            "check_updates",
+            "parallel_downloads",
             "open_view_after_download",
             "open_folder_after_download",
             "clear_clipboard_after_download",
@@ -829,6 +918,15 @@ class ViewWindow:
 
         ttk.Label(page, text=APP_SHORT_NAME, style="Title.TLabel").pack(anchor="w")
         ttk.Label(page, text="Version {0}".format(APP_VERSION), style="Muted.TLabel").pack(anchor="w")
+
+        update = ttk.Frame(page, style="TFrame")
+        update.pack(fill="x", pady=(PAD_SMALL, 0))
+        self._update_label = ttk.Label(update, text=self.messages["update_unknown"],
+                                       style="Muted.TLabel")
+        self._update_label.pack(side="left")
+        self._update_button = ttk.Button(update, text=self.messages["update_check"],
+                                         style="Row.TButton", command=self._on_check_updates)
+        self._update_button.pack(side="left", padx=(PAD_SMALL, 0))
         ttk.Label(page, text=self.messages["about_text"], wraplength=760, justify="left").pack(
             anchor="w", pady=(PAD, 0)
         )
