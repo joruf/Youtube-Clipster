@@ -521,32 +521,30 @@ def seed_entries_from_folder(
     folder: Path,
     *,
     limit: int = _MAX_FOLDER_SEEDS,
+    max_depth: int = _DISK_SCAN_MAX_DEPTH,
+    max_visited: int = _DISK_SCAN_MAX_VISITED,
 ) -> List[HistoryEntry]:
-    """Build synthetic seed entries from audio/video files in ``folder``.
+    """Build synthetic seed entries from audio/video files under ``folder``.
 
-    Newer files are preferred.  Nested directories are not scanned.
+    Walks nested directories with the same depth / visit caps as the bounded
+    disk scan. Hidden and system-ish subdirectories are skipped. Newer files
+    are preferred.
 
-    :param folder: Directory that holds songs the user likes.
+    :param folder: Directory that holds songs the user likes (e.g. Downloads).
     :param limit: Maximum number of seeds to return.
+    :param max_depth: Maximum directory depth relative to ``folder`` (0 = root only).
+    :param max_visited: Abort after this many files/dirs inspected.
     :return: History-shaped seeds usable by :func:`discover_tracks`.
     """
     root = Path(folder).expanduser()
     if not root.is_dir():
         return []
-    files: List[Path] = []
-    try:
-        for path in root.iterdir():
-            if not path.is_file():
-                continue
-            if path.suffix.lower() not in _MEDIA_EXTENSIONS:
-                continue
-            files.append(path)
-    except OSError as exc:
-        log.warning("Discover could not read seed folder %s: %s", root, exc)
-        return []
-
-    files.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0.0, reverse=True)
-    return _seeds_from_media_files(files, limit=limit)
+    return seed_entries_from_disk(
+        roots=[root],
+        limit=limit,
+        max_depth=max_depth,
+        max_visited=max_visited,
+    )
 
 
 def _seeds_from_media_files(
@@ -753,7 +751,7 @@ def resolve_discover_seeds(
 
     1. Clipster download history (finished entries)
     2. Liked tracks from Discover taste
-    3. Media files in the configured download directory (flat scan)
+    3. Media files in the configured download directory (bounded recursive scan)
     4. Bounded disk scan of common Music / Downloads locations
 
     Steps 3–4 run only when earlier stages still fall short of the threshold.

@@ -149,9 +149,39 @@ def test_seed_entries_from_folder_use_media_names(tmp_path: Path) -> None:
     (tmp_path / "nested" / "deep.mp3").write_bytes(b"x")
     seeds = seed_entries_from_folder(tmp_path)
     titles = {entry.title for entry in seeds}
-    assert titles == {"Song One", "Song Two"}
+    assert titles == {"Song One", "Song Two", "deep"}
     by_title = {entry.title: entry for entry in seeds}
     assert by_title["Song Two"].url.endswith("zzzzzzzzzzz")
+
+
+def test_seed_entries_from_folder_is_bounded_and_skips_junk(tmp_path: Path) -> None:
+    (tmp_path / "Keep.mp3").write_bytes(b"x")
+    nested = tmp_path / "albums" / "one"
+    nested.mkdir(parents=True)
+    (nested / "Nested Track.mp3").write_bytes(b"x")
+    junk = tmp_path / "node_modules"
+    junk.mkdir()
+    (junk / "secret.mp3").write_bytes(b"x")
+    hidden = tmp_path / ".cache"
+    hidden.mkdir()
+    (hidden / "hidden.mp3").write_bytes(b"x")
+    deep = tmp_path
+    for level in range(6):
+        deep = deep / "lvl{0}".format(level)
+        deep.mkdir()
+        (deep / "track{0}.mp3".format(level)).write_bytes(b"x")
+
+    seeds = seed_entries_from_folder(tmp_path, max_depth=1, max_visited=200)
+    titles = {entry.title for entry in seeds}
+    assert "Keep" in titles
+    assert "Nested Track" not in titles  # depth 2 under albums/one
+    assert "track0" in titles
+    assert "track1" not in titles
+    assert "secret" not in titles
+    assert "hidden" not in titles
+
+    capped = seed_entries_from_folder(tmp_path, limit=2, max_depth=5, max_visited=500)
+    assert len(capped) <= 2
 
 
 def test_resolve_discover_seeds_history_and_likes_skip_folder_and_disk(tmp_path: Path) -> None:
@@ -191,8 +221,10 @@ def test_resolve_discover_seeds_uses_download_dir_when_sparse(tmp_path: Path) ->
         HistoryEntry(title="Only One", url="https://www.youtube.com/watch?v=aaaaaaaaaaa", status=STATUS_OK),
     ]
     (tmp_path / "Folder Song.mp3").write_bytes(b"x")
+    nested = tmp_path / "subfolder"
+    nested.mkdir()
     for index in range(4):
-        (tmp_path / "More {0}.mp3".format(index)).write_bytes(b"x")
+        (nested / "More {0}.mp3".format(index)).write_bytes(b"x")
 
     seeds, source = resolve_discover_seeds(
         history,
@@ -205,6 +237,7 @@ def test_resolve_discover_seeds_uses_download_dir_when_sparse(tmp_path: Path) ->
     titles = {entry.title for entry in seeds}
     assert "Only One" in titles
     assert "Folder Song" in titles
+    assert "More 0" in titles
     assert len(seeds) >= 5
 
 

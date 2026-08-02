@@ -150,6 +150,35 @@ def test_discover_visualizer_selector_persists(gui, messages) -> None:
     assert len(page._viz_box.cget("values")) == 7
 
 
+def test_stage_controls_visible_only_in_audio_mode(gui) -> None:
+    """Stage label + combobox show for Audio, hide for Video (and stop the ticker)."""
+    gui.view.select_page("discover")
+    page = gui.view.discover
+
+    page.config.discover_play_video = False
+    page.reload_from_config()
+    gui.root.update_idletasks()
+    assert page._viz_label.winfo_manager() == "pack"
+    assert page._viz_box.winfo_manager() == "pack"
+
+    # Simulate an active stage timer, then switch to Video.
+    page._eq_job = page.after(60_000, lambda: None)
+    page._playback_mode_var.set("video")
+    page._playback_mode_changed()
+    gui.root.update_idletasks()
+    assert page.config.discover_play_video is True
+    assert page._viz_label.winfo_manager() == ""
+    assert page._viz_box.winfo_manager() == ""
+    assert page._eq_job is None
+
+    page.config.discover_play_video = False
+    page.reload_from_config()
+    gui.root.update_idletasks()
+    assert page._playback_mode_var.get() == "audio"
+    assert page._viz_label.winfo_manager() == "pack"
+    assert page._viz_box.winfo_manager() == "pack"
+
+
 def test_audio_play_ready_maps_stage_and_starts_generator(gui, messages) -> None:
     """Audio backend play-ready must show the stage canvas and animate without PCM."""
     from clipster.discover import DiscoverTrack
@@ -315,6 +344,49 @@ def test_hiding_a_row_forwards_without_prompt(gui, sample_entries) -> None:
 
     gui._hide_entry(sample_entries[0])
     assert hidden == [sample_entries[0]]
+
+
+def test_removing_one_entry_keeps_other_row_widgets(gui, sample_entries) -> None:
+    """Hide/delete must drop one row without destroying the rest (no list flash)."""
+    gui.render_history(sample_entries)
+    rows_before = _rows(gui.view)
+    assert len(rows_before) == 3
+    kept = rows_before[1:]
+
+    gui.render_history(sample_entries[1:])
+    rows_after = _rows(gui.view)
+
+    assert len(rows_after) == 2
+    assert rows_after[0] is kept[0]
+    assert rows_after[1] is kept[1]
+    assert gui.view._counts["all"] == 2
+
+
+def test_removing_middle_entry_under_filter_keeps_siblings(gui, sample_entries) -> None:
+    """Incremental remove still works when a status filter is active."""
+    gui.render_history(sample_entries)
+    gui.view.set_filter("all")
+    rows_before = _rows(gui.view)
+    middle = sample_entries[1]
+
+    gui.render_history([sample_entries[0], sample_entries[2]])
+    rows_after = _rows(gui.view)
+
+    assert len(rows_after) == 2
+    assert rows_after[0] is rows_before[0]
+    assert rows_after[1] is rows_before[2]
+    assert all(item[2] is not middle for item in gui.view._row_items)
+
+
+def test_removing_last_visible_row_shows_empty_state(gui, sample_entries, messages) -> None:
+    gui.render_history(sample_entries)
+    gui.view.set_filter(STATUS_OK)
+    assert len(_rows(gui.view)) == 1
+
+    gui.render_history(sample_entries[1:])
+    assert len(_rows(gui.view)) == 0
+    assert messages["filter_empty"] in _all_text(gui.view._scroller.body)
+    assert gui.view._counts["all"] == 2
 
 
 @pytest.mark.xfail(reason="8-18 px left over: Tk distributes the slack of the "

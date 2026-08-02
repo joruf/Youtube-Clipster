@@ -394,8 +394,8 @@ class DiscoverPage(ttk.Frame):
             style="TRadiobutton",
         )
         self._video_radio.pack(side="left", padx=(PAD_SMALL, 0))
-        ttk.Label(mode_left, text=self.messages["discover_viz_label"], style="Panel.Muted.TLabel").pack(
-            side="left", padx=(PAD, PAD_SMALL)
+        self._viz_label = ttk.Label(
+            mode_left, text=self.messages["discover_viz_label"], style="Panel.Muted.TLabel"
         )
         self._viz_var = tk.StringVar()
         # Ordered string labels (never tuples / dict views) so the popdown Listbox fills.
@@ -410,7 +410,6 @@ class DiscoverPage(ttk.Frame):
         # Assign values after construction: some Tk builds drop constructor `values=`
         # when combined with readonly + a later StringVar sync.
         self._viz_box.configure(values=viz_labels)
-        self._viz_box.pack(side="left")
         self._viz_box.bind("<<ComboboxSelected>>", lambda _e: self._visualizer_selected())
         self._stream_rate = ttk.Label(
             mode_row,
@@ -430,6 +429,8 @@ class DiscoverPage(ttk.Frame):
             background=self.palette.elevated,
             foreground=self.palette.text,
         )
+        # Stage controls are Audio-only; pack/hide from the current media mode.
+        self._sync_stage_controls_visibility()
 
         self._video_host = tk.Frame(player, background="#0b0c0f", height=280, highlightthickness=0)
         self._video_host.pack(fill="both", expand=True, pady=(0, PAD_SMALL))
@@ -644,6 +645,7 @@ class DiscoverPage(ttk.Frame):
         viz = normalize_visualizer(getattr(self.config, "discover_visualizer", DEFAULT_VISUALIZER))
         self._viz_var.set(self._viz_labels.get(viz, self.messages[visualizer_locale_key(DEFAULT_VISUALIZER)]))
         self.player.set_visualizer_mode(viz)
+        self._sync_stage_controls_visibility()
 
     def selected_mode(self) -> str:
         """Return the currently selected Discover mode key."""
@@ -656,6 +658,25 @@ class DiscoverPage(ttk.Frame):
     def wants_video(self) -> bool:
         """Return ``True`` when the user selected in-tab video playback."""
         return self._playback_mode_var.get() == "video"
+
+    def _sync_stage_controls_visibility(self) -> None:
+        """Show Stage label/combobox only when Audio media mode is selected."""
+        show = not self.wants_video()
+        try:
+            if show:
+                if self._viz_label.winfo_manager() != "pack":
+                    self._viz_label.pack(side="left", padx=(PAD, PAD_SMALL))
+                if self._viz_box.winfo_manager() != "pack":
+                    self._viz_box.pack(side="left")
+            else:
+                if self._viz_label.winfo_manager():
+                    self._viz_label.pack_forget()
+                if self._viz_box.winfo_manager():
+                    self._viz_box.pack_forget()
+                # Video mode has no stage animation — free the redraw timer / mpv viz.
+                self._stop_stage()
+        except tk.TclError:
+            pass
 
     def _mode_selected(self) -> None:
         """Persist the mode combobox choice."""
@@ -683,6 +704,7 @@ class DiscoverPage(ttk.Frame):
     def _playback_mode_changed(self) -> None:
         """Persist Video/Audio choice and restart the current track if needed."""
         want_video = self.wants_video()
+        self._sync_stage_controls_visibility()
         if bool(self.config.discover_play_video) == want_video:
             return
         self.config.discover_play_video = want_video

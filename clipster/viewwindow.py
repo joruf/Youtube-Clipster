@@ -15,7 +15,7 @@ from __future__ import annotations
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from . import APP_AUTHOR, APP_SHORT_NAME, APP_URL, APP_VERSION, APP_WEBSITE, dependencies, paths, theme
 from .config import Config
@@ -223,6 +223,8 @@ class ViewWindow:
         self._menu_buttons: Dict[str, ttk.Button] = {}
         self._pages: Dict[str, ttk.Frame] = {}
         self._vars: Dict[str, tk.Variable] = {}
+        #: Visible table rows as ``(leading separator or None, row frame, entry)``.
+        self._row_items: List[Tuple[Optional[ttk.Separator], ttk.Frame, HistoryEntry]] = []
         self.discover: Optional[DiscoverPage] = None
 
         self.window = tk.Toplevel(master)
@@ -501,11 +503,16 @@ class ViewWindow:
     def render(self, entries: List[HistoryEntry], download_dir: Path) -> None:
         """Redraw the table and the sidebar counts.
 
+        Hide/delete of a single entry updates only that row so the list does not
+        flash empty while every widget is rebuilt.
+
         :param entries: Every history entry, newest first.
         :param download_dir: Shown in the footer.
         :return: None
         """
-        self._entries = list(entries)
+        new_entries = list(entries)
+        removed = self._single_removed_entry(self._entries, new_entries)
+        self._entries = new_entries
         self._counts = {
             "all": len(self._entries),
             STATUS_OK: sum(1 for e in self._entries if e.status == STATUS_OK),
@@ -520,7 +527,38 @@ class ViewWindow:
         except tk.TclError:  # pragma: no cover
             pass
         self._paint_filters()
+        if removed is not None and self._remove_row(removed):
+            return
         self._paint_rows()
+
+    @staticmethod
+    def _single_removed_entry(
+        old: List[HistoryEntry], new: List[HistoryEntry]
+    ) -> Optional[HistoryEntry]:
+        """Return the one entry dropped from ``old`` when ``new`` is the rest.
+
+        :param old: Previous history list.
+        :param new: Updated history list.
+        :return: The removed entry, or ``None`` when more than a single drop.
+        """
+        if len(old) != len(new) + 1:
+            return None
+        removed: Optional[HistoryEntry] = None
+        oi = ni = 0
+        while oi < len(old) and ni < len(new):
+            if old[oi] is new[ni] or old[oi] == new[ni]:
+                oi += 1
+                ni += 1
+                continue
+            if removed is not None:
+                return None
+            removed = old[oi]
+            oi += 1
+        if oi < len(old):
+            if removed is not None or oi != len(old) - 1:
+                return None
+            removed = old[oi]
+        return removed
 
     def _paint_filters(self) -> None:
         """Update the sidebar labels, counts and selection."""
@@ -543,6 +581,7 @@ class ViewWindow:
     def _paint_rows(self) -> None:
         """Rebuild the table rows."""
         self._scroller.clear()
+        self._row_items = []
         entries = self._visible_entries()
         if not entries:
             message = "history_empty" if not self._entries else "filter_empty"
@@ -558,6 +597,60 @@ class ViewWindow:
             self._add_row(entry, index)
         self._scroller.to_top()
 
+    def _remove_row(self, entry: HistoryEntry) -> bool:
+        """Destroy the widgets for one visible entry; leave the others mounted.
+
+        :param entry: The history entry that left the list.
+        :return: ``True`` when the table was updated without a full rebuild.
+        """
+        index = next(
+            (
+                i
+                for i, (_sep, _row, item) in enumerate(self._row_items)
+                if item is entry or item == entry
+            ),
+            -1,
+        )
+        if index < 0:
+            # Filtered out or never painted — sidebar counts already refreshed.
+            return True
+
+        sep, row, _item = self._row_items[index]
+        for widget in (sep, row):
+            if widget is None:
+                continue
+            try:
+                widget.destroy()
+            except tk.TclError:  # pragma: no cover
+                pass
+        del self._row_items[index]
+
+        # The first visible row must not keep a leading separator.
+        if index == 0 and self._row_items:
+            first_sep, first_row, first_entry = self._row_items[0]
+            if first_sep is not None:
+                try:
+                    first_sep.destroy()
+                except tk.TclError:  # pragma: no cover
+                    pass
+                self._row_items[0] = (None, first_row, first_entry)
+
+        if not self._row_items:
+            message = "history_empty" if not self._entries else "filter_empty"
+            ttk.Label(
+                self._scroller.body,
+                text=self.messages[message],
+                style="Panel.Muted.TLabel",
+                wraplength=520,
+                justify="left",
+            ).pack(anchor="w", padx=PAD_SMALL, pady=PAD)
+
+        try:
+            self._scroller._canvas.configure(scrollregion=self._scroller._canvas.bbox("all"))
+        except tk.TclError:  # pragma: no cover
+            pass
+        return True
+
     def _add_row(self, entry: HistoryEntry, index: int) -> None:
         """Append one entry to the table.
 
@@ -565,8 +658,10 @@ class ViewWindow:
         :param index: Position, used for the separator.
         :return: None
         """
+        separator: Optional[ttk.Separator] = None
         if index:
-            ttk.Separator(self._scroller.body, orient="horizontal").pack(fill="x")
+            separator = ttk.Separator(self._scroller.body, orient="horizontal")
+            separator.pack(fill="x")
 
         row = ttk.Frame(self._scroller.body, style="Panel.TFrame", padding=(0, PAD_SMALL))
         row.pack(fill="x")
@@ -681,6 +776,7 @@ class ViewWindow:
                     pass
 
         self._scroller.bind_wheel_tree(row)
+        self._row_items.append((separator, row, entry))
 
     def _fit_line(self, text: str, width: int) -> str:
         """Shorten ``text`` so that it fits on a single line of ``width`` pixels.
