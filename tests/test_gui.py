@@ -110,10 +110,16 @@ def test_discover_refresh_button_is_visible(gui, messages) -> None:
     page = gui.view.discover
     assert page._refresh_btn.winfo_ismapped() or str(page._refresh_btn.cget("text"))
     assert page._refresh_btn.cget("text") == messages["discover_refresh"]
-    assert page._folder_btn.cget("text") == messages["discover_from_folder"]
-    # Primary actions sit on their own row so a crowded options bar cannot hide them.
+    assert not hasattr(page, "_folder_btn")
+    # Find Similar and Search Mode share one horizontal toolbar row.
     assert page._refresh_btn.winfo_manager() == "pack"
     assert str(page._refresh_btn.pack_info().get("side", "")) == "left"
+    assert page._mode_box.winfo_manager() == "pack"
+    assert str(page._mode_box.pack_info().get("side", "")) == "left"
+    assert page._refresh_btn.master is page._mode_box.master
+    # Status lives in the footer (packed to the bottom), not above the player.
+    assert page._status_box.winfo_manager() == "pack"
+    assert str(page._status_box.pack_info().get("side", "")) == "bottom"
 
 
 def test_discover_visualizer_selector_persists(gui, messages) -> None:

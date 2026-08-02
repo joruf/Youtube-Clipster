@@ -239,7 +239,6 @@ class DiscoverPage(ttk.Frame):
         fonts: dict,
         on_refresh: Callable[[], None],
         on_download: Callable[[DiscoverTrack], None],
-        on_pick_folder: Callable[[], None],
         on_extend: Callable[[DiscoverTrack], None],
         on_like: Callable[[DiscoverTrack], None],
         on_dislike: Callable[[DiscoverTrack], None],
@@ -253,7 +252,6 @@ class DiscoverPage(ttk.Frame):
         :param fonts: Theme font map.
         :param on_refresh: Start a background Discover search.
         :param on_download: Auto-download the selected track with defaults.
-        :param on_pick_folder: Choose a folder of liked songs as Discover seeds.
         :param on_extend: Fetch more related songs from the given track.
         :param on_like: Thumbs-up — prefer similar songs next.
         :param on_dislike: Thumbs-down — avoid similar songs next.
@@ -266,7 +264,6 @@ class DiscoverPage(ttk.Frame):
         self.fonts = fonts
         self._on_refresh = on_refresh
         self._on_download = on_download
-        self._on_pick_folder = on_pick_folder
         self._on_extend = on_extend
         self._on_like = on_like
         self._on_dislike = on_dislike
@@ -305,53 +302,12 @@ class DiscoverPage(ttk.Frame):
         self._build()
 
     def _build(self) -> None:
-        """Create the toolbar, player bar and result list."""
-        actions = ttk.Frame(self, style="Toolbar.TFrame", padding=(PAD, PAD))
-        actions.pack(fill="x")
-        self._refresh_btn = ttk.Button(
-            actions,
-            text=self.messages["discover_refresh"],
-            style="Accent.TButton",
-            command=self._on_refresh,
-        )
-        self._refresh_btn.pack(side="left")
-        self._folder_btn = ttk.Button(
-            actions,
-            text=self.messages["discover_from_folder"],
-            style="Row.TButton",
-            command=self._on_pick_folder,
-        )
-        self._folder_btn.pack(side="left", padx=(PAD_SMALL, 0))
-
-        toolbar = ttk.Frame(self, style="Toolbar.TFrame", padding=(PAD, 0))
-        toolbar.pack(fill="x", pady=(0, PAD_SMALL))
-
-        ttk.Label(toolbar, text=self.messages["discover_mode"], style="Panel.Muted.TLabel").pack(
-            side="left", padx=(0, PAD_SMALL)
-        )
-        self._mode_var = tk.StringVar()
-        self._mode_values = {
-            self.messages["discover_mode_search"]: MODE_SEARCH,
-            self.messages["discover_mode_related"]: MODE_RELATED,
-            self.messages["discover_mode_deezer"]: MODE_DEEZER,
-            self.messages["discover_mode_listenbrainz"]: MODE_LISTENBRAINZ,
-        }
-        self._mode_labels = {value: key for key, value in self._mode_values.items()}
-        mode_box = ttk.Combobox(
-            toolbar,
-            state="readonly",
-            textvariable=self._mode_var,
-            values=list(self._mode_values.keys()),
-            width=36,
-            font=self.fonts["body"],
-        )
-        mode_box.pack(side="left")
-        mode_box.bind("<<ComboboxSelected>>", lambda _e: self._mode_selected())
-
+        """Create the toolbar, player panes and footer status."""
+        # Footer first so pack(side=bottom) keeps status visible under the split.
         status_box = ttk.LabelFrame(
             self, text=self.messages["discover_status"], style="Card.TLabelframe", padding=PAD_SMALL
         )
-        status_box.pack(fill="x", padx=PAD, pady=(0, PAD_SMALL))
+        status_box.pack(side="bottom", fill="x", padx=PAD, pady=(0, PAD))
         status_row = ttk.Frame(status_box, style="Panel.TFrame")
         status_row.pack(fill="x")
         self._spinner = ttk.Label(status_row, text="", style="Panel.Accent.TLabel", width=2)
@@ -366,9 +322,43 @@ class DiscoverPage(ttk.Frame):
         self._status.pack(side="left", fill="x", expand=True, anchor="w")
         self._load_bar = ttk.Progressbar(status_box, mode="indeterminate", length=200)
         # Packed only while loading so the idle Status box stays compact.
+        self._status_box = status_box
+
+        actions = ttk.Frame(self, style="Toolbar.TFrame", padding=(PAD, PAD))
+        actions.pack(fill="x")
+        self._refresh_btn = ttk.Button(
+            actions,
+            text=self.messages["discover_refresh"],
+            style="Accent.TButton",
+            command=self._on_refresh,
+        )
+        self._refresh_btn.pack(side="left")
+
+        ttk.Label(actions, text=self.messages["discover_mode"], style="Panel.Muted.TLabel").pack(
+            side="left", padx=(PAD, PAD_SMALL)
+        )
+        self._mode_var = tk.StringVar()
+        self._mode_values = {
+            self.messages["discover_mode_search"]: MODE_SEARCH,
+            self.messages["discover_mode_related"]: MODE_RELATED,
+            self.messages["discover_mode_deezer"]: MODE_DEEZER,
+            self.messages["discover_mode_listenbrainz"]: MODE_LISTENBRAINZ,
+        }
+        self._mode_labels = {value: key for key, value in self._mode_values.items()}
+        mode_box = ttk.Combobox(
+            actions,
+            state="readonly",
+            textvariable=self._mode_var,
+            values=list(self._mode_values.keys()),
+            width=36,
+            font=self.fonts["body"],
+        )
+        mode_box.pack(side="left")
+        mode_box.bind("<<ComboboxSelected>>", lambda _e: self._mode_selected())
+        self._mode_box = mode_box
 
         split = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
-        split.pack(fill="both", expand=True, padx=PAD, pady=(0, PAD))
+        split.pack(fill="both", expand=True, padx=PAD, pady=(0, PAD_SMALL))
         self._split = split
 
         player = ttk.LabelFrame(
@@ -775,7 +765,6 @@ class DiscoverPage(ttk.Frame):
         self._busy = busy
         state = "disabled" if busy else "normal"
         self._refresh_btn.configure(state=state)
-        self._folder_btn.configure(state=state)
         if busy:
             self.set_loading(True, message or self.messages["discover_loading"])
         elif not self._playback_check_job:

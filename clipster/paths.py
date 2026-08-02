@@ -212,6 +212,28 @@ def default_download_dir() -> Path:
     return Path.home() / "Downloads"
 
 
+def default_music_dir() -> Path | None:
+    """Return the user's Music folder when it exists, else ``None``.
+
+    Honours XDG ``XDG_MUSIC_DIR`` on Linux and the Windows Known Folder for
+    Music. Falls back to ``~/Music`` (or common localised names) only when that
+    directory already exists — never invents a new Music tree.
+    """
+    if IS_WINDOWS:
+        folder = _windows_shell_folder("{4BD8D571-6D19-48D3-BE97-422220080E43}")
+        if folder is not None:
+            return folder
+    elif IS_LINUX:
+        folder = _xdg_user_dir("XDG_MUSIC_DIR")
+        if folder is not None:
+            return folder
+    for name in ("Music", "Musik", "Musique", "Música", "Musica"):
+        candidate = Path.home() / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def desktop_dir() -> Path:
     """Return the user's desktop folder, falling back to the home directory."""
     if IS_WINDOWS:

@@ -186,7 +186,8 @@ Defaults live on `Config` and in `config.example.json`.
 | `discover_mode` | `related` | `search` / `related` / `deezer` / `listenbrainz` |
 | `discover_max_results` | `40` | Cap on listed results |
 | `discover_results_per_seed` | `6` | Hits requested per seed |
-| `discover_min_folder_seeds` | `5` | Prefer folder seeds once this many songs exist |
+| `discover_min_folder_seeds` | `5` | Stop collecting seeds once this many exist |
+| `discover_disk_scan_enabled` | `true` | Bounded Music/Downloads scan when seeds are sparse |
 | `discover_extend_remaining` | `3` | Auto-extend when this many tracks remain |
 | `discover_extend_count` | `8` | How many to fetch on extend |
 | `discover_play_video` | `false` | Video vs audio playback preference |

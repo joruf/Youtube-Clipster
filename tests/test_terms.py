@@ -29,6 +29,7 @@ def app(config, messages, monkeypatch):
     try:
         yield instance
     finally:
+        instance._cancel_auto_discover_job()
         instance.gui.destroy()
 
 
@@ -178,11 +179,26 @@ def test_discover_refresh_proceeds_after_streaming_terms_accepted(app, monkeypat
         seeds_called.append(True)
         return [], "history"
 
+    # Keep Discover on the calling thread so the test stays deterministic.
+    class ImmediateThread:
+        def __init__(self, target=None, args=(), kwargs=None, **_kw):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+
+        def start(self) -> None:
+            if self._target is not None:
+                self._target(*self._args, **self._kwargs)
+
     monkeypatch.setattr("clipster.app.resolve_discover_seeds", no_seeds)
+    monkeypatch.setattr("clipster.app.threading.Thread", ImmediateThread)
+    # Avoid deferred auto-Discover after first Streaming-terms acceptance.
+    monkeypatch.setattr(app, "_maybe_schedule_auto_discover", lambda: None)
     app._discover_refresh()
 
     assert streaming_terms_accepted(app.config)
     assert seeds_called == [True]
+    assert not app._discover_busy
 
 
 @pytest.mark.gui

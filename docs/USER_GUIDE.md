@@ -8,7 +8,7 @@ Screenshots below use anonymized sample data.
 
 - Watches your clipboard for YouTube links and downloads them as MP3 or MP4.
 - Keeps a download history with open / folder / remove actions.
-- Offers a **Streaming** tab to find similar songs from your downloads (or a music folder) and play them in-app with an optional stage visualizer.
+- Offers a **Streaming** tab to find similar songs from your downloads, likes, and local media, and play them in-app with an optional stage visualizer.
 - Runs from the system tray (when available) so it stays out of the way.
 
 ## Install
@@ -76,9 +76,9 @@ Open the view window (tray click, or start with `--show-window`) and select **St
 
 ### Find similar songs
 
-- **Find similar songs** — builds a queue from your download history (or seeds).
-- **From folder…** — pick a music folder to use as seeds.
-- **Search mode** — Related videos, YouTube search by title, Deezer similar artists, or ListenBrainz (free providers).
+- **Find similar songs** — builds a queue from download history, liked tracks, and (if needed) media in Downloads / Music.
+- **Search mode** — Related videos, YouTube search by title, Deezer similar artists, or ListenBrainz (free providers); sits next to Find similar songs.
+- On startup (when Streaming terms are already accepted and the network is up), Clipster can start Find similar automatically in the background without opening the window.
 - Title / search ending and the “only titles with that ending” filter live under **Settings** (Streaming section); Streaming uses those values when searching.
 
 ### Audio / Video

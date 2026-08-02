@@ -34,6 +34,7 @@ def app(config, messages, monkeypatch):
     try:
         yield instance
     finally:
+        instance._cancel_auto_discover_job()
         instance.gui.destroy()
 
 
@@ -252,6 +253,58 @@ def test_post_start_never_notifies_started(app, monkeypatch) -> None:
 
     assert notified == []
     assert toasted == []
+
+
+def test_auto_discover_runs_when_online_and_streaming_terms_accepted(app, monkeypatch) -> None:
+    from clipster.terms import accept_app_terms, accept_streaming_terms
+
+    accept_app_terms(app.config)
+    accept_streaming_terms(app.config)
+    app.config.check_updates = False
+    monkeypatch.setattr(app, "_maybe_offer_desktop_shortcut", lambda: None)
+    monkeypatch.setattr(app, "_sync_autostart", lambda: None)
+    monkeypatch.setattr("clipster.app.internet_available", lambda **_kwargs: True)
+    refresh_calls: list[str] = []
+    monkeypatch.setattr(app, "_discover_refresh", lambda **kwargs: refresh_calls.append("go"))
+
+    # post_start only schedules; invoke the runner directly to avoid Tk after waits.
+    app._post_start()
+    assert app._auto_discover_done is True
+    app._cancel_auto_discover_job()
+    app._run_auto_discover()
+    assert refresh_calls == ["go"]
+
+
+def test_auto_discover_skipped_without_streaming_terms(app, monkeypatch) -> None:
+    from clipster.terms import accept_app_terms
+
+    accept_app_terms(app.config)
+    app.config.terms_streaming_version = ""
+    app.config.check_updates = False
+    monkeypatch.setattr(app, "_maybe_offer_desktop_shortcut", lambda: None)
+    monkeypatch.setattr(app, "_sync_autostart", lambda: None)
+    monkeypatch.setattr("clipster.app.internet_available", lambda **_kwargs: True)
+    refresh_calls: list[str] = []
+    monkeypatch.setattr(app, "_discover_refresh", lambda **kwargs: refresh_calls.append("go"))
+
+    app._post_start()
+    app._run_auto_discover()
+    assert refresh_calls == []
+    assert app._auto_discover_done is False
+
+
+def test_auto_discover_skipped_when_offline(app, monkeypatch) -> None:
+    from clipster.terms import accept_app_terms, accept_streaming_terms
+
+    accept_app_terms(app.config)
+    accept_streaming_terms(app.config)
+    monkeypatch.setattr("clipster.app.internet_available", lambda **_kwargs: False)
+    refresh_calls: list[str] = []
+    monkeypatch.setattr(app, "_discover_refresh", lambda **kwargs: refresh_calls.append("go"))
+
+    app._auto_discover_done = True
+    app._run_auto_discover()
+    assert refresh_calls == []
 
 
 def test_tray_show_ignored_before_armed(app) -> None:

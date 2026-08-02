@@ -94,6 +94,13 @@ def test_the_download_folder_is_absolute() -> None:
     assert paths.default_download_dir().is_absolute()
 
 
+def test_default_music_dir_is_absolute_or_missing() -> None:
+    music = paths.default_music_dir()
+    if music is not None:
+        assert music.is_absolute()
+        assert music.is_dir()
+
+
 def test_running_in_the_managed_environment_is_detectable() -> None:
     assert isinstance(paths.running_in_managed_venv(), bool)
 

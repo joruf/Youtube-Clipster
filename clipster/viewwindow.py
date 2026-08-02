@@ -159,7 +159,6 @@ class ViewWindow:
         on_install_update: Callable[[], None],
         on_discover_refresh: Callable[[], None],
         on_discover_download: Callable[[DiscoverTrack], None],
-        on_discover_pick_folder: Callable[[], None],
         on_discover_extend: Callable[[DiscoverTrack], None],
         on_discover_like: Callable[[DiscoverTrack], None],
         on_discover_dislike: Callable[[DiscoverTrack], None],
@@ -183,9 +182,8 @@ class ViewWindow:
         :param on_save_settings: Persist the configuration after an edit.
         :param on_check_updates: Ask GitHub whether a newer version exists.
         :param on_install_update: Fetch the new version and restart.
-        :param on_discover_refresh: Run a Discover search from history or the download folder.
+        :param on_discover_refresh: Run a Discover search from history or local media.
         :param on_discover_download: Auto-download a Discover track with defaults.
-        :param on_discover_pick_folder: Choose a folder of liked songs as Discover seeds.
         :param on_discover_extend: Top up the Discover list from the current track.
         :param on_discover_like: Thumbs-up a Streaming track.
         :param on_discover_dislike: Thumbs-down a Streaming track.
@@ -210,7 +208,6 @@ class ViewWindow:
         self._on_install_update = on_install_update
         self._on_discover_refresh = on_discover_refresh
         self._on_discover_download = on_discover_download
-        self._on_discover_pick_folder = on_discover_pick_folder
         self._on_discover_extend = on_discover_extend
         self._on_discover_like = on_discover_like
         self._on_discover_dislike = on_discover_dislike
@@ -279,7 +276,6 @@ class ViewWindow:
             fonts=self.fonts,
             on_refresh=self._on_discover_refresh,
             on_download=self._on_discover_download,
-            on_pick_folder=self._on_discover_pick_folder,
             on_extend=self._on_discover_extend,
             on_like=self._on_discover_like,
             on_dislike=self._on_discover_dislike,

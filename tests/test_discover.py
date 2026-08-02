@@ -22,6 +22,7 @@ from clipster.discover import (
     infer_library_genres,
     resolve_discover_seeds,
     seed_entries,
+    seed_entries_from_disk,
     seed_entries_from_folder,
     title_from_media_filename,
     titles_similar,
@@ -104,6 +105,7 @@ def test_discover_defaults() -> None:
     assert config.discover_require_suffix is True
     assert config.discover_mode == MODE_RELATED
     assert config.discover_min_folder_seeds == 5
+    assert config.discover_disk_scan_enabled is True
 
 
 def test_dedupe_tracks_collapses_lyrics_variants() -> None:
@@ -152,35 +154,142 @@ def test_seed_entries_from_folder_use_media_names(tmp_path: Path) -> None:
     assert by_title["Song Two"].url.endswith("zzzzzzzzzzz")
 
 
-def test_resolve_discover_seeds_prefers_full_download_dir(tmp_path: Path) -> None:
+def test_resolve_discover_seeds_history_and_likes_skip_folder_and_disk(tmp_path: Path) -> None:
     history = [
-        HistoryEntry(title="History Song", url="https://www.youtube.com/watch?v=aaaaaaaaaaa", status=STATUS_OK),
+        HistoryEntry(title="History {0}".format(i), url="https://www.youtube.com/watch?v=aaaaaaaaaa{0}".format(i), status=STATUS_OK)
+        for i in range(3)
     ]
-    (tmp_path / "Only One.mp3").write_bytes(b"x")
-    seeds, source = resolve_discover_seeds(history, tmp_path, min_folder_seeds=5)
-    assert source == "history"
-    assert seeds[0].title == "History Song"
+    likes = [
+        HistoryEntry(title="Liked {0}".format(i), url="https://www.youtube.com/watch?v=bbbbbbbbbb{0}".format(i), status=STATUS_OK)
+        for i in range(2)
+    ]
+    for index in range(8):
+        (tmp_path / "Folder {0}.mp3".format(index)).write_bytes(b"x")
+    extra = tmp_path / "extra_music"
+    extra.mkdir()
+    (extra / "Disk Only.mp3").write_bytes(b"x")
 
-    for index in range(5):
-        (tmp_path / "Song {0}.mp3".format(index)).write_bytes(b"x")
-    seeds, source = resolve_discover_seeds(history, tmp_path, min_folder_seeds=5)
-    assert source == "download_dir"
+    seeds, source = resolve_discover_seeds(
+        history,
+        tmp_path,
+        liked_entries=likes,
+        min_folder_seeds=5,
+        disk_scan_enabled=True,
+        disk_scan_roots=[extra],
+    )
+    assert source == "history"
+    titles = {entry.title for entry in seeds}
+    assert "History 0" in titles
+    assert "Liked 0" in titles
+    assert "Folder 0" not in titles
+    assert "Disk Only" not in titles
     assert len(seeds) >= 5
 
-    seeds, source = resolve_discover_seeds([], tmp_path, min_folder_seeds=50)
+
+def test_resolve_discover_seeds_uses_download_dir_when_sparse(tmp_path: Path) -> None:
+    history = [
+        HistoryEntry(title="Only One", url="https://www.youtube.com/watch?v=aaaaaaaaaaa", status=STATUS_OK),
+    ]
+    (tmp_path / "Folder Song.mp3").write_bytes(b"x")
+    for index in range(4):
+        (tmp_path / "More {0}.mp3".format(index)).write_bytes(b"x")
+
+    seeds, source = resolve_discover_seeds(
+        history,
+        tmp_path,
+        liked_entries=[],
+        min_folder_seeds=5,
+        disk_scan_enabled=False,
+    )
     assert source == "download_dir"
-    assert seeds
+    titles = {entry.title for entry in seeds}
+    assert "Only One" in titles
+    assert "Folder Song" in titles
+    assert len(seeds) >= 5
 
-    other = tmp_path / "liked"
-    other.mkdir()
-    (other / "Liked Song.mp3").write_bytes(b"x")
-    seeds, source = resolve_discover_seeds(history, tmp_path, folder=other, min_folder_seeds=5)
-    assert source == "folder"
-    assert seeds[0].title == "Liked Song"
 
+def test_resolve_discover_seeds_falls_back_to_disk_scan(tmp_path: Path) -> None:
+    download = tmp_path / "downloads"
+    download.mkdir()
+    music = tmp_path / "music"
+    music.mkdir()
+    nested = music / "albums" / "one"
+    nested.mkdir(parents=True)
+    (nested / "Deep Track.mp3").write_bytes(b"x")
+    (music / "Top Track.flac").write_bytes(b"x")
+
+    seeds, source = resolve_discover_seeds(
+        [],
+        download,
+        liked_entries=[],
+        min_folder_seeds=5,
+        disk_scan_enabled=True,
+        disk_scan_roots=[music],
+    )
+    assert source == "disk"
+    titles = {entry.title for entry in seeds}
+    assert "Deep Track" in titles
+    assert "Top Track" in titles
+
+
+def test_resolve_discover_seeds_disk_disabled_stays_sparse(tmp_path: Path) -> None:
+    (tmp_path / "Only.mp3").write_bytes(b"x")
+    seeds, source = resolve_discover_seeds(
+        [],
+        tmp_path,
+        liked_entries=[],
+        min_folder_seeds=5,
+        disk_scan_enabled=False,
+    )
+    assert source == "download_dir"
+    assert len(seeds) == 1
+
+
+def test_seed_entries_from_disk_is_bounded(tmp_path: Path) -> None:
+    root = tmp_path / "lib"
+    root.mkdir()
+    deep = root
+    for level in range(6):
+        deep = deep / "lvl{0}".format(level)
+        deep.mkdir()
+        (deep / "track{0}.mp3".format(level)).write_bytes(b"x")
+    # max_depth=1: root (0) + lvl0 (1); deeper directories are not entered.
+    seeds = seed_entries_from_disk(roots=[root], limit=40, max_depth=1, max_visited=50)
+    titles = {entry.title for entry in seeds}
+    assert "track0" in titles
+    assert "track1" not in titles
+    assert "track5" not in titles
+
+    capped = seed_entries_from_disk(roots=[root], limit=2, max_depth=5, max_visited=500)
+    assert len(capped) <= 2
+
+
+def test_seed_entries_from_disk_skips_systemish_names(tmp_path: Path) -> None:
+    root = tmp_path / "scan"
+    root.mkdir()
+    (root / "Keep.mp3").write_bytes(b"x")
+    bad = root / "node_modules"
+    bad.mkdir()
+    (bad / "secret.mp3").write_bytes(b"x")
+    hidden = root / ".cache"
+    hidden.mkdir()
+    (hidden / "hidden.mp3").write_bytes(b"x")
+    seeds = seed_entries_from_disk(roots=[root], limit=10, max_depth=3)
+    titles = {entry.title for entry in seeds}
+    assert titles == {"Keep"}
+
+
+def test_resolve_discover_seeds_empty(tmp_path: Path) -> None:
     empty = tmp_path / "empty"
     empty.mkdir()
-    seeds, source = resolve_discover_seeds([], empty, min_folder_seeds=5)
+    seeds, source = resolve_discover_seeds(
+        [],
+        empty,
+        liked_entries=[],
+        min_folder_seeds=5,
+        disk_scan_enabled=True,
+        disk_scan_roots=[empty],
+    )
     assert source == "none"
     assert seeds == []
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import collections
 import signal
+import socket
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -56,6 +57,21 @@ from .tray import TrayIcon
 from . import updater
 
 log = get_logger(__name__)
+
+
+def internet_available(*, timeout: float = 1.0) -> bool:
+    """Return whether a brief TCP probe to a public DNS host succeeds.
+
+    Used to skip auto-Discover when the machine is clearly offline. Failures
+    are treated as offline — callers must not raise.
+    """
+    for host in ("1.1.1.1", "8.8.8.8"):
+        try:
+            with socket.create_connection((host, 53), timeout=timeout):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 class ClipsterApp:
@@ -130,7 +146,6 @@ class ClipsterApp:
         self.gui.on_reveal_result = self._reveal_result
         self.gui.on_discover_refresh = self._discover_refresh
         self.gui.on_discover_download = self._discover_download
-        self.gui.on_discover_pick_folder = self._discover_pick_folder
         self.gui.on_discover_extend = self._discover_extend
         self.gui.on_discover_like = self._discover_like
         self.gui.on_discover_dislike = self._discover_dislike
@@ -143,6 +158,10 @@ class ClipsterApp:
         self._discover_cancel = threading.Event()
         self._discover_busy = False
         self._discover_extending = False
+        #: Auto Find-Similar already ran (or was skipped) for this process.
+        self._auto_discover_done = False
+        #: Tk ``after`` id for the deferred auto Discover start, if any.
+        self._auto_discover_job: Optional[str] = None
         #: Ignore tray "show" callbacks until startup visibility has been applied
         #: (some backends fire activate while the icon is created).
         self._tray_show_armed = False
@@ -255,6 +274,9 @@ class ClipsterApp:
         self._keep_tray_start_hidden()
         if self.config.check_updates and updater.due(self.config.update_check_hours):
             self._check_updates(announce=False)
+        # Auto Find Similar only when Streaming terms were already accepted —
+        # never force the Streaming terms modal at tray boot.
+        self._maybe_schedule_auto_discover()
 
     def _ensure_app_terms(self) -> bool:
         """Require acceptance of the general terms before normal startup continues."""
@@ -293,7 +315,50 @@ class ClipsterApp:
             "User accepted the Streaming terms of use (v%s).",
             self.config.terms_streaming_version,
         )
+        # First acceptance outside an in-flight refresh: queue auto Discover once.
+        # Defer so a concurrent Find Similar can claim the slot first.
+        try:
+            self.gui.root.after(0, self._maybe_schedule_auto_discover)
+        except Exception:
+            pass
         return True
+
+    def _maybe_schedule_auto_discover(self) -> None:
+        """Schedule a one-shot auto Find Similar when Streaming terms are ready."""
+        if self._auto_discover_done or self._discover_busy or self._quitting:
+            return
+        if not streaming_terms_accepted(self.config):
+            return
+        self._auto_discover_done = True
+        try:
+            self._auto_discover_job = self.gui.root.after(400, self._run_auto_discover)
+        except Exception:
+            self._auto_discover_done = False
+            self._auto_discover_job = None
+
+    def _cancel_auto_discover_job(self) -> None:
+        """Drop a pending auto-Discover timer so teardown cannot fire it."""
+        job = self._auto_discover_job
+        self._auto_discover_job = None
+        if not job:
+            return
+        try:
+            self.gui.root.after_cancel(job)
+        except Exception:
+            pass
+
+    def _run_auto_discover(self) -> None:
+        """Start Discover in the background without forcing the view open."""
+        self._auto_discover_job = None
+        if self._quitting or self._discover_busy:
+            return
+        if not streaming_terms_accepted(self.config):
+            return
+        if not internet_available():
+            log.info("Skipping auto Discover — no network.")
+            return
+        # Do not show the view when tray-minimized; refresh updates the page quietly.
+        self._discover_refresh(require_terms=False)
 
     def _show_terms(self) -> None:
         """Open the combined terms documents from the About page."""
@@ -418,6 +483,7 @@ class ClipsterApp:
         self._quitting = True
         self._quit_event.set()
         self._discover_cancel.set()
+        self._cancel_auto_discover_job()
         self._queue.clear()
         self._cancel_all()
         try:
@@ -430,6 +496,7 @@ class ClipsterApp:
         self._quitting = True
         self._quit_event.set()
         self._discover_cancel.set()
+        self._cancel_auto_discover_job()
         self._cancel_all()
         if self.gui.view is not None and self.gui.view.discover is not None:
             self.gui.view.discover.destroy_player()
@@ -508,14 +575,13 @@ class ClipsterApp:
         log.info("Download requested from the view window.")
         self._enqueue(target, media_format)
 
-    def _discover_refresh(self, folder: Optional[Path] = None) -> None:
+    def _discover_refresh(self, *, require_terms: bool = True) -> None:
         """Search for related songs on a worker thread.
 
-        Seeds prefer the download history.  When that is empty, media files in
-        the download folder are used.  Passing ``folder`` forces a scan of that
-        directory (songs the user likes, even without Clipster history).
+        Seeds are resolved on the worker (history → likes → download folder →
+        bounded disk scan) so a disk walk never freezes the UI.
         """
-        if not self._ensure_streaming_terms():
+        if require_terms and not self._ensure_streaming_terms():
             return
         if self._discover_busy:
             return
@@ -523,32 +589,20 @@ class ClipsterApp:
         page = view.discover if view is not None else None
         if page is None:
             return
-        seeds, source = resolve_discover_seeds(
-            self.history.entries,
-            self.download_dir,
-            folder=folder,
-            min_folder_seeds=self.config.discover_min_folder_seeds,
-        )
-        seeds = self.taste.merge_seeds(seeds)
-        if not seeds:
-            page.show_empty("discover_no_seeds")
-            return
+        self._auto_discover_done = True
         mode = page.selected_mode()
         self.config.discover_mode = mode
         self.config.save()
         self._discover_cancel.clear()
         self._discover_busy = True
-        if source == "folder" and folder is not None:
-            loading = self.messages.format("discover_loading_folder", path=str(folder))
-        elif source == "download_dir":
-            loading = self.messages.format(
-                "discover_loading_folder", path=str(self.download_dir)
-            )
-        else:
-            loading = self.messages["discover_loading"]
-        page.set_busy(True, loading)
+        page.set_busy(True, self.messages["discover_loading"])
         page.begin_discover()
         exclude = set(self.taste.excluded_ids()) | page.video_ids()
+        history_snapshot = list(self.history.entries)
+        liked_snapshot = self.taste.liked_seeds()
+        download_dir = self.download_dir
+        min_seeds = self.config.discover_min_folder_seeds
+        disk_scan = bool(self.config.discover_disk_scan_enabled)
 
         def on_progress(current: int, total: int, title: str) -> None:
             self.bridge.post(page.show_progress, current, total, title)
@@ -558,6 +612,17 @@ class ClipsterApp:
 
         def worker() -> None:
             try:
+                seeds, _source = resolve_discover_seeds(
+                    history_snapshot,
+                    download_dir,
+                    liked_entries=liked_snapshot,
+                    min_folder_seeds=min_seeds,
+                    disk_scan_enabled=disk_scan,
+                )
+                seeds = self.taste.merge_seeds(seeds, prefer_liked=False)
+                if not seeds:
+                    self.bridge.post(self._discover_no_seeds)
+                    return
                 outcome = discover_tracks(
                     seeds,
                     self.config,
@@ -575,6 +640,15 @@ class ClipsterApp:
             self.bridge.post(self._discover_ready, outcome)
 
         threading.Thread(target=worker, name="clipster-discover", daemon=True).start()
+
+    def _discover_no_seeds(self) -> None:
+        """Show the empty-seeds state after a background seed resolve."""
+        self._discover_busy = False
+        page = self.gui.view.discover if self.gui.view is not None else None
+        if page is None:
+            return
+        page.set_busy(False)
+        page.show_empty("discover_no_seeds")
 
     def _discover_batch(self, tracks: List[DiscoverTrack]) -> None:
         """Append tracks as soon as a seed batch arrives during Find Similar."""
@@ -604,26 +678,6 @@ class ClipsterApp:
         queue_count = len(page._tracks) if page._tracks else len(outcome.tracks)
         status, level = self._discover_status_text(outcome, queue_count=queue_count)
         page.finish_discover(status=status, level=level)
-
-    def _discover_pick_folder(self) -> None:
-        """Ask for a folder of liked songs and run Discover from its files."""
-        if not self._ensure_streaming_terms():
-            return
-        if self._discover_busy:
-            return
-        view = self.gui.view
-        if view is None or view.window is None:
-            return
-        from tkinter import filedialog
-
-        chosen = filedialog.askdirectory(
-            parent=view.window,
-            title=self.messages["discover_from_folder"],
-            initialdir=str(self.download_dir),
-        )
-        if not chosen:
-            return
-        self._discover_refresh(folder=Path(chosen))
 
     def _discover_like(self, track: DiscoverTrack) -> None:
         """Remember a thumbs-up and load more songs like this one."""

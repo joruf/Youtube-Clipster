@@ -87,8 +87,10 @@ class Config:
     discover_max_results: int = 40
     #: How many search hits to request per seed title from the download history.
     discover_results_per_seed: int = 6
-    #: Prefer the download folder as Discover seeds once it holds at least this many songs.
+    #: Stop collecting Discover seeds once at least this many usable seeds exist.
     discover_min_folder_seeds: int = 5
+    #: When history + likes + download-dir seeds are still sparse, scan common music folders.
+    discover_disk_scan_enabled: bool = True
     #: Request more Discover songs when this many tracks remain after the current one.
     discover_extend_remaining: int = 3
     #: How many extra songs to fetch when the playlist is topped up.

@@ -1,14 +1,12 @@
-"""Find thematically related YouTube songs from downloads or a music folder.
+"""Find thematically related YouTube songs from downloads and local media.
 
 Two strategies are supported:
 
 * ``search`` - run a YouTube search for each seed title
 * ``related`` - pull related videos for each seed URL (falls back to search)
 
-Seeds come from the download history when available.  Otherwise Clipster scans
-the download folder (or a folder the user picks) for audio/video files and uses
-their file names as search titles.
-
+Seeds are collected automatically in priority order (history → likes → download
+folder → bounded disk scan) until enough titles exist for a Discover search.
 Genre cues in titles and folder names (techno, pop, metal, …) steer the search
 queries and ranking.  For instrumental genres a ``lyrics`` ending is replaced
 automatically so results stay on-topic.
@@ -16,6 +14,7 @@ automatically so results stay on-topic.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +24,7 @@ from .config import Config
 from .downloader import _import_yt_dlp, classify_error, extract_youtube_url
 from .history import STATUS_OK, HistoryEntry
 from .logging_setup import get_logger
+from . import paths
 from .recommend import similar_queries
 
 log = get_logger(__name__)
@@ -68,8 +68,42 @@ _MEDIA_EXTENSIONS = frozenset(
 #: yt-dlp often appends `` [videoId]`` before the extension.
 _ID_IN_NAME_RE = re.compile(r"\[([A-Za-z0-9_-]{11})\]\s*$")
 
-#: Cap how many files from a folder become Discover seeds.
+#: Cap how many files from a folder / disk scan become Discover seeds.
 _MAX_FOLDER_SEEDS = 40
+
+#: Default recursion depth for the bounded disk scan (Music / Downloads trees).
+_DISK_SCAN_MAX_DEPTH = 3
+
+#: Stop walking after this many filesystem entries during a disk scan.
+_DISK_SCAN_MAX_VISITED = 2000
+
+#: Directory names skipped during a disk scan (case-insensitive basename match).
+_DISK_SCAN_SKIP_NAMES = frozenset(
+    {
+        "proc",
+        "sys",
+        "dev",
+        "run",
+        "windows",
+        "system32",
+        "system volume information",
+        "$recycle.bin",
+        "recycle.bin",
+        "recycler",
+        "node_modules",
+        ".git",
+        ".svn",
+        ".hg",
+        "__pycache__",
+        "cache",
+        "caches",
+        "tmp",
+        "temp",
+        "appdata",
+        "application data",
+        "library",  # macOS ~/Library
+    }
+)
 
 #: Boilerplate words ignored when comparing song titles for duplicates.
 _TITLE_NOISE_WORDS = frozenset(
@@ -512,16 +546,26 @@ def seed_entries_from_folder(
         return []
 
     files.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0.0, reverse=True)
+    return _seeds_from_media_files(files, limit=limit)
+
+
+def _seeds_from_media_files(
+    files: Sequence[Path],
+    *,
+    limit: int,
+    seen: Optional[Set[str]] = None,
+) -> List[HistoryEntry]:
+    """Turn media paths into deduplicated HistoryEntry seeds."""
     seeds: List[HistoryEntry] = []
-    seen: Set[str] = set()
+    used = seen if seen is not None else set()
     for path in files:
         title = title_from_media_filename(path.name)
         if not title:
             continue
         key = title.lower()
-        if key in seen:
+        if key in used:
             continue
-        seen.add(key)
+        used.add(key)
         video_id = video_id_from_media_filename(path.name)
         url = "https://www.youtube.com/watch?v={0}".format(video_id) if video_id else ""
         seeds.append(
@@ -538,44 +582,234 @@ def seed_entries_from_folder(
     return seeds
 
 
+def _disk_scan_should_skip_dir(path: Path) -> bool:
+    """Return whether ``path`` should be skipped during a bounded disk scan."""
+    name = path.name
+    if not name or name in (".", ".."):
+        return True
+    # Hidden directories (``.cache``, …) — keep the walk away from huge trees.
+    if name.startswith("."):
+        return True
+    lower = name.lower()
+    if lower in _DISK_SCAN_SKIP_NAMES:
+        return True
+    # Absolute system roots that must never be walked.
+    try:
+        resolved = str(path.resolve())
+    except OSError:
+        resolved = str(path)
+    lowered = resolved.lower()
+    for banned in ("/proc", "/sys", "/dev", "/run"):
+        if lowered == banned or lowered.startswith(banned + os.sep):
+            return True
+    if "\\windows\\" in lowered or lowered.endswith("\\windows"):
+        return True
+    if "$recycle.bin" in lowered or "\\recycler\\" in lowered:
+        return True
+    return False
+
+
+def default_disk_scan_roots(
+    download_dir: Optional[Path] = None,
+) -> List[Path]:
+    """Return common music / download locations for a bounded disk scan.
+
+    Scope (intentionally narrow — never the whole filesystem):
+
+    * the configured Clipster download directory
+    * the OS Music folder (XDG / Windows Known Folder / ``~/Music`` when present)
+    * ``~/Downloads`` when distinct from the download dir
+
+    Callers must still apply depth / file caps via :func:`seed_entries_from_disk`.
+    """
+    roots: List[Path] = []
+    seen: Set[str] = set()
+
+    def add(candidate: Optional[Path]) -> None:
+        if candidate is None:
+            return
+        try:
+            path = Path(candidate).expanduser().resolve()
+        except OSError:
+            path = Path(candidate).expanduser()
+        if not path.is_dir():
+            return
+        key = str(path).lower()
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append(path)
+
+    add(download_dir)
+    add(paths.default_music_dir())
+    add(paths.default_download_dir())
+    add(Path.home() / "Music")
+    return roots
+
+
+def seed_entries_from_disk(
+    *,
+    roots: Optional[Sequence[Path]] = None,
+    download_dir: Optional[Path] = None,
+    limit: int = _MAX_FOLDER_SEEDS,
+    max_depth: int = _DISK_SCAN_MAX_DEPTH,
+    max_visited: int = _DISK_SCAN_MAX_VISITED,
+    seen_titles: Optional[Set[str]] = None,
+) -> List[HistoryEntry]:
+    """Collect media seeds from a few common folders with hard bounds.
+
+    Walks only ``roots`` (see :func:`default_disk_scan_roots`), skips system and
+    hidden directories, stops at ``max_depth`` and ``max_visited`` entries, and
+    returns at most ``limit`` seeds (newest files preferred).
+
+    Safe to call from a worker thread — it only touches the local filesystem.
+
+    :param roots: Explicit roots for tests; defaults to common music/download dirs.
+    :param download_dir: Included in the default root list when ``roots`` is omitted.
+    :param limit: Maximum seeds to return.
+    :param max_depth: Maximum directory depth relative to each root (0 = root only).
+    :param max_visited: Abort after this many files/dirs inspected across all roots.
+    :param seen_titles: Titles already collected by earlier seed stages (skipped).
+    :return: History-shaped seeds usable by :func:`discover_tracks`.
+    """
+    walk_roots = list(roots) if roots is not None else default_disk_scan_roots(download_dir)
+    if not walk_roots:
+        return []
+    depth_limit = max(0, int(max_depth))
+    visit_limit = max(1, int(max_visited))
+    visited = 0
+    found: List[Tuple[float, Path]] = []
+    for root in walk_roots:
+        if visited >= visit_limit:
+            break
+        root_path = Path(root).expanduser()
+        if not root_path.is_dir() or _disk_scan_should_skip_dir(root_path):
+            continue
+        stack: List[Tuple[Path, int]] = [(root_path, 0)]
+        while stack and visited < visit_limit:
+            current, depth = stack.pop()
+            try:
+                entries = list(current.iterdir())
+            except OSError as exc:
+                log.debug("Discover disk scan skipped %s: %s", current, exc)
+                continue
+            for entry in entries:
+                if visited >= visit_limit:
+                    break
+                visited += 1
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir():
+                        if depth >= depth_limit:
+                            continue
+                        if _disk_scan_should_skip_dir(entry):
+                            continue
+                        stack.append((entry, depth + 1))
+                        continue
+                    if not entry.is_file():
+                        continue
+                    if entry.suffix.lower() not in _MEDIA_EXTENSIONS:
+                        continue
+                    mtime = entry.stat().st_mtime if entry.exists() else 0.0
+                    found.append((mtime, entry))
+                except OSError:
+                    continue
+    found.sort(key=lambda item: item[0], reverse=True)
+    return _seeds_from_media_files(
+        [path for _mtime, path in found],
+        limit=limit,
+        seen=seen_titles,
+    )
+
+
+def _merge_seed_lists(*groups: Sequence[HistoryEntry]) -> List[HistoryEntry]:
+    """Concatenate seed groups, keeping first occurrence of each title/url key."""
+    merged: List[HistoryEntry] = []
+    seen: Set[str] = set()
+    for group in groups:
+        for entry in group:
+            key = (entry.url or entry.title or entry.name or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(entry)
+    return merged
+
+
 def resolve_discover_seeds(
     history_entries: Sequence[HistoryEntry],
     download_dir: Path,
     *,
-    folder: Optional[Path] = None,
+    liked_entries: Optional[Sequence[HistoryEntry]] = None,
     min_folder_seeds: int = 5,
+    disk_scan_enabled: bool = True,
+    disk_scan_roots: Optional[Sequence[Path]] = None,
+    max_disk_seeds: int = _MAX_FOLDER_SEEDS,
 ) -> Tuple[List[HistoryEntry], str]:
-    """Pick Discover seeds from history, a chosen folder, or the download dir.
+    """Pick Discover seeds in priority order until enough titles exist.
 
-    Priority:
+    Collection order (stop early once ``min_folder_seeds`` are available):
 
-    1. Explicit ``folder`` (user picked a library of liked songs)
-    2. Download directory once it holds at least ``min_folder_seeds`` songs
-    3. Finished entries from the download history
-    4. Any remaining media files in the download directory (sparse library)
+    1. Clipster download history (finished entries)
+    2. Liked tracks from Discover taste
+    3. Media files in the configured download directory (flat scan)
+    4. Bounded disk scan of common Music / Downloads locations
+
+    Steps 3–4 run only when earlier stages still fall short of the threshold.
+    Disk scanning is intended for a worker thread (see
+    :func:`seed_entries_from_disk`).
 
     :param history_entries: Current download list.
     :param download_dir: Configured download folder.
-    :param folder: Optional override directory chosen by the user.
-    :param min_folder_seeds: Threshold after which the download folder becomes
-        the primary seed source for thematic discovery.
-    :return: ``(seeds, source)`` where ``source`` is ``folder``, ``history``,
-        ``download_dir``, or ``none``.
+    :param liked_entries: Optional thumbs-up seeds from :class:`DiscoverTaste`.
+    :param min_folder_seeds: Stop collecting once this many seeds exist.
+    :param disk_scan_enabled: When ``False``, skip stage 4 entirely.
+    :param disk_scan_roots: Optional override roots for tests.
+    :param max_disk_seeds: Cap for stage-4 seeds.
+    :return: ``(seeds, source)`` where ``source`` is ``history``, ``likes``,
+        ``download_dir``, ``disk``, or ``none``.
     """
-    if folder is not None:
-        seeds = seed_entries_from_folder(folder)
-        return seeds, ("folder" if seeds else "none")
+    threshold = max(1, int(min_folder_seeds))
+    history_seeds = seed_entries(history_entries)
+    like_seeds = list(liked_entries or ())
+    seeds = _merge_seed_lists(history_seeds, like_seeds)
+    if len(seeds) >= threshold:
+        if history_seeds and like_seeds:
+            source = "history"
+        elif like_seeds and not history_seeds:
+            source = "likes"
+        else:
+            source = "history"
+        return seeds, source
 
     folder_seeds = seed_entries_from_folder(download_dir)
-    threshold = max(1, int(min_folder_seeds))
-    if len(folder_seeds) >= threshold:
-        return folder_seeds, "download_dir"
+    seeds = _merge_seed_lists(seeds, folder_seeds)
+    if len(seeds) >= threshold:
+        return seeds, "download_dir"
 
-    history_seeds = seed_entries(history_entries)
-    if history_seeds:
-        return history_seeds, "history"
-    if folder_seeds:
-        return folder_seeds, "download_dir"
+    if disk_scan_enabled:
+        seen_titles = {
+            (entry.title or entry.name or "").strip().lower()
+            for entry in seeds
+            if (entry.title or entry.name or "").strip()
+        }
+        disk_seeds = seed_entries_from_disk(
+            roots=disk_scan_roots,
+            download_dir=download_dir,
+            limit=max(1, int(max_disk_seeds)),
+            seen_titles=seen_titles,
+        )
+        seeds = _merge_seed_lists(seeds, disk_seeds)
+        if seeds:
+            return seeds, ("disk" if disk_seeds else ("download_dir" if folder_seeds else "history"))
+
+    if seeds:
+        if folder_seeds:
+            return seeds, "download_dir"
+        if like_seeds and not history_seeds:
+            return seeds, "likes"
+        return seeds, "history"
     return [], "none"
 
 

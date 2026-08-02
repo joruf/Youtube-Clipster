@@ -16,7 +16,7 @@ edition (`windows/*.bat`) have been replaced by the `clipster/` package.
   - a small **navigation window** that opens when you copy a link: pick format and audio track,
     watch the progress, see the result
   - a large **view window** with Streaming, the download list, settings and about
-- **Streaming** – find similar songs from your downloads or a music folder, play Audio or Video
+- **Streaming** – find similar songs from downloads, likes, and local media; play Audio or Video
   in-tab, Stage visualizer (default **Beat ring** / `pulse`), likes/dislikes
 - **Download list** – name, length, size, date and status of every download, with per-row
   *Play*, *Folder* and *Hide* buttons, status filters and a problem description when something failed

@@ -65,7 +65,6 @@ class Gui:
         self.on_reveal_result: Optional[Callable[[], None]] = None
         self.on_discover_refresh: Optional[Callable[[], None]] = None
         self.on_discover_download: Optional[Callable[[DiscoverTrack], None]] = None
-        self.on_discover_pick_folder: Optional[Callable[[], None]] = None
         self.on_discover_extend: Optional[Callable[[DiscoverTrack], None]] = None
         self.on_discover_like: Optional[Callable[[DiscoverTrack], None]] = None
         self.on_discover_dislike: Optional[Callable[[DiscoverTrack], None]] = None
@@ -138,7 +137,6 @@ class Gui:
             on_install_update=self._install_update,
             on_discover_refresh=self._discover_refresh,
             on_discover_download=self._discover_download,
-            on_discover_pick_folder=self._discover_pick_folder,
             on_discover_extend=self._discover_extend,
             on_discover_like=self._discover_like,
             on_discover_dislike=self._discover_dislike,
@@ -224,11 +222,6 @@ class Gui:
         """Forward the Discover refresh button."""
         if self.on_discover_refresh is not None:
             self.on_discover_refresh()
-
-    def _discover_pick_folder(self) -> None:
-        """Forward the Discover "from folder" button."""
-        if self.on_discover_pick_folder is not None:
-            self.on_discover_pick_folder()
 
     def _discover_extend(self, track: DiscoverTrack) -> None:
         """Forward a request to top up the Discover playlist."""

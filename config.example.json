@@ -44,6 +44,7 @@
   "discover_max_results": 40,
   "discover_results_per_seed": 6,
   "discover_min_folder_seeds": 5,
+  "discover_disk_scan_enabled": true,
   "discover_extend_remaining": 3,
   "discover_extend_count": 8,
   "discover_play_video": false,
