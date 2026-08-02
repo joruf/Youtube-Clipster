@@ -105,6 +105,48 @@ def test_discover_queue_rows_show_duration(gui, messages) -> None:
     assert header_duration.cget("text") == messages["column_duration"]
 
 
+def test_discover_queue_single_click_plays_without_download(gui) -> None:
+    """Title / number / channel / duration play on Button-1; Download stays separate."""
+    from clipster.discover import DiscoverTrack
+
+    gui.view.select_page("discover")
+    page = gui.view.discover
+    page.set_tracks(
+        [
+            DiscoverTrack(
+                url="https://www.youtube.com/watch?v=abcdefghijk",
+                video_id="abcdefghijk",
+                title="Click to play",
+                uploader="Channel",
+                duration=90,
+            )
+        ]
+    )
+    played: list[int] = []
+    downloads: list = []
+    page.play_at = lambda index: played.append(index)  # type: ignore[method-assign]
+    page._on_download = lambda track: downloads.append(track)  # type: ignore[method-assign]
+
+    row = page._row_frames[0]
+    number = row.grid_slaves(row=0, column=0)[0]
+    title = page._title_labels[0]
+    channel = row.grid_slaves(row=0, column=2)[0]
+    duration = row.grid_slaves(row=0, column=3)[0]
+    download_btn = row.grid_slaves(row=0, column=4)[0]
+
+    for widget in (row, number, title, channel, duration):
+        assert widget.bind("<Button-1>")
+        assert not widget.bind("<Double-Button-1>")
+
+    title.event_generate("<Button-1>")
+    assert played == [0]
+
+    assert not download_btn.bind("<Double-Button-1>")
+    download_btn.invoke()
+    assert len(downloads) == 1
+    assert played == [0]
+
+
 def test_discover_refresh_button_is_visible(gui, messages) -> None:
     gui.view.select_page("discover")
     page = gui.view.discover

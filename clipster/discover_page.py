@@ -1470,8 +1470,8 @@ class DiscoverPage(ttk.Frame):
         row = ttk.Frame(self._body, style="Panel.TFrame", padding=(PAD_SMALL, 4))
         row.pack(fill="x", pady=1)
         self._configure_queue_columns(row)
-        row.bind("<Button-1>", lambda _e, i=index: self.select_at(i))
-        row.bind("<Double-Button-1>", lambda _e, i=index: self.play_at(i))
+        # Single-click play on metadata cells only — not on Download (or other row actions).
+        row.bind("<Button-1>", lambda _e, i=index: self.play_at(i))
 
         number = ttk.Label(
             row,
@@ -1480,14 +1480,12 @@ class DiscoverPage(ttk.Frame):
             anchor="e",
         )
         number.grid(row=0, column=0, sticky="ew")
-        number.bind("<Button-1>", lambda _e, i=index: self.select_at(i))
-        number.bind("<Double-Button-1>", lambda _e, i=index: self.play_at(i))
+        number.bind("<Button-1>", lambda _e, i=index: self.play_at(i))
 
         full_title = " ".join((track.title or "").split())
         title = ttk.Label(row, text=full_title, style="Panel.TLabel", anchor="w")
         title.grid(row=0, column=1, sticky="ew", padx=(PAD_SMALL, 0))
-        title.bind("<Button-1>", lambda _e, i=index: self.select_at(i))
-        title.bind("<Double-Button-1>", lambda _e, i=index: self.play_at(i))
+        title.bind("<Button-1>", lambda _e, i=index: self.play_at(i))
         title.bind(
             "<Configure>",
             lambda e, lbl=title, full=full_title: lbl.configure(
@@ -1506,8 +1504,7 @@ class DiscoverPage(ttk.Frame):
             anchor="w",
         )
         channel_label.grid(row=0, column=2, sticky="ew", padx=(PAD_SMALL, 0))
-        channel_label.bind("<Button-1>", lambda _e, i=index: self.select_at(i))
-        channel_label.bind("<Double-Button-1>", lambda _e, i=index: self.play_at(i))
+        channel_label.bind("<Button-1>", lambda _e, i=index: self.play_at(i))
 
         duration_label = ttk.Label(
             row,
@@ -1516,8 +1513,7 @@ class DiscoverPage(ttk.Frame):
             anchor="e",
         )
         duration_label.grid(row=0, column=3, sticky="ew", padx=(PAD_SMALL, 0))
-        duration_label.bind("<Button-1>", lambda _e, i=index: self.select_at(i))
-        duration_label.bind("<Double-Button-1>", lambda _e, i=index: self.play_at(i))
+        duration_label.bind("<Button-1>", lambda _e, i=index: self.play_at(i))
 
         download_btn = ttk.Button(
             row,
