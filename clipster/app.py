@@ -81,9 +81,6 @@ SUBMIT_CLOSING = "closing"
 #: The formats a submission may ask for.
 MEDIA_FORMATS = ("mp3", "mp4")
 
-#: Bind addresses that keep the phone interface on this machine.
-LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")
-
 
 @dataclass(frozen=True)
 class SubmitResult:
@@ -290,7 +287,7 @@ class ClipsterApp:
         if not self.config.remote_enabled or self._remote is not None:
             return False
         from .webapi import RemoteApi
-        from .webserver import RemoteServer, new_token
+        from .webserver import LOOPBACK_ADDRESSES, RemoteServer, new_token
 
         if not self.config.remote_token:
             # Without a secret anybody on the network could start downloads.
@@ -334,15 +331,9 @@ class ClipsterApp:
         """
         if self._remote is None:
             return ""
-        if self.config.remote_bind in LOOPBACK_ADDRESSES:
-            base = "http://127.0.0.1:{0}/".format(self._remote.port)
-        else:
-            from .webserver import local_address
+        from .webserver import phone_url
 
-            base = local_address(self._remote.port)
-        if not base:
-            return ""
-        return "{0}?token={1}".format(base, self.config.remote_token)
+        return phone_url(self.config.remote_bind, self._remote.port, self.config.remote_token)
 
     def _install_signal_handlers(self) -> None:
         """Quit cleanly on Ctrl+C and on SIGTERM."""

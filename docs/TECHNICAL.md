@@ -107,7 +107,9 @@ Off by default (`remote_enabled`), and bound to loopback until `remote_bind` is 
 `ThreadingHTTPServer` on a daemon thread, started from `ClipsterApp.run`. Requests arrive on their own
 threads: `submit_remote` / `delete_remote` marshal themselves onto the Tk thread through `TkBridge`,
 while `remote_status` and the history are read directly, because the phone polls. `HistoryEntry.identifier`
-gives the phone a handle that survives a restart without adding a field to `history.json`. See
+gives the phone a handle that survives a restart without adding a field to `history.json`.
+`webserver.phone_url` builds the address the phone needs and is shared with
+`tools/phone_link.py`, so the program and the QR code can never disagree. See
 [README - Your phone](../README.md#your-phone-android-and-iphone).
 
 ### Bootstrap / installer

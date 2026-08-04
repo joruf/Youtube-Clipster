@@ -199,6 +199,7 @@
   "dep_tray": "das Symbol im Infobereich",
   "dep_appindicator": "das Kontextmenü des Symbols im Infobereich",
   "dep_xlib": "das Symbol im Infobereich unter X11 ohne PyGObject",
+  "dep_qrcode": "den QR-Code, der die Handy-Oberfläche aufs Handy bringt",
   "dep_ffmpeg": "Umwandlung nach MP3 und Zusammenfügen von Video und Audio",
   "dep_mpv": "Video im Streaming-Bereich von Clipster (nicht in einem Extra-Fenster)",
   "dep_tkinter": "die gesamte Oberfläche",

@@ -712,9 +712,12 @@ def _specs_present(interpreter: Path, modules: Sequence[str]) -> bool:
 def tray_modules() -> List[str]:
     """Return the pip packages needed for the system tray on this platform.
 
-    Taken from the optional entries of :mod:`clipster.dependencies`.
+    Taken from the optional entries of :mod:`clipster.dependencies` that belong
+    to the tray - not every optional package, or a missing QR code library would
+    be reported as a broken tray.
     """
-    return dependencies.optional_pip_packages(dependencies.current_platform())
+    return dependencies.optional_pip_packages(dependencies.current_platform(),
+                                              dependencies.TRAY_FEATURE_KEYS)
 
 
 def ensure_tray_support(interpreter: Optional[Path] = None, auto_install: bool = True) -> Step:
@@ -728,7 +731,8 @@ def ensure_tray_support(interpreter: Optional[Path] = None, auto_install: bool =
     :return: The finished step (always ``ok``).
     """
     python = interpreter or paths.venv_python()
-    required = dependencies.optional_pip_modules(dependencies.current_platform())
+    required = dependencies.optional_pip_modules(dependencies.current_platform(),
+                                                 dependencies.TRAY_FEATURE_KEYS)
 
     if _specs_present(python, required):
         return Step(name="System tray", ok=True, detail="pystray")
@@ -1041,6 +1045,52 @@ def ensure_clipboard_tool(auto_install: bool = True) -> Step:
     )
 
 
+def qr_modules() -> List[str]:
+    """Return the pip packages behind the phone setup QR code."""
+    return dependencies.optional_pip_packages(dependencies.current_platform(),
+                                              dependencies.QR_FEATURE_KEYS)
+
+
+def ensure_qr_support(interpreter: Optional[Path] = None, auto_install: bool = True) -> Step:
+    """Install the optional package that draws the phone setup QR code.
+
+    Pure convenience: without it ``--phone-setup`` prints the address as text
+    instead of as a code to scan, so this step never fails the setup.
+
+    :param interpreter: Interpreter to install into; defaults to the managed venv.
+    :param auto_install: Install the package instead of only reporting it.
+    :return: The finished step (always ``ok``).
+    """
+    python = interpreter or paths.venv_python()
+    required = dependencies.optional_pip_modules(dependencies.current_platform(),
+                                                 dependencies.QR_FEATURE_KEYS)
+    if not required:
+        return Step(name="Phone QR code", ok=True, detail="not needed on this platform")
+    if _specs_present(python, required):
+        return Step(name="Phone QR code", ok=True, detail="qrcode")
+    if not auto_install:
+        return Step(name="Phone QR code", ok=True, detail="not installed",
+                    hint="Run manually: \"{0}\" -m pip install {1}".format(
+                        python, " ".join(qr_modules())))
+    if not ensure_pip_usable(python):
+        return Step(name="Phone QR code", ok=True, detail="skipped - pip is not available")
+
+    log.info("Installing the QR code support ...")
+    result = run_command(
+        [str(python), "-m", "pip", "install", "--upgrade", "--disable-pip-version-check"] + qr_modules(),
+        timeout=600.0,
+    )
+    if _specs_present(python, required):
+        return Step(name="Phone QR code", ok=True, detail="qrcode installed", changed=True)
+    return Step(
+        name="Phone QR code",
+        ok=True,
+        detail="unavailable ({0})".format(result.tail(1)),
+        hint="The phone setup then shows the address as text. Install manually: "
+             "\"{0}\" -m pip install {1}".format(python, " ".join(qr_modules())),
+    )
+
+
 def ensure_js_runtime(auto_install: bool = True) -> Step:
     """Install an optional JavaScript runtime that some yt-dlp extractors use.
 
@@ -1127,6 +1177,8 @@ def bootstrap(
     report.add(ensure_tray_menu(interpreter=interpreter, auto_install=auto_install))
     note("Checking system tray...")
     report.add(ensure_tray_support(interpreter=interpreter, auto_install=auto_install))
+    note("Checking QR code support (optional, for the phone setup)...")
+    report.add(ensure_qr_support(interpreter=interpreter, auto_install=auto_install))
     note("Checking JavaScript runtime...")
     report.add(ensure_js_runtime(auto_install=auto_install))
     note("Dependency check finished.")

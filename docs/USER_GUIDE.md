@@ -47,8 +47,14 @@ Python 3.8+, tkinter, yt-dlp, ffmpeg, and a clipboard helper on Linux (`xclip` o
 
 You can send links from an Android phone or an iPhone; the PC downloads them. Nothing to install - the
 running program serves a small web page. Switch it on with `"remote_enabled": true` and
-`"remote_bind": "0.0.0.0"` in `config.json`, restart, and open the address the log prints. The full
-walkthrough, including the Android share sheet and the iPhone shortcut, is in
+`"remote_bind": "0.0.0.0"` in `config.json` and restart. Then run
+
+```bash
+python3 tools/phone_link.py
+```
+
+which prints the address and a QR code into the terminal - scan it with the phone and you are on. The
+full walkthrough, including the Android share sheet and the iPhone shortcut, is in
 [README - Your phone](../README.md#your-phone-android-and-iphone).
 
 ![Phone interface](images/phone.png)

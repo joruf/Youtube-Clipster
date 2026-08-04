@@ -99,6 +99,12 @@ class SystemDependency:
 #: Minimum Python version the code needs.
 MINIMUM_PYTHON = (3, 8)
 
+#: Feature keys of the optional packages that make up the system tray.
+TRAY_FEATURE_KEYS = ("dep_tray", "dep_xlib")
+
+#: Feature key of the optional package behind the phone setup QR code.
+QR_FEATURE_KEYS = ("dep_qrcode",)
+
 #: Python packages installed into the private virtual environment.
 PIP_DEPENDENCIES: Tuple[PipDependency, ...] = (
     PipDependency(
@@ -134,6 +140,14 @@ PIP_DEPENDENCIES: Tuple[PipDependency, ...] = (
         platforms=("linux",),
         feature="the system tray icon on X11 without PyGObject",
         feature_key="dep_xlib",
+    ),
+    PipDependency(
+        package="qrcode",
+        module="qrcode",
+        level=LEVEL_OPTIONAL,
+        minimum="7.0",
+        feature="the QR code that gets the phone interface onto a phone",
+        feature_key="dep_qrcode",
     ),
 )
 
@@ -223,22 +237,41 @@ def find_pip(package: str) -> Optional[PipDependency]:
     return None
 
 
-def optional_pip_packages(platform: str) -> List[str]:
-    """Return the pip package names of every optional dependency.
+def optional_pip_packages(platform: str, feature_keys: Optional[Tuple[str, ...]] = None) -> List[str]:
+    """Return the pip package names of the optional dependencies.
 
     :param platform: ``windows``, ``macos`` or ``linux``.
+    :param feature_keys: Restrict to these features; all of them when omitted.
     :return: Package names in declaration order.
     """
-    return [item.package for item in pip_dependencies(platform, LEVEL_OPTIONAL)]
+    return [item.package for item in _optional(platform, feature_keys)]
 
 
-def optional_pip_modules(platform: str) -> List[str]:
-    """Return the import names of every optional dependency.
+def optional_pip_modules(platform: str, feature_keys: Optional[Tuple[str, ...]] = None) -> List[str]:
+    """Return the import names of the optional dependencies.
 
     :param platform: ``windows``, ``macos`` or ``linux``.
+    :param feature_keys: Restrict to these features; all of them when omitted.
     :return: Module names in declaration order.
     """
-    return [item.module for item in pip_dependencies(platform, LEVEL_OPTIONAL)]
+    return [item.module for item in _optional(platform, feature_keys)]
+
+
+def _optional(platform: str, feature_keys: Optional[Tuple[str, ...]]) -> List[PipDependency]:
+    """Return the optional entries for a platform, optionally by feature.
+
+    Optional packages serve different features, and they are installed and
+    reported per feature: a missing QR code package must not be reported as a
+    broken system tray.
+
+    :param platform: ``windows``, ``macos`` or ``linux``.
+    :param feature_keys: Restrict to these features; all of them when ``None``.
+    :return: The matching entries in declaration order.
+    """
+    items = pip_dependencies(platform, LEVEL_OPTIONAL)
+    if feature_keys is None:
+        return items
+    return [item for item in items if item.feature_key in feature_keys]
 
 
 def pip_dependencies(platform: str, level: Optional[str] = None) -> List[PipDependency]:

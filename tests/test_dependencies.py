@@ -77,8 +77,25 @@ def test_the_generated_requirements_mention_every_package() -> None:
 
 def test_optional_helpers_agree_with_the_table() -> None:
     platform = dependencies.current_platform()
-    assert installer.tray_modules() == dependencies.optional_pip_packages(platform)
+    assert dependencies.optional_pip_packages(platform)
     assert dependencies.optional_pip_modules(platform)
+
+
+def test_every_optional_package_belongs_to_exactly_one_feature() -> None:
+    """A package in no group is never installed; one in two groups is installed twice."""
+    platform = dependencies.current_platform()
+    groups = (dependencies.TRAY_FEATURE_KEYS, dependencies.QR_FEATURE_KEYS)
+    collected: list = []
+    for keys in groups:
+        collected.extend(dependencies.optional_pip_packages(platform, keys))
+    assert sorted(collected) == sorted(dependencies.optional_pip_packages(platform))
+    assert len(collected) == len(set(collected))
+
+
+def test_the_tray_does_not_claim_unrelated_packages() -> None:
+    """A missing QR code library must not be reported as a broken system tray."""
+    assert "qrcode" not in installer.tray_modules()
+    assert installer.qr_modules() == ["qrcode"]
 
 
 def test_the_minimum_python_is_shared_with_the_installer() -> None:

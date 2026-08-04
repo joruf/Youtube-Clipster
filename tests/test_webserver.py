@@ -671,3 +671,26 @@ def test_a_delete_may_carry_the_token_in_the_url(media) -> None:
     status, _, _ = _request(target, method="DELETE", token=None)
     assert status == 200
     assert app.deleted
+
+
+# ----------------------------------------------------------------------
+# The address handed to the phone
+# ----------------------------------------------------------------------
+def test_a_local_bind_yields_a_local_url() -> None:
+    """A network address here would look inviting and then refuse to connect."""
+    for bind in webserver.LOOPBACK_ADDRESSES:
+        url = webserver.phone_url(bind, 8733, "tok")
+        assert url == "http://127.0.0.1:8733/?token=tok", bind
+
+
+def test_a_wide_bind_yields_the_network_url() -> None:
+    url = webserver.phone_url("0.0.0.0", 8733, "tok")
+    if not url:
+        pytest.skip("this machine has no route to a network")
+    assert url.endswith(":8733/?token=tok")
+    assert "0.0.0.0" not in url, "a phone cannot dial the bind address"
+
+
+def test_without_a_token_there_is_no_url() -> None:
+    """Handing out an address that cannot authenticate only causes confusion."""
+    assert webserver.phone_url("0.0.0.0", 8733, "") == ""

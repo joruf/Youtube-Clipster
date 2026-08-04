@@ -64,6 +64,7 @@ More detail: [User guide](docs/USER_GUIDE.md) · [Technical documentation](docs/
 | **Download engine** | `yt-dlp` | `yt-dlp` |
 | **Media processing** | `ffmpeg` | `ffmpeg` |
 | **System tray** *(optional)* | `pystray`, `Pillow`, `python-xlib` | `pystray`, `Pillow` |
+| **Phone QR code** *(optional)* | `qrcode` | `qrcode` |
 
 **You do not have to install any of this by hand.** The bootstrapper `run.py` checks
 every component on each start and installs what is missing – see
@@ -378,6 +379,7 @@ The log file lives next to the configuration:
 --no-venv             use the current interpreter instead of a private venv
 --no-auto-install     report missing components instead of installing them
 
+--phone-setup         guided setup that connects your phone, then exit
 --create-shortcut     create a desktop shortcut and exit
 --autostart on|off    enable or disable the login autostart and exit
 
@@ -432,6 +434,23 @@ so the "copy a link and it downloads" trick cannot exist there. And an app that 
 content is not allowed into Google Play or the App Store. A page served by your own PC has neither
 problem — and needs no store at all.
 
+### The guided way (recommended)
+
+One command does all of it — settings, token, firewall, QR code — and then **waits until your phone
+has actually connected**, so you know it works before you start using it:
+
+```bash
+python3 run.py --phone-setup     # Linux/macOS
+run.bat --phone-setup            # Windows
+```
+
+It walks through six steps, asks before it changes anything, and shows you the exact firewall command
+before running it. If the phone does not get through, it names the usual reasons instead of leaving you
+guessing.
+
+Everything below describes the same thing done by hand — useful to understand what the wizard did, or
+when you would rather do it yourself.
+
 ### 1. Switch it on
 
 The phone interface is **off** by default, and even when switched on it stays on the PC until you
@@ -472,18 +491,47 @@ The log file is next to the configuration
 (`~/.local/share/YoutubeClipster/youtube-clipster.log`, Windows `%LOCALAPPDATA%\…`) — or start with
 `-v` and read it in the console.
 
-The token has to be part of that first address. Afterwards the phone stores it in a cookie, and the
-address bar shows only `http://192.168.1.42:8733/`.
+You do not have to read this out of the log at all — step 3 hands you the same address as a QR code.
 
-### 3. Open it on the phone
+### 3. Get it onto the phone
 
-Phone and PC have to be on the **same Wi-Fi**. Use Chrome on Android and Safari on the iPhone; both
-handle the rest.
+Phone and PC have to be on the **same Wi-Fi**. Nobody wants to type a 32 character token, so run this
+on the PC:
 
-The address has to be opened only once, but it is long. Rather than typing the token by hand, copy the
-line out of the log on the PC and get it to the phone the way you usually move text around — a
-message to yourself, a shared clipboard, an e-mail. *(A QR code in the view window is still to come;
-until then this is the way.)*
+```bash
+python3 tools/phone_link.py
+```
+
+It prints the address and a QR code **into the terminal** — hold the phone's camera in front of the
+screen, open the link it offers, and that is the whole transfer:
+
+```
+http://192.168.1.42:8733/?token=VpWAghuIyT0OurTjVptVhOCLFOqOAHmZ
+
+█████████████████████████████████████
+██ ▄▄▄▄▄ █    ▄  ▄   ▄█▀▄ ▄█ ▄▄▄▄▄ ██
+██ █   █ █▀ ▄  ▄██▀████▀   █ █   █ ██
+██ █▄▄▄█ ██▀ ▀▀█ █▄▀▀▀▀█ █▄█ █▄▄▄█ ██
+        (… the full code follows …)
+```
+
+The tool also tells you when `remote_enabled` is still off or `remote_bind` still keeps the interface
+on the PC, so it doubles as a check that step 1 worked. It works before the first program start too:
+if no token exists yet, it generates one and writes it into `config.json` — the program then uses that
+same token.
+
+| Variant | What it does |
+|---------|--------------|
+| `python3 tools/phone_link.py` | address plus QR code in the terminal |
+| `python3 tools/phone_link.py --png link.png` | additionally write the QR code as an image |
+| `python3 tools/phone_link.py --url` | only the address, for piping somewhere |
+
+The QR code is generated **on your machine** — the token is a password and is never sent to a web
+service. It needs the optional package `qrcode`, which the installer offers; without it the tool still
+prints the address.
+
+Use Chrome on Android and Safari on the iPhone. The address has to be opened only once: afterwards the
+phone keeps the token in a cookie and the address bar shows just `http://192.168.1.42:8733/`.
 
 You can now paste a link, choose MP3 or MP4 and tap **Download**. The list below shows every
 download with its length, size, date and status; ▶ plays it, ⤓ saves it to the phone, ✕ deletes the
@@ -541,9 +589,9 @@ send.
 
 | Symptom | Cause and fix |
 |---------|---------------|
-| The page does not load at all | Phone on a different Wi-Fi (or a guest network), `remote_bind` still `127.0.0.1`, or the firewall is blocking the port |
+| The page does not load at all | Phone on a different Wi-Fi (or a guest network), `remote_bind` still `127.0.0.1`, or the firewall is blocking the port. `--phone-setup` checks all three |
 | "This device is not registered any more" | The cookie is gone. Open the full address with `?token=…` from step 2 again |
-| The address from the log is `0.0.0.0` | That is the bind address, not a destination. Use the "Open this on your phone" line below it |
+| The address from the log is `0.0.0.0` | That is the bind address, not a destination. Use the "Open this on your phone" line below it, or run `python3 tools/phone_link.py` |
 | Nothing happens after *Download* | Look at the PC: the navigation window shows the same download, and the log gives the reason |
 | The port is already in use | Set another `"remote_port"` and restart; the log says so plainly |
 | No *Install* entry on Android | Chrome needs the app manifest, which is only served once the token was accepted. Open the address including `?token=…` and reload the page once |
@@ -603,6 +651,7 @@ youtube-clipster/
 ├── tests/                   # the test suite (see "Tests" above)
 ├── tools/make_logo.py       # regenerates the logo (SVG + PNG + ICO)
 ├── tools/capture_screenshots.py  # anonymized UI screenshots for docs
+├── tools/phone_link.py      # prints the phone address and a QR code for it
 └── clipster/
     ├── cli.py               # argument parsing, bootstrap, relaunch into the venv
     ├── dependencies.py      # THE dependency definition - what is needed and why
@@ -622,6 +671,7 @@ youtube-clipster/
     ├── updater.py           # checks GitHub, fetches, restarts
     ├── webserver.py         # the phone interface: HTTP, token, Range requests
     ├── webapi.py            # what the phone may ask for, as plain data
+    ├── phonesetup.py        # the guided --phone-setup wizard
     ├── web/                 # the page the phone loads (HTML, CSS, JS, manifest)
     ├── clipboard.py         # Win32 / wl-clipboard / xclip / xsel / pbpaste / Tk
     ├── singleinstance.py    # flock (POSIX) and named mutex (Windows)

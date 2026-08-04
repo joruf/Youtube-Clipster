@@ -48,6 +48,9 @@ MAX_BODY = 8 * 1024
 #: Chunk size while streaming a file to the phone.
 _CHUNK = 64 * 1024
 
+#: Bind addresses that keep the phone interface on this machine.
+LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")
+
 
 def new_token() -> str:
     """Return a fresh shared secret for the phone interface.
@@ -114,20 +117,52 @@ def parse_range(header: str, size: int) -> Optional[Tuple[int, int]]:
     return start, min(end, size - 1)
 
 
-def local_address(port: int) -> str:
-    """Return the address a phone on the same network can use.
+def phone_url(bind: str, port: int, token: str) -> str:
+    """Return the address to open on a phone, token included.
 
+    Shared by the running program and ``tools/phone_link.py`` so both can never
+    disagree about what to type into the phone.  While the server is bound to
+    loopback the network address is *not* returned: it would look inviting and
+    then refuse every connection.
+
+    :param bind: The configured bind address.
     :param port: The port the server listens on.
-    :return: ``http://<ip>:<port>/``, or an empty string when unknown.
+    :param token: The shared secret.
+    :return: The full URL, or an empty string when it cannot be determined.
+    """
+    if bind in LOOPBACK_ADDRESSES:
+        base = "http://127.0.0.1:{0}/".format(port)
+    else:
+        base = local_address(port)
+    if not base or not token:
+        return ""
+    return "{0}?token={1}".format(base, token)
+
+
+def local_host() -> str:
+    """Return the address of the interface facing the local network.
+
+    :return: An IPv4 address, or an empty string when it cannot be determined.
     """
     try:
         # Nothing is sent: connecting a UDP socket only picks the route, which
         # reveals which local interface faces the network.
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
             probe.connect(("192.0.2.1", 9))
-            host = probe.getsockname()[0]
+            return str(probe.getsockname()[0])
     except OSError:
         log.debug("The local network address could not be determined")
+        return ""
+
+
+def local_address(port: int) -> str:
+    """Return the address a phone on the same network can use.
+
+    :param port: The port the server listens on.
+    :return: ``http://<ip>:<port>/``, or an empty string when unknown.
+    """
+    host = local_host()
+    if not host:
         return ""
     return "http://{0}:{1}/".format(host, port)
 

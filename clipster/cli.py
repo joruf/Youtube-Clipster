@@ -43,6 +43,8 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--no-auto-install", action="store_true", help="report missing components instead of installing")
 
     integration = parser.add_argument_group("desktop integration")
+    integration.add_argument("--phone-setup", action="store_true",
+                             help="guided setup that connects your phone, then exit")
     integration.add_argument("--create-shortcut", action="store_true", help="create a desktop shortcut and exit")
     integration.add_argument(
         "--autostart",
@@ -366,6 +368,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     logging_setup.configure(verbose=args.verbose, level=config.log_level)
     messages = i18n.load(config.language)
+
+    if args.phone_setup:
+        # Before the instance lock: the wizard may well be run while the program
+        # is already sitting in the tray.
+        from . import phonesetup
+
+        return phonesetup.run(config)
 
     from .singleinstance import AlreadyRunning, SingleInstance
 

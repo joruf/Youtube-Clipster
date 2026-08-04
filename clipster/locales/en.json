@@ -199,6 +199,7 @@
   "dep_tray": "the system tray icon",
   "dep_appindicator": "the context menu of the tray icon",
   "dep_xlib": "the tray icon on X11 without PyGObject",
+  "dep_qrcode": "the QR code that gets the phone interface onto a phone",
   "dep_tkinter": "the whole user interface",
   "dep_ffmpeg": "converting to MP3 and merging video with audio",
   "dep_mpv": "in-tab Streaming video inside the Clipster window",
