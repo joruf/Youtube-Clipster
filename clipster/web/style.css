@@ -1,0 +1,361 @@
+/*
+ * The phone interface, in the colours of clipster/theme.py.
+ *
+ * Kept to one file and plain CSS: this is served by a stdlib HTTP server from a
+ * fixed table of files, so every extra file is one more thing to ship.
+ */
+
+:root {
+    --base: #15161a;
+    --panel: #1d1f25;
+    --elevated: #272a32;
+    --border: #383c46;
+    --text: #e9eaee;
+    --muted: #8b909c;
+    --accent: #e5322d;
+    --accent-active: #c8241f;
+    --success: #3fb950;
+    --warning: #d6a119;
+    --danger: #f2564b;
+    --radius: 12px;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    padding: 0 0 max(env(safe-area-inset-bottom), 16px);
+    background: var(--base);
+    color: var(--text);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    /* iOS zooms in on focus when inputs are smaller than 16px. */
+    -webkit-text-size-adjust: 100%;
+}
+
+/* ---------------------------------------------------------------- header */
+.bar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: max(env(safe-area-inset-top), 12px) 16px 12px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+
+.bar h1 {
+    flex: 1;
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 600;
+}
+
+.logo {
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+}
+
+.dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: background 200ms;
+}
+
+.dot.online {
+    background: var(--success);
+}
+
+.dot.offline {
+    background: var(--danger);
+}
+
+/* ----------------------------------------------------------------- cards */
+main {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 14px;
+    max-width: 720px;
+    margin: 0 auto;
+}
+
+.card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+}
+
+.card h2 {
+    margin: 0 0 10px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.row.between {
+    justify-content: space-between;
+}
+
+.label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 0.8rem;
+    color: var(--muted);
+}
+
+/* ----------------------------------------------------------------- form */
+input[type="url"] {
+    width: 100%;
+    margin-bottom: 12px;
+    padding: 12px;
+    background: var(--elevated);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font-size: 1rem;
+}
+
+input[type="url"]:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.formats {
+    display: flex;
+    flex: 1;
+    gap: 8px;
+}
+
+.chip input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.chip span {
+    display: block;
+    padding: 10px 16px;
+    background: var(--elevated);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    user-select: none;
+}
+
+.chip input:checked + span {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+}
+
+.chip input:focus-visible + span {
+    outline: 2px solid var(--text);
+    outline-offset: 2px;
+}
+
+button {
+    font: inherit;
+    cursor: pointer;
+}
+
+.primary {
+    padding: 11px 20px;
+    background: var(--accent);
+    border: 0;
+    border-radius: 10px;
+    color: #fff;
+    font-weight: 600;
+}
+
+.primary:active {
+    background: var(--accent-active);
+}
+
+.primary[disabled] {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.quiet {
+    padding: 6px 10px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--muted);
+    font-size: 0.8rem;
+}
+
+.message {
+    margin: 12px 0 0;
+    padding: 10px 12px;
+    background: var(--elevated);
+    border-radius: 9px;
+    font-size: 0.9rem;
+}
+
+.message.bad {
+    color: var(--danger);
+}
+
+.message.good {
+    color: var(--success);
+}
+
+/* --------------------------------------------------------------- running */
+.active,
+.downloads {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.active li {
+    padding: 10px 0;
+    border-top: 1px solid var(--border);
+}
+
+.active li:first-child {
+    border-top: 0;
+}
+
+.active .name {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 0.92rem;
+    overflow-wrap: anywhere;
+}
+
+.track {
+    height: 6px;
+    background: var(--elevated);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.fill {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    transition: width 300ms;
+}
+
+.fill.unknown {
+    width: 40%;
+    animation: sweep 1.4s ease-in-out infinite;
+}
+
+@keyframes sweep {
+    0% { margin-left: -40%; }
+    100% { margin-left: 100%; }
+}
+
+.phase {
+    display: block;
+    margin-top: 6px;
+    font-size: 0.78rem;
+    color: var(--muted);
+}
+
+/* ------------------------------------------------------------- downloads */
+.downloads li {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 12px 0;
+    border-top: 1px solid var(--border);
+}
+
+.downloads li:first-child {
+    border-top: 0;
+}
+
+.badge {
+    flex: none;
+    width: 34px;
+    padding: 3px 0;
+    border-radius: 6px;
+    background: var(--elevated);
+    color: var(--muted);
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-align: center;
+    letter-spacing: 0.04em;
+}
+
+.badge.ok { color: var(--success); }
+.badge.failed { color: var(--danger); }
+.badge.canceled { color: var(--warning); }
+
+.body {
+    flex: 1;
+    min-width: 0;
+}
+
+.body .name {
+    font-size: 0.92rem;
+    overflow-wrap: anywhere;
+}
+
+.meta {
+    margin-top: 3px;
+    font-size: 0.76rem;
+    color: var(--muted);
+}
+
+.problem {
+    margin-top: 4px;
+    font-size: 0.78rem;
+    color: var(--danger);
+    overflow-wrap: anywhere;
+}
+
+.actions {
+    display: flex;
+    flex: none;
+    gap: 6px;
+}
+
+.icon {
+    width: 38px;
+    height: 38px;
+    background: var(--elevated);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    color: var(--text);
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.icon:active {
+    background: var(--border);
+}
+
+.icon.danger {
+    color: var(--danger);
+}
+
+#player {
+    position: sticky;
+    bottom: 0;
+    width: 100%;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+}

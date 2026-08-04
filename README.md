@@ -26,6 +26,8 @@ edition (`windows/*.bat`) have been replaced by the `clipster/` package.
 - **Declared dependencies** – everything the program needs is data in `clipster/dependencies.py`;
   the installer reads that table, works out what is missing, installs it and starts the program
 - **Self-updating** – `yt-dlp` is kept up to date automatically
+- **Phone interface** – send links from your Android phone or iPhone, the PC downloads them;
+  no app to install, see [Your phone](#your-phone-android-and-iphone)
 - **Multi-language** – English and German (`clipster/locales/*.json`)
 - **Single instance** – a second start is refused with a clear message
 - **Desktop integration** – optional desktop shortcut and login autostart
@@ -43,6 +45,10 @@ Anonymized captures of the real Tk UI (fixture data only):
 ![Settings](docs/images/settings.png)
 
 ![Terms of use](docs/images/terms.png)
+
+The phone interface, served by the running program to your Android phone or iPhone:
+
+![Phone interface](docs/images/phone.png)
 
 More detail: [User guide](docs/USER_GUIDE.md) · [Technical documentation](docs/TECHNICAL.md)
 
@@ -340,6 +346,10 @@ For a **portable setup** copy `config.example.json` to `config.json` **next to
 | `cookies_file` | `""` | Path to a Netscape cookies.txt for yt-dlp |
 | `ask_desktop_shortcut` | `true` | Ask once whether a desktop shortcut should be created |
 | `autostart` | `false` | Start automatically at login |
+| `remote_enabled` | `false` | Serve the phone interface (see [Your phone](#your-phone-android-and-iphone)) |
+| `remote_bind` | `"127.0.0.1"` | `0.0.0.0` lets other devices in; the default keeps it on this PC |
+| `remote_port` | `8733` | TCP port of the phone interface |
+| `remote_token` | `""` | Shared secret; generated on first start and written back here |
 | `update_check_hours` | `24` | Hours between two yt-dlp update checks (`0` = every start) |
 | `log_level` | `"INFO"` | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
 | `discover_search_suffix` | `"lyrics"` | Word appended to Streaming searches; empty disables it |
@@ -409,6 +419,137 @@ python3 run.py --autostart off       # disable
 
 ---
 
+## Your phone (Android and iPhone)
+
+You can operate YouTube Clipster from your phone: the phone sends a link, **the PC downloads it**,
+and the phone shows the list and plays the result. There is nothing to install — the running program
+serves a small web page, so the same thing works on Android and on the iPhone.
+
+![The phone interface](docs/images/phone.png)
+
+Why it works this way: Android has forbidden reading the clipboard in the background since Android 10,
+so the "copy a link and it downloads" trick cannot exist there. And an app that downloads YouTube
+content is not allowed into Google Play or the App Store. A page served by your own PC has neither
+problem — and needs no store at all.
+
+### 1. Switch it on
+
+The phone interface is **off** by default, and even when switched on it stays on the PC until you
+allow other devices in. Both keys in `config.json` have to change:
+
+```json
+{
+  "remote_enabled": true,
+  "remote_bind": "0.0.0.0"
+}
+```
+
+| Value | Who can reach it |
+|-------|------------------|
+| `"remote_bind": "127.0.0.1"` | only this PC (the default) |
+| `"remote_bind": "0.0.0.0"` | every device on the networks this PC is on — needed for your phone |
+
+Then restart YouTube Clipster. On the first start a token is generated and written back into
+`config.json`; you do not have to invent one.
+
+**Windows** asks once whether the program may accept connections. Allow it for **private networks** —
+without that the phone cannot reach the PC. On Linux with an active firewall, let the port through:
+
+```bash
+sudo ufw allow 8733/tcp     # only if ufw is enabled
+```
+
+### 2. Read the address
+
+The startup log prints the complete address, token included:
+
+```
+[INFO]  The phone interface is listening on http://0.0.0.0:8733/
+[INFO]  Open this on your phone: http://192.168.1.42:8733/?token=ugRFRjQpigmZNQHUlay9CWUYme1
+```
+
+The log file is next to the configuration
+(`~/.local/share/YoutubeClipster/youtube-clipster.log`, Windows `%LOCALAPPDATA%\…`) — or start with
+`-v` and read it in the console.
+
+The token has to be part of that first address. Afterwards the phone stores it in a cookie, and the
+address bar shows only `http://192.168.1.42:8733/`.
+
+### 3. Open it on the phone
+
+Phone and PC have to be on the **same Wi-Fi**. Use Chrome on Android and Safari on the iPhone; both
+handle the rest.
+
+The address has to be opened only once, but it is long. Rather than typing the token by hand, copy the
+line out of the log on the PC and get it to the phone the way you usually move text around — a
+message to yourself, a shared clipboard, an e-mail. *(A QR code in the view window is still to come;
+until then this is the way.)*
+
+You can now paste a link, choose MP3 or MP4 and tap **Download**. The list below shows every
+download with its length, size, date and status; ▶ plays it, ⤓ saves it to the phone, ✕ deletes the
+file on the PC.
+
+### 4. Put it on the home screen
+
+Worth doing: on Android this is also what puts Clipster into the share menu.
+
+- **Android (Chrome)** — menu ⋮ → *Add to home screen* → *Install*
+- **iPhone (Safari)** — share button → *Add to Home Screen*
+
+It then opens like an app, without a browser bar.
+
+### 5. Share instead of copy (Android)
+
+Once installed on the home screen, **Clipster appears in Android's share sheet**:
+
+> YouTube app → **Share** → **Clipster** → the download starts immediately.
+
+That is the closest thing to the clipboard automation on the PC — one tap, no typing, no pasting.
+
+A link arriving this way is downloaded as **MP3**, because that is what the form has preselected. For
+an MP4, open Clipster from the home screen, paste the link and choose MP4.
+
+### 6. Share instead of copy (iPhone)
+
+Safari has no share target, so iOS needs a small shortcut instead. In the **Shortcuts** app:
+
+1. New shortcut → add the action **Get Contents of URL**
+2. URL: `http://192.168.1.42:8733/api/submit?token=YOUR_TOKEN` — your address from step 2
+3. Method: **POST**, Request Body: **JSON**, with two fields:
+   - `url` → *Shortcut Input*
+   - `format` → `mp3` (or `mp4`)
+4. In the shortcut details, switch on **Show in Share Sheet** and set the input type to **URLs**
+
+Sharing a video from the YouTube app to that shortcut then starts the download on the PC. This works
+because the interface also accepts the token as a URL parameter, which is all the Shortcuts app can
+send.
+
+### Keep in mind
+
+- **The token is the key to your PC.** Anybody on the same network who has it can start downloads and
+  read every file you have already downloaded. Treat it like a password.
+- **Do not forward the port in your router.** To reach the PC from outside your home, use a VPN such
+  as [Tailscale](https://tailscale.com/) or WireGuard, which does not expose anything to the internet.
+- **Revoking a phone**: empty `"remote_token"` in `config.json` and restart. A new token is generated
+  and every old link stops working.
+- **Switching it off entirely**: `"remote_enabled": false` and restart, or set `"remote_bind"` back to
+  `"127.0.0.1"`.
+- The PC has to be **running and awake** — it does all the work. The phone is only the remote control.
+- The phone interface is currently **English only**, unlike the desktop windows.
+
+### When something does not work
+
+| Symptom | Cause and fix |
+|---------|---------------|
+| The page does not load at all | Phone on a different Wi-Fi (or a guest network), `remote_bind` still `127.0.0.1`, or the firewall is blocking the port |
+| "This device is not registered any more" | The cookie is gone. Open the full address with `?token=…` from step 2 again |
+| The address from the log is `0.0.0.0` | That is the bind address, not a destination. Use the "Open this on your phone" line below it |
+| Nothing happens after *Download* | Look at the PC: the navigation window shows the same download, and the log gives the reason |
+| The port is already in use | Set another `"remote_port"` and restart; the log says so plainly |
+| No *Install* entry on Android | Chrome needs the app manifest, which is only served once the token was accepted. Open the address including `?token=…` and reload the page once |
+
+---
+
 ## Tests
 
 ```bash
@@ -416,7 +557,7 @@ python3 -m pip install -r requirements-dev.txt
 python3 -m pytest
 ```
 
-Roughly 290 tests, all offline and finished in well under a minute. They never
+Roughly 630 tests, all offline and finished in well under a minute. They never
 touch your real configuration or download list - an autouse fixture redirects the
 application data directory into a temporary folder for every single test.
 
@@ -479,6 +620,9 @@ youtube-clipster/
     ├── downloader.py        # yt-dlp integration (metadata, download, progress)
     ├── history.py           # the persistent download list (history.json)
     ├── updater.py           # checks GitHub, fetches, restarts
+    ├── webserver.py         # the phone interface: HTTP, token, Range requests
+    ├── webapi.py            # what the phone may ask for, as plain data
+    ├── web/                 # the page the phone loads (HTML, CSS, JS, manifest)
     ├── clipboard.py         # Win32 / wl-clipboard / xclip / xsel / pbpaste / Tk
     ├── singleinstance.py    # flock (POSIX) and named mutex (Windows)
     ├── shortcuts.py         # desktop shortcut, autostart, open file / reveal folder

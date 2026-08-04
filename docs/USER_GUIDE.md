@@ -43,6 +43,16 @@ Allow Defender/SmartScreen prompts for yt-dlp and ffmpeg on first run.
 
 Python 3.8+, tkinter, yt-dlp, ffmpeg, and a clipboard helper on Linux (`xclip` or `wl-clipboard`). Optional: tray packages (`pystray`, Pillow, …).
 
+## On your phone
+
+You can send links from an Android phone or an iPhone; the PC downloads them. Nothing to install - the
+running program serves a small web page. Switch it on with `"remote_enabled": true` and
+`"remote_bind": "0.0.0.0"` in `config.json`, restart, and open the address the log prints. The full
+walkthrough, including the Android share sheet and the iPhone shortcut, is in
+[README - Your phone](../README.md#your-phone-android-and-iphone).
+
+![Phone interface](images/phone.png)
+
 ## First start (terms)
 
 On first launch Clipster asks you to accept the **general terms of use**. You must tick the checkbox and choose Accept; Decline quits the program.

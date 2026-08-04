@@ -575,3 +575,260 @@ def test_playing_hands_the_file_to_the_desktop(app, tmp_path: Path, monkeypatch)
     monkeypatch.setattr(shortcuts, "open_path", lambda p: opened.append(p) or True)
     app._play_entry(HistoryEntry(name="song.mp3", path=str(target), status=STATUS_OK))
     assert opened == [target]
+
+
+# ----------------------------------------------------------------------
+# Requests from outside the program (the remote interface)
+# ----------------------------------------------------------------------
+def test_a_remote_request_starts_a_download(app) -> None:
+    from clipster.app import SUBMIT_STARTED
+
+    result = app.submit_remote(URL_A, "mp3")
+    assert result.state == SUBMIT_STARTED
+    assert result.accepted
+    assert result.url == URL_A
+    assert app.started == [URL_A]
+
+
+def test_a_remote_request_never_asks_anything(app) -> None:
+    """The phone cannot answer a dialog, so the format must already be decided."""
+    app.submit_remote(URL_A, "mp4")
+    assert app._forced_format == "mp4"
+
+
+def test_a_remote_request_is_queued_behind_a_running_one(app) -> None:
+    from clipster.app import SUBMIT_QUEUED
+
+    app.submit_remote(URL_A, "mp3")
+    result = app.submit_remote(URL_B, "mp3")
+    assert result.state == SUBMIT_QUEUED
+    assert result.accepted
+    assert result.position == 1
+
+
+def test_the_same_link_twice_is_reported_not_silently_dropped(app) -> None:
+    from clipster.app import SUBMIT_RUNNING, SUBMIT_WAITING
+
+    app.submit_remote(URL_A, "mp3")
+    assert app.submit_remote(URL_A, "mp3").state == SUBMIT_RUNNING
+    app.submit_remote(URL_B, "mp3")
+    assert app.submit_remote(URL_B, "mp3").state == SUBMIT_WAITING
+
+
+def test_a_full_waiting_list_is_reported(app) -> None:
+    from clipster.app import SUBMIT_FULL
+
+    app.submit_remote(URL_A, "mp3")
+    for index in range(app.MAX_QUEUE):
+        # A YouTube id is exactly 11 characters; a longer one is refused, which
+        # would leave the waiting list half empty and this test meaningless.
+        filler = "https://www.youtube.com/watch?v=q{0:010d}".format(index)
+        assert app.submit_remote(filler, "mp3").accepted, filler
+    result = app.submit_remote("https://www.youtube.com/watch?v=zzzzzzzzzzz", "mp3")
+    assert result.state == SUBMIT_FULL
+    assert not result.accepted
+
+
+@pytest.mark.parametrize("bad", ["", "not a url", "https://example.com/watch?v=x", "ftp://x"])
+def test_something_that_is_not_a_youtube_link_is_refused(app, bad: str) -> None:
+    from clipster.app import SUBMIT_INVALID
+
+    assert app.submit_remote(bad, "mp3").state == SUBMIT_INVALID
+    assert app.started == []
+
+
+@pytest.mark.parametrize("bad", ["", "wav", "MP3", "mp3; rm -rf /"])
+def test_an_unknown_format_is_refused(app, bad: str) -> None:
+    """An empty format would open the interactive question nobody can answer."""
+    from clipster.app import SUBMIT_FORMAT
+
+    assert app.submit_remote(URL_A, bad).state == SUBMIT_FORMAT
+    assert app.started == []
+
+
+def test_an_already_downloaded_file_is_offered_instead_of_fetched(app, tmp_path: Path) -> None:
+    from clipster.app import SUBMIT_EXISTS
+
+    target = tmp_path / "song.mp3"
+    target.write_bytes(b"x")
+    entry = app.history.add(HistoryEntry(name="song.mp3", path=str(target), url=URL_A,
+                                        media_format="mp3", status=STATUS_OK))
+
+    result = app.submit_remote(URL_A, "mp3")
+    assert result.state == SUBMIT_EXISTS
+    assert result.entry_id == entry.identifier()
+    assert app.started == [], "nothing may be downloaded a second time"
+
+
+def test_the_same_video_in_the_other_format_is_a_new_download(app, tmp_path: Path) -> None:
+    from clipster.app import SUBMIT_STARTED
+
+    target = tmp_path / "song.mp3"
+    target.write_bytes(b"x")
+    app.history.add(HistoryEntry(name="song.mp3", path=str(target), url=URL_A,
+                                 media_format="mp3", status=STATUS_OK))
+    assert app.submit_remote(URL_A, "mp4").state == SUBMIT_STARTED
+
+
+def test_force_downloads_an_existing_file_again(app, tmp_path: Path) -> None:
+    from clipster.app import SUBMIT_STARTED
+
+    target = tmp_path / "song.mp3"
+    target.write_bytes(b"x")
+    app.history.add(HistoryEntry(name="song.mp3", path=str(target), url=URL_A,
+                                 media_format="mp3", status=STATUS_OK))
+    result = app.submit_remote(URL_A, "mp3", force=True)
+    assert result.state == SUBMIT_STARTED
+    assert app._force_redownload is True
+
+
+def test_a_closing_program_takes_nothing_new(app) -> None:
+    from clipster.app import SUBMIT_CLOSING
+
+    app._quitting = True
+    assert app.submit_remote(URL_A, "mp3").state == SUBMIT_CLOSING
+    assert app.started == []
+
+
+def test_a_request_from_another_thread_lands_on_the_gui_thread(app) -> None:
+    """The web server answers in its own thread; touching Tk from there breaks it."""
+    import threading
+
+    from clipster.app import SUBMIT_STARTED
+
+    app.bridge.start()
+    seen: dict = {}
+
+    def worker() -> None:
+        try:
+            seen["result"] = app.submit_remote(URL_A, "mp3")
+            seen["gui_thread"] = False
+        except Exception as exc:  # pragma: no cover - reported through the assert
+            seen["error"] = exc
+
+    original = app._enqueue
+
+    def recording_enqueue(url, media_format, force=False):
+        seen["ran_on_gui_thread"] = app.bridge.on_gui_thread()
+        return original(url, media_format, force)
+
+    app._enqueue = recording_enqueue  # type: ignore[assignment]
+    thread = threading.Thread(target=worker)
+    thread.start()
+    # The bridge drains inside the Tk loop, so it has to be pumped here.
+    deadline = 200
+    while thread.is_alive() and deadline > 0:
+        app.gui.root.update()
+        deadline -= 1
+    thread.join(timeout=5)
+
+    assert "error" not in seen, seen.get("error")
+    assert seen["result"].state == SUBMIT_STARTED
+    assert seen["ran_on_gui_thread"] is True, "the pipeline must not be touched from a worker"
+
+
+def test_a_request_after_shutdown_is_refused_not_hung(app) -> None:
+    """A stopped bridge must raise instead of blocking the server thread forever."""
+    import threading
+
+    app.bridge.start()
+    app.bridge.stop()
+    outcome: dict = {}
+
+    def worker() -> None:
+        try:
+            outcome["result"] = app.submit_remote(URL_A, "mp3")
+        except RuntimeError as exc:
+            outcome["error"] = str(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "the caller was left hanging"
+    assert "bridge" in outcome.get("error", "").lower()
+
+
+# ----------------------------------------------------------------------
+# Starting and stopping the phone interface
+# ----------------------------------------------------------------------
+def test_the_phone_interface_stays_off_unless_asked(app) -> None:
+    """It lets other devices start downloads, so it must never be on by accident."""
+    assert app.config.remote_enabled is False
+    assert app.start_remote() is False
+    assert app._remote is None
+    assert app.remote_url() == ""
+
+
+def test_switching_it_on_starts_a_server(app) -> None:
+    app.config.remote_enabled = True
+    app.config.remote_bind = "127.0.0.1"
+    app.config.remote_port = 0
+    try:
+        assert app.start_remote() is True
+        assert app._remote.running
+        assert app._remote.port > 0
+    finally:
+        app.stop_remote()
+    assert app._remote is None
+
+
+def test_a_token_is_generated_and_stored(app) -> None:
+    """Without a secret anybody on the network could start downloads."""
+    app.config.remote_enabled = True
+    app.config.remote_bind = "127.0.0.1"
+    app.config.remote_port = 0
+    app.config.remote_token = ""
+    try:
+        assert app.start_remote()
+        assert len(app.config.remote_token) >= 24
+        from clipster.config import Config
+
+        assert Config.load(app.config.path).remote_token == app.config.remote_token
+    finally:
+        app.stop_remote()
+
+
+def test_starting_twice_keeps_the_first_server(app) -> None:
+    app.config.remote_enabled = True
+    app.config.remote_bind = "127.0.0.1"
+    app.config.remote_port = 0
+    try:
+        assert app.start_remote()
+        first = app._remote
+        assert app.start_remote() is False
+        assert app._remote is first
+    finally:
+        app.stop_remote()
+
+
+def test_stopping_a_server_that_never_started_is_harmless(app) -> None:
+    app.stop_remote()
+
+
+def test_the_url_for_the_phone_carries_the_token(app) -> None:
+    app.config.remote_enabled = True
+    app.config.remote_bind = "0.0.0.0"
+    app.config.remote_port = 0
+    try:
+        assert app.start_remote()
+        url = app.remote_url()
+        if not url:
+            pytest.skip("this machine has no route to a network")
+        assert url.startswith("http://")
+        assert "token=" + app.config.remote_token in url
+        assert str(app._remote.port) in url
+        assert "0.0.0.0" not in url, "a phone cannot dial the bind address"
+    finally:
+        app.stop_remote()
+
+
+def test_a_local_only_interface_does_not_advertise_a_network_address(app) -> None:
+    """It would look inviting and then refuse every connection from the phone."""
+    app.config.remote_enabled = True
+    app.config.remote_bind = "127.0.0.1"
+    app.config.remote_port = 0
+    try:
+        assert app.start_remote()
+        assert app.remote_url().startswith("http://127.0.0.1:")
+    finally:
+        app.stop_remote()

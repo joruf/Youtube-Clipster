@@ -163,6 +163,14 @@ def windows_icon_file() -> Path:
     return PROJECT_ROOT / "assets" / "icons" / "youtube-clipster.ico"
 
 
+def web_root() -> Path:
+    """Return the directory holding the files of the phone interface.
+
+    These ship with the sources, next to the code that serves them.
+    """
+    return Path(__file__).resolve().parent / "web"
+
+
 def _xdg_user_dir(key: str) -> Path | None:
     """Resolve a single entry of the freedesktop ``user-dirs.dirs`` file."""
     base = os.environ.get("XDG_CONFIG_HOME")

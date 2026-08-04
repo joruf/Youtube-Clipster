@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#15161a">
+<title>YouTube Clipster</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="/icon.png">
+<link rel="apple-touch-icon" href="/icon.png">
+<!-- use-credentials: a manifest is fetched without cookies by default, so the
+     token would not travel and the token-protected server would answer 401 -
+     which silently makes the page uninstallable and kills the share target. -->
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Clipster">
+</head>
+<body>
+
+<header class="bar">
+    <img class="logo" src="/icon.png" alt="">
+    <h1>YouTube Clipster</h1>
+    <span id="connection" class="dot" title="Connection"></span>
+</header>
+
+<main>
+    <form id="submit-form" class="card">
+        <label class="label" for="url">YouTube link</label>
+        <input id="url" name="url" type="url" inputmode="url" autocomplete="off"
+               autocapitalize="off" spellcheck="false" placeholder="https://youtu.be/...">
+        <div class="row">
+            <div class="formats" role="radiogroup" aria-label="Format">
+                <label class="chip">
+                    <input type="radio" name="format" value="mp3" checked>
+                    <span>MP3</span>
+                </label>
+                <label class="chip">
+                    <input type="radio" name="format" value="mp4">
+                    <span>MP4</span>
+                </label>
+            </div>
+            <button id="send" type="submit" class="primary">Download</button>
+        </div>
+        <p id="message" class="message" hidden></p>
+    </form>
+
+    <section id="running" class="card" hidden>
+        <h2>Running</h2>
+        <ul id="active" class="active"></ul>
+    </section>
+
+    <section class="card">
+        <div class="row between">
+            <h2>Downloads</h2>
+            <button id="refresh" type="button" class="quiet">Refresh</button>
+        </div>
+        <ul id="downloads" class="downloads"></ul>
+        <p id="empty" class="message" hidden>Nothing here yet.</p>
+    </section>
+</main>
+
+<audio id="player" controls hidden preload="none"></audio>
+
+<script src="/app.js"></script>
+</body>
+</html>

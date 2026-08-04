@@ -99,6 +99,17 @@ class Config:
     discover_play_video: bool = False
     #: Audio-stage visualizer mode (see :mod:`clipster.visualizer`).
     discover_visualizer: str = "pulse"
+    #: Serve the phone interface on the local network. Off by default on
+    #: purpose: it lets other devices start downloads and read finished files.
+    remote_enabled: bool = False
+    #: Interface the phone interface listens on. The default keeps it on this
+    #: machine; reaching it from a phone means deliberately setting
+    #: ``0.0.0.0``, which opens it to every network this machine is on.
+    remote_bind: str = "127.0.0.1"
+    #: TCP port of the phone interface.
+    remote_port: int = 8733
+    #: Shared secret every request has to carry; generated when empty.
+    remote_token: str = ""
     #: Accepted revision of the general terms of use (empty = not accepted).
     terms_app_version: str = ""
     #: UTC ISO timestamp when the general terms were accepted.

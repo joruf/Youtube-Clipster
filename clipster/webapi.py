@@ -1,0 +1,159 @@
+"""What the phone interface may ask for, as plain data.
+
+This module knows nothing about HTTP: every method takes decoded arguments and
+returns a status code plus a JSON-ready dictionary.  :mod:`clipster.webserver`
+does the transport, this does the work - which keeps both testable on their own.
+
+Requests arrive on the web server's own threads.  Anything that changes the
+download pipeline goes through :meth:`clipster.app.ClipsterApp.submit_remote`,
+which marshals itself onto the GUI thread; reading the history or the progress
+snapshot needs no marshalling and must not use it, because the phone polls.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from .app import (
+    SUBMIT_CLOSING,
+    SUBMIT_EXISTS,
+    SUBMIT_FORMAT,
+    SUBMIT_FULL,
+    SUBMIT_INVALID,
+    SUBMIT_RUNNING,
+    SUBMIT_WAITING,
+)
+from .history import HistoryEntry
+from .logging_setup import get_logger
+
+log = get_logger(__name__)
+
+#: HTTP status for every submission outcome.  Anything not listed was accepted.
+_SUBMIT_STATUS = {
+    SUBMIT_INVALID: 400,
+    SUBMIT_FORMAT: 400,
+    SUBMIT_EXISTS: 200,
+    SUBMIT_RUNNING: 409,
+    SUBMIT_WAITING: 409,
+    SUBMIT_FULL: 503,
+    SUBMIT_CLOSING: 503,
+}
+
+
+def entry_to_dict(entry: HistoryEntry) -> Dict[str, Any]:
+    """Describe one download for the phone.
+
+    The stored path is deliberately left out: the phone reaches a file through
+    ``/media/<id>``, and telling it where the file lives on the PC would only
+    invite somebody to ask for that path directly.
+
+    :param entry: The history entry to describe.
+    :return: A JSON-ready dictionary.
+    """
+    return {
+        "id": entry.identifier(),
+        "name": entry.name,
+        "title": entry.title,
+        "url": entry.url,
+        "format": entry.media_format,
+        "size": entry.size,
+        "duration": entry.duration,
+        "finished_at": entry.finished_at,
+        "status": entry.status,
+        "error_kind": entry.error_kind,
+        "error": entry.error,
+        "playable": entry.file_path() is not None,
+    }
+
+
+class RemoteApi:
+    """The endpoints of the phone interface, independent of HTTP."""
+
+    def __init__(self, app: Any) -> None:
+        """
+        :param app: The running :class:`clipster.app.ClipsterApp`.
+        """
+        self._app = app
+
+    # ------------------------------------------------------------------
+    # Reading
+    # ------------------------------------------------------------------
+    def downloads(self) -> Tuple[int, Dict[str, Any]]:
+        """Return the download list, newest first.
+
+        :return: ``(200, {"downloads": [...]})``
+        """
+        entries: List[HistoryEntry] = self._app.history.entries
+        return 200, {"downloads": [entry_to_dict(entry) for entry in entries]}
+
+    def status(self) -> Tuple[int, Dict[str, Any]]:
+        """Return what is downloading right now.
+
+        :return: ``(200, {"active": [...], "queued": int, "parallel": int})``
+        """
+        return 200, self._app.remote_status()
+
+    def media(self, entry_id: str) -> Optional[Path]:
+        """Resolve a download id to the file on disk.
+
+        The id is looked up in the history and the stored path is used; no part
+        of the request ever reaches the file system, so a crafted id cannot
+        escape the download folder.
+
+        :param entry_id: The id from :meth:`HistoryEntry.identifier`.
+        :return: The existing file, or ``None``.
+        """
+        entry = self._app.history.find_by_id(entry_id)
+        if entry is None:
+            return None
+        return entry.file_path()
+
+    # ------------------------------------------------------------------
+    # Changing
+    # ------------------------------------------------------------------
+    def submit(self, url: str, media_format: str, force: bool = False) -> Tuple[int, Dict[str, Any]]:
+        """Hand a link to the download pipeline.
+
+        :param url: The URL as the phone sent it.
+        :param media_format: ``mp3`` or ``mp4``.
+        :param force: Download again even when the file is already there.
+        :return: The HTTP status and a body describing the outcome.
+        """
+        try:
+            result = self._app.submit_remote(url, media_format, force)
+        except RuntimeError as exc:
+            # The GUI bridge stopped: the program is on its way out.
+            log.debug("Remote submission refused: %s", exc)
+            return 503, {"state": SUBMIT_CLOSING, "accepted": False}
+        body: Dict[str, Any] = {
+            "state": result.state,
+            "accepted": result.accepted,
+            "url": result.url,
+            "position": result.position,
+        }
+        if result.entry_id:
+            body["id"] = result.entry_id
+            entry = self._app.history.find_by_id(result.entry_id)
+            if entry is not None:
+                body["entry"] = entry_to_dict(entry)
+        status = _SUBMIT_STATUS.get(result.state, 202)
+        return status, body
+
+    def delete(self, entry_id: str) -> Tuple[int, Dict[str, Any]]:
+        """Delete a downloaded file and its list entry.
+
+        :param entry_id: The id from :meth:`HistoryEntry.identifier`.
+        :return: The HTTP status and a short body.
+        """
+        entry = self._app.history.find_by_id(entry_id)
+        if entry is None:
+            return 404, {"deleted": False}
+        try:
+            deleted = self._app.delete_remote(entry)
+        except RuntimeError as exc:
+            log.debug("Remote deletion refused: %s", exc)
+            return 503, {"deleted": False}
+        if not deleted:
+            return 500, {"deleted": False, "id": entry_id}
+        return 200, {"deleted": True, "id": entry_id}

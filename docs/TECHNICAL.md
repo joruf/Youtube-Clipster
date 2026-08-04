@@ -101,6 +101,15 @@ PCM-backed modes (`spectrum`, `waveform`, `pulse`) read analysis from `DiscoverP
 
 `tray.TrayIcon` (pystray) when `use_tray` is true and the backend works. Click opens the view window; menu offers Show / Open folder / Quit. Without a tray, the view window stays visible and closing it quits.
 
+### Phone interface
+
+Off by default (`remote_enabled`), and bound to loopback until `remote_bind` is changed. A
+`ThreadingHTTPServer` on a daemon thread, started from `ClipsterApp.run`. Requests arrive on their own
+threads: `submit_remote` / `delete_remote` marshal themselves onto the Tk thread through `TkBridge`,
+while `remote_status` and the history are read directly, because the phone polls. `HistoryEntry.identifier`
+gives the phone a handle that survives a restart without adding a field to `history.json`. See
+[README - Your phone](../README.md#your-phone-android-and-iphone).
+
 ### Bootstrap / installer
 
 `cli.py` + `installer.py` + `dependencies.py`: ensure Python, tkinter, venv, yt-dlp, ffmpeg, clipboard helpers, optional tray stack. `setup_ui.py` shows the setup window while deps install - naming the component in progress, and reporting an unfinished setup in a dialog, because `run.bat` starts `pythonw.exe` and there is no console to print to.
@@ -138,6 +147,9 @@ PCM-backed modes (`spectrum`, `waveform`, `pulse`) read analysis from `DiscoverP
 | `theme.py` | Dark palette + ttk styles |
 | `tray.py` | System tray icon |
 | `updater.py` | GitHub update check / apply / restart |
+| `webserver.py` | Phone interface transport: HTTP, token, Range requests, static table |
+| `webapi.py` | Phone interface endpoints as plain data, no HTTP |
+| `web/` | The page the phone loads (HTML, CSS, JS, manifest, service worker) |
 | `viewwindow.py` | Large multi-page window |
 | `visualizer.py` | Stage mode ids and drawing helpers |
 | `locales/*.json` | UI strings (`en`, `de`) |

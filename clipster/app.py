@@ -17,6 +17,7 @@ import collections
 import signal
 import socket
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -57,6 +58,54 @@ from .tray import TrayIcon
 from . import updater
 
 log = get_logger(__name__)
+
+#: The download started right away.
+SUBMIT_STARTED = "started"
+#: Accepted, but waiting behind the running downloads.
+SUBMIT_QUEUED = "queued"
+#: This URL is downloading right now.
+SUBMIT_RUNNING = "running"
+#: This URL is already on the waiting list.
+SUBMIT_WAITING = "waiting"
+#: The waiting list is full, the link was dropped.
+SUBMIT_FULL = "full"
+#: The file exists already; nothing was started.
+SUBMIT_EXISTS = "exists"
+#: Not a YouTube link.
+SUBMIT_INVALID = "invalid"
+#: Not a format this program produces.
+SUBMIT_FORMAT = "format"
+#: The program is shutting down and takes nothing new.
+SUBMIT_CLOSING = "closing"
+
+#: The formats a submission may ask for.
+MEDIA_FORMATS = ("mp3", "mp4")
+
+#: Bind addresses that keep the phone interface on this machine.
+LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")
+
+
+@dataclass(frozen=True)
+class SubmitResult:
+    """What became of a download request that did not come from the clipboard.
+
+    Returned to callers that owe somebody an answer - the remote interface has
+    to turn this into an HTTP status, so "it was ignored" is not good enough.
+    """
+
+    #: One of the ``SUBMIT_*`` constants.
+    state: str
+    #: The canonical URL, empty when it could not be recognised.
+    url: str = ""
+    #: The matching history entry, set for :data:`SUBMIT_EXISTS`.
+    entry_id: str = ""
+    #: Number of links waiting, set for :data:`SUBMIT_QUEUED`.
+    position: int = 0
+
+    @property
+    def accepted(self) -> bool:
+        """Return ``True`` when a download was started or queued."""
+        return self.state in (SUBMIT_STARTED, SUBMIT_QUEUED)
 
 
 def internet_available(*, timeout: float = 1.0) -> bool:
@@ -128,6 +177,12 @@ class ClipsterApp:
         self._restart_after_update = False
         #: Links copied while a download runs, processed one after another.
         self._queue: "collections.deque[tuple]" = collections.deque()
+        #: Latest progress per running URL. Written by the download threads and
+        #: read by the remote interface from its own thread, hence the lock.
+        self._progress: Dict[str, Dict[str, Any]] = {}
+        self._progress_lock = threading.Lock()
+        #: The remote interface, created on demand in :meth:`run`.
+        self._remote: Any = None
 
         self.gui.on_quit = self.request_quit
         self.gui.on_nav_closed = self._nav_closed
@@ -207,6 +262,7 @@ class ClipsterApp:
         log.info("%s", self.messages["started"])
         log.info("Download folder: %s", self.download_dir)
         log.info("Download history: %s entries (%s)", len(self.history), self.history.path)
+        self.start_remote()
 
         self.gui.root.after(200, self._post_start)
         self.gui.root.after(self.config.poll_interval_ms(), self._poll_clipboard)
@@ -218,6 +274,75 @@ class ClipsterApp:
         finally:
             self._shutdown()
         return 0
+
+    # ------------------------------------------------------------------
+    # The phone interface
+    # ------------------------------------------------------------------
+    def start_remote(self) -> bool:
+        """Start the phone interface, if the user switched it on.
+
+        Imported here and not at the top of the module: somebody who never turns
+        this on should not pay for the import, and the program has to keep
+        starting even if the interface cannot.
+
+        :return: ``True`` when it is listening.
+        """
+        if not self.config.remote_enabled or self._remote is not None:
+            return False
+        from .webapi import RemoteApi
+        from .webserver import RemoteServer, new_token
+
+        if not self.config.remote_token:
+            # Without a secret anybody on the network could start downloads.
+            self.config.remote_token = new_token()
+            self.config.save()
+            log.info("A new token for the phone interface was generated.")
+        server = RemoteServer(
+            RemoteApi(self),
+            token=self.config.remote_token,
+            bind=self.config.remote_bind,
+            port=self.config.remote_port,
+        )
+        if not server.start():
+            return False
+        self._remote = server
+        # The complete address including the token: the token only lives in
+        # config.json, so without this line nobody can work out what to type.
+        log.info("Open this on your phone: %s", self.remote_url())
+        if self.config.remote_bind in LOOPBACK_ADDRESSES:
+            log.info('Only this machine can reach it - set "remote_bind" to '
+                     '"0.0.0.0" in %s to let a phone in.', self.config.path)
+        return True
+
+    def stop_remote(self) -> None:
+        """Stop the phone interface if it is running."""
+        if self._remote is None:
+            return
+        self._remote.stop()
+        self._remote = None
+        log.info("The phone interface was stopped.")
+
+    def remote_url(self) -> str:
+        """Return the address a phone can open, token included.
+
+        Meant for display on the PC - the log prints it, and the view window
+        will show it as a QR code.  While the server is bound to loopback the
+        network address is *not* returned: it would look inviting and then
+        refuse every connection.
+
+        :return: The URL, or an empty string while the interface is off.
+        """
+        if self._remote is None:
+            return ""
+        if self.config.remote_bind in LOOPBACK_ADDRESSES:
+            base = "http://127.0.0.1:{0}/".format(self._remote.port)
+        else:
+            from .webserver import local_address
+
+            base = local_address(self._remote.port)
+        if not base:
+            return ""
+        return "{0}?token={1}".format(base, self.config.remote_token)
 
     def _install_signal_handlers(self) -> None:
         """Quit cleanly on Ctrl+C and on SIGTERM."""
@@ -498,6 +623,9 @@ class ClipsterApp:
         self._discover_cancel.set()
         self._cancel_auto_discover_job()
         self._cancel_all()
+        # Before the bridge stops: a request still in flight has to be able to
+        # get its answer, rather than blocking on a bridge that is already gone.
+        self.stop_remote()
         if self.gui.view is not None and self.gui.view.discover is not None:
             self.gui.view.discover.destroy_player()
         for worker in list(self._active.values()):
@@ -574,6 +702,44 @@ class ClipsterApp:
             return
         log.info("Download requested from the view window.")
         self._enqueue(target, media_format)
+
+    def submit_remote(self, url: str, media_format: str, force: bool = False) -> SubmitResult:
+        """Take a download request from outside the program.
+
+        Everything below touches the navigation window and the shared
+        ``_forced_format`` state, which only the GUI thread may do - so the call
+        marshals itself instead of trusting every future caller to remember
+        that.  Two requests arriving at once therefore cannot race.
+
+        A remote caller is never asked anything, so the format has to come with
+        the request; the audio track is resolved by :meth:`_auto_language`, the
+        same way the view window toolbar does it.
+
+        :param url: The URL as it arrived, not necessarily canonical.
+        :param media_format: ``mp3`` or ``mp4``.
+        :param force: Download again even when the file is already there.
+        :return: What happened, ready to be turned into an answer.
+        :raises RuntimeError: When the GUI bridge is no longer running.
+        """
+        if not self.bridge.on_gui_thread():
+            return self.bridge.call(self.submit_remote, url, media_format, force)
+        if self._quitting:
+            return SubmitResult(SUBMIT_CLOSING)
+        if media_format not in MEDIA_FORMATS:
+            return SubmitResult(SUBMIT_FORMAT)
+        target = extract_youtube_url(url)
+        if not target:
+            return SubmitResult(SUBMIT_INVALID)
+        if not force:
+            existing = self.history.find_download(target, media_format)
+            if existing is not None:
+                # Answered right away rather than starting a run that would end
+                # in the "already downloaded" dialog on the desktop, which
+                # nobody sitting at the phone can see.
+                return SubmitResult(SUBMIT_EXISTS, url=target, entry_id=existing.identifier())
+        log.info("Download requested remotely: %s as %s", target, media_format)
+        state = self._enqueue(target, media_format, force=force)
+        return SubmitResult(state, url=target, position=len(self._queue))
 
     def _discover_refresh(self, *, require_terms: bool = True) -> None:
         """Search for related songs on a worker thread.
@@ -893,14 +1059,14 @@ class ClipsterApp:
             return
         shortcuts.open_path(target)
 
-    def _delete_entry(self, entry: HistoryEntry) -> None:
+    def _remove_entry_and_file(self, entry: HistoryEntry) -> str:
         """Delete the downloaded file and drop the row from the list.
 
         An entry whose file is already gone is simply removed - that is the only
         way to clear a failed attempt out of the list.
 
-        :param entry: The entry the user wants gone.
-        :return: None
+        :param entry: The entry to get rid of.
+        :return: An error description, empty when it worked.
         """
         target = entry.file_path()
         if target is not None:
@@ -909,13 +1075,38 @@ class ClipsterApp:
                 log.info("Deleted %s", target)
             except OSError as exc:
                 log.error("Could not delete %s: %s", target, exc)
-                self.gui.show_error(
-                    self.messages["error_title"],
-                    self.messages.format("history_delete_failed", details=exc),
-                )
-                return
+                return str(exc)
         self.history.remove(entry)
         self.gui.render_history(self.history.entries)
+        return ""
+
+    def _delete_entry(self, entry: HistoryEntry) -> None:
+        """Delete a row on request of the view window, reporting in a dialog.
+
+        :param entry: The entry the user wants gone.
+        :return: None
+        """
+        problem = self._remove_entry_and_file(entry)
+        if problem:
+            self.gui.show_error(
+                self.messages["error_title"],
+                self.messages.format("history_delete_failed", details=problem),
+            )
+
+    def delete_remote(self, entry: HistoryEntry) -> bool:
+        """Delete a row on request of the remote interface.
+
+        Marshals itself like :meth:`submit_remote`, and reports a failure as a
+        return value instead of a dialog: nobody is sitting at the PC to close
+        one, and the phone needs the answer.
+
+        :param entry: The entry to get rid of.
+        :return: ``True`` when the file and the row are gone.
+        :raises RuntimeError: When the GUI bridge is no longer running.
+        """
+        if not self.bridge.on_gui_thread():
+            return bool(self.bridge.call(self.delete_remote, entry))
+        return not self._remove_entry_and_file(entry)
 
     def _hide_entry(self, entry: HistoryEntry) -> None:
         """Remove ``entry`` from the Downloads list but keep the file on disk.
@@ -974,33 +1165,35 @@ class ClipsterApp:
                 self._enqueue(url, "")
         self.gui.root.after(self.config.poll_interval_ms(), self._poll_clipboard)
 
-    def _enqueue(self, url: str, media_format: str, force: bool = False) -> None:
+    def _enqueue(self, url: str, media_format: str, force: bool = False) -> str:
         """Start the download, or line it up behind the running one.
 
         :param url: The canonical YouTube URL.
         :param media_format: Forced format, empty to ask the user.
         :param force: Download again even when the file is already there.
-        :return: None
+        :return: One of the ``SUBMIT_*`` states, so callers that have to answer
+            somebody - the remote interface - can say what actually happened.
         """
         if not self._busy:
             self._forced_format = media_format
             self._force_redownload = force
             self._start_worker(url)
-            return
+            return SUBMIT_STARTED
         if url in self._active and not force:
             log.debug("%s is downloading right now - ignored.", url)
-            return
+            return SUBMIT_RUNNING
         if any(queued == url for queued, _, _ in self._queue):
             log.debug("%s is already waiting - ignored.", url)
-            return
+            return SUBMIT_WAITING
         if len(self._queue) >= self.MAX_QUEUE:
             log.warning("The waiting list is full (%s); %s was dropped.", self.MAX_QUEUE, url)
-            return
+            return SUBMIT_FULL
         # The flag travels with the entry, otherwise a deliberate "download
         # again" would be met with "already downloaded" once its turn comes.
         self._queue.append((url, media_format, force))
         log.info("A download is running - %s links are now waiting.", len(self._queue))
         self._set_status(self.messages.format("status_queued", count=len(self._queue)))
+        return SUBMIT_QUEUED
 
     def _start_next(self) -> None:
         """Take the next waiting link, if there is one."""
@@ -1041,6 +1234,8 @@ class ClipsterApp:
         """
         self._active.pop(url, None)
         self._cancel_events.pop(url, None)
+        with self._progress_lock:
+            self._progress.pop(url, None)
         if self._nav_owner == url:
             self._nav_owner = ""
             # A run that ends before its question was answered - a metadata
@@ -1160,6 +1355,45 @@ class ClipsterApp:
             self._nav_post(url, "finish", self.messages["error_title"], STATUS_FAILED)
             self.bridge.post(self._finish_worker, url, "status_failed")
 
+    def _record_progress(self, url: str, title: str, media_format: str, progress: Progress) -> None:
+        """Remember the latest progress of one run for the remote interface.
+
+        Called from the download thread; the remote interface reads the result
+        from its own thread, so the dictionary is guarded.
+
+        :param url: The URL being downloaded.
+        :param title: The video title.
+        :param media_format: ``mp3`` or ``mp4``.
+        :param progress: The update just received from the downloader.
+        :return: None
+        """
+        with self._progress_lock:
+            self._progress[url] = {
+                "url": url,
+                "title": title,
+                "format": media_format,
+                "phase": progress.phase,
+                "percent": progress.percent,
+                "detail": progress.detail,
+            }
+
+    def remote_status(self) -> Dict[str, Any]:
+        """Return what is happening right now, for the remote interface.
+
+        Deliberately readable without the GUI bridge: the phone polls this every
+        couple of seconds, and routing that through the Tk queue would put
+        needless load on the event loop.
+
+        :return: ``{"active": [...], "queued": int, "parallel": int}``
+        """
+        with self._progress_lock:
+            active = [dict(item) for url, item in self._progress.items() if url in self._active]
+        return {
+            "active": active,
+            "queued": len(self._queue),
+            "parallel": self._parallel_limit(),
+        }
+
     def _auto_language(self, info: VideoInfo) -> str:
         """Return the audio track to use without asking the user.
 
@@ -1259,6 +1493,7 @@ class ClipsterApp:
                 cancel_event.set()
             self._nav_post(url, "set_status", self._phase_text(progress, media_format), progress.detail)
             self._nav_post(url, "set_percent", progress.percent)
+            self._record_progress(url, info.title, media_format, progress)
 
         watcher = threading.Thread(
             target=_mirror_event,
