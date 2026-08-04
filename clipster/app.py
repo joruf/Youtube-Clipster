@@ -305,7 +305,7 @@ class ClipsterApp:
             # Without a secret anybody on the network could start downloads.
             self.config.remote_token = new_token()
             self.config.save()
-            log.info("A new token for the phone interface was generated.")
+            log.info("A new token for remote control was generated.")
         server = RemoteServer(
             RemoteApi(self),
             token=self.config.remote_token,
@@ -317,7 +317,7 @@ class ClipsterApp:
         self._remote = server
         # The complete address including the token: the token only lives in
         # config.json, so without this line nobody can work out what to type.
-        log.info("Open this on your phone: %s", self.remote_url())
+        log.info("Open this on your phone, tablet or other computer: %s", self.remote_url())
         if self.config.remote_bind in LOOPBACK_ADDRESSES:
             log.info('Only this machine can reach it - set "remote_bind" to '
                      '"0.0.0.0" in %s to let a phone in.', self.config.path)
@@ -329,7 +329,7 @@ class ClipsterApp:
             return
         self._remote.stop()
         self._remote = None
-        log.info("The phone interface was stopped.")
+        log.info("Remote control was stopped.")
 
     # ------------------------------------------------------------------
     # Streaming, operated from the phone
@@ -524,7 +524,7 @@ class ClipsterApp:
 
         self.config.remote_token = new_token()
         self.config.save()
-        log.info("A new token for the phone interface was generated.")
+        log.info("A new token for remote control was generated.")
         was_running = self._remote is not None
         self.stop_remote()
         if was_running or self.config.remote_enabled:

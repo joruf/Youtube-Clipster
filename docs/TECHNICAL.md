@@ -110,7 +110,7 @@ while `remote_status` and the history are read directly, because the phone polls
 gives the phone a handle that survives a restart without adding a field to `history.json`.
 `webserver.phone_url` builds the address the phone needs and is shared with
 `tools/phone_link.py`, so the program and the QR code can never disagree. See
-[README - Your phone](../README.md#your-phone-android-and-iphone).
+[README - Remote control](../README.md#remote-control-phone-tablet-another-pc).
 
 Streaming is operated remotely through `discover_remote_state` / `discover_remote_command`, which marshal
 onto the Tk thread and drive the existing `DiscoverPage` - the PC keeps playing, the phone only steers.
@@ -163,7 +163,7 @@ the process and take the downloader with it.
 | `updater.py` | GitHub update check / apply / restart |
 | `webserver.py` | Phone interface transport: HTTP, token, Range requests, static table |
 | `webapi.py` | Phone interface endpoints as plain data, no HTTP |
-| `phone_page.py` | The Phone page: switch, QR code, live status, firewall hint |
+| `phone_page.py` | The Remote page (file name unchanged): switch, QR code, live status, firewall hint |
 | `phonesetup.py` | The same setup as a console wizard (`--phone-setup`) |
 | `qrview.py` | Draws a QR code onto a Tk canvas (no Pillow needed) |
 | `scroller.py` | Scrollable container shared by the table and the Phone page |

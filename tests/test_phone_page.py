@@ -404,3 +404,59 @@ def test_leaving_the_page_stops_its_polling(gui) -> None:
 @pytest.mark.gui
 def test_the_menu_label_is_translated(gui, messages) -> None:
     assert gui.view._menu_buttons["phone"].cget("text") == messages["page_phone"]
+
+
+# ----------------------------------------------------------------------
+# Naming: it is a remote control, not a phone feature
+# ----------------------------------------------------------------------
+#: Strings that describe the capability, so they must not narrow it to phones.
+_DEVICE_NEUTRAL_KEYS = (
+    "page_phone",
+    "phone_enable",
+    "phone_enable_hint",
+    "phone_reach",
+    "phone_reach_local",
+    "phone_reach_network",
+    "phone_status_off",
+    "phone_status_waiting",
+    "phone_status_contact",
+    "phone_token_new_warning",
+)
+
+#: Words that would wrongly restrict those strings to a phone.
+_PHONE_WORDS = ("phone", "handy", "iphone", "android", "tablet")
+
+
+@pytest.mark.parametrize("key", _DEVICE_NEUTRAL_KEYS)
+@pytest.mark.parametrize("language", ["en", "de"])
+def test_the_capability_is_not_described_as_phone_only(key: str, language: str) -> None:
+    """A tablet or a second computer can steer this just as well."""
+    from clipster import i18n
+
+    text = i18n.load(language)[key].lower()
+    for word in _PHONE_WORDS:
+        assert word not in text, "{0}/{1} says {2!r}".format(language, key, word)
+
+
+@pytest.mark.parametrize("language", ["en", "de"])
+def test_the_steps_that_really_are_phone_specific_stay_so(language: str) -> None:
+    """Generalising these away would make them useless.
+
+    Scanning a code, the home screen and the share sheet exist on phones and
+    tablets, and the wording has to keep naming the platforms.
+    """
+    from clipster import i18n
+
+    messages = i18n.load(language)
+    install = messages["phone_step_install"].lower()
+    assert "android" in install and "iphone" in install
+    assert "home" in install or "start" in install
+
+
+@pytest.mark.parametrize("language", ["en", "de"])
+def test_the_tab_is_not_called_phone_any_more(language: str) -> None:
+    from clipster import i18n
+
+    label = i18n.load(language)["page_phone"]
+    assert label
+    assert label.lower() not in ("phone", "handy")

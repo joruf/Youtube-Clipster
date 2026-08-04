@@ -27,7 +27,7 @@ edition (`windows/*.bat`) have been replaced by the `clipster/` package.
   the installer reads that table, works out what is missing, installs it and starts the program
 - **Self-updating** – `yt-dlp` is kept up to date automatically
 - **Phone interface** – send links from your Android phone or iPhone, the PC downloads them, and
-  **operate Streaming** from the phone; no app to install, see [Your phone](#your-phone-android-and-iphone)
+  **operate Streaming** from there; no app to install, see [Remote control](#remote-control-phone-tablet-another-pc)
 - **Multi-language** – English and German (`clipster/locales/*.json`)
 - **Single instance** – a second start is refused with a clear message
 - **Desktop integration** – optional desktop shortcut and login autostart
@@ -46,7 +46,7 @@ Anonymized captures of the real Tk UI (fixture data only):
 
 ![Terms of use](docs/images/terms.png)
 
-![Phone — the whole setup on one page](docs/images/phone-page.png)
+![Remote — the whole setup on one page](docs/images/phone-page.png)
 
 The phone interface itself, served by the running program to your Android phone or iPhone —
 downloads and Streaming:
@@ -352,9 +352,9 @@ For a **portable setup** copy `config.example.json` to `config.json` **next to
 | `cookies_file` | `""` | Path to a Netscape cookies.txt for yt-dlp |
 | `ask_desktop_shortcut` | `true` | Ask once whether a desktop shortcut should be created |
 | `autostart` | `false` | Start automatically at login |
-| `remote_enabled` | `false` | Serve the phone interface (see [Your phone](#your-phone-android-and-iphone)) |
+| `remote_enabled` | `false` | Allow remote control (see [Remote control](#remote-control-phone-tablet-another-pc)) |
 | `remote_bind` | `"127.0.0.1"` | `0.0.0.0` lets other devices in; the default keeps it on this PC |
-| `remote_port` | `8733` | TCP port of the phone interface; `0` … `65535`, where `0` picks a free one. Anything outside that range is refused with a message in the log instead of stopping the program |
+| `remote_port` | `8733` | TCP port of the remote interface; `0` … `65535`, where `0` picks a free one. Anything outside that range is refused with a message in the log instead of stopping the program |
 | `remote_token` | `""` | Shared secret; generated on first start and written back here. Any characters are allowed — it is percent-encoded into the address |
 | `update_check_hours` | `24` | Hours between two yt-dlp update checks (`0` = every start) |
 | `log_level` | `"INFO"` | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
@@ -426,13 +426,14 @@ python3 run.py --autostart off       # disable
 
 ---
 
-## Your phone (Android and iPhone)
+## Remote control (phone, tablet, another PC)
 
-You can operate YouTube Clipster from your phone: the phone sends a link, **the PC downloads it**,
-and the phone shows the list and plays the result. There is nothing to install — the running program
-serves a small web page, so the same thing works on Android and on the iPhone.
+You can operate YouTube Clipster from another device: it sends a link, **this PC downloads it**, and
+the device shows the list, plays the result and steers Streaming. There is nothing to install — the
+running program serves a small web page, so it works on Android, on the iPhone, on a tablet and in the
+browser of a second computer.
 
-![The phone interface](docs/images/phone.png)
+![The interface on a phone](docs/images/phone.png)
 
 Why it works this way: Android has forbidden reading the clipboard in the background since Android 10,
 so the "copy a link and it downloads" trick cannot exist there. And an app that downloads YouTube
@@ -441,18 +442,18 @@ problem — and needs no store at all.
 
 ### In the program (recommended)
 
-Open the view window and pick **Phone**. Everything is on that one page:
+Open the view window and pick **Remote**. Everything is on that one page:
 
-![The Phone page](docs/images/phone-page.png)
+![The Remote page](docs/images/phone-page.png)
 
-- a switch that starts serving, and a choice of **who** may reach it — *This PC only* or *Every device
+- a switch that allows remote control, and a choice of **who** may reach it — *This PC only* or *Every device
   on my network*
 - the port, and whether it could actually be bound
 - the **QR code** to scan, plus the address to copy
 - the firewall command for your system, with a Copy button — shown only when it is actually needed
-- the token, hidden by default, with *New token* to disconnect every paired phone
-- **live status**: it says when a phone last reached this PC, so you can see it working
-- the two steps left on the phone itself
+- the token, hidden by default, with *New token* to disconnect every paired device
+- **live status**: it says when a device last reached this PC, so you can see it working
+- the two steps left on a phone or tablet
 
 That is the whole setup; you do not have to touch a configuration file.
 
@@ -473,7 +474,7 @@ Everything below describes the same thing done by hand — useful to understand 
 
 ### 1. Switch it on
 
-The phone interface is **off** by default, and even when switched on it stays on the PC until you
+Remote control is **off** by default, and even when switched on it stays on the PC until you
 allow other devices in. Both keys in `config.json` have to change:
 
 ```json
@@ -486,7 +487,7 @@ allow other devices in. Both keys in `config.json` have to change:
 | Value | Who can reach it |
 |-------|------------------|
 | `"remote_bind": "127.0.0.1"` | only this PC (the default) |
-| `"remote_bind": "0.0.0.0"` | every device on the networks this PC is on — needed for your phone |
+| `"remote_bind": "0.0.0.0"` | every device on the networks this PC is on — needed to reach it from elsewhere |
 
 Then restart YouTube Clipster. On the first start a token is generated and written back into
 `config.json`; you do not have to invent one.
@@ -503,8 +504,8 @@ sudo ufw allow 8733/tcp     # only if ufw is enabled
 The startup log prints the complete address, token included:
 
 ```
-[INFO]  The phone interface is listening on http://0.0.0.0:8733/
-[INFO]  Open this on your phone: http://192.168.1.42:8733/?token=ugRFRjQpigmZNQHUlay9CWUYme1
+[INFO]  Remote control is listening on http://0.0.0.0:8733/
+[INFO]  Open this on your phone, tablet or other computer: http://192.168.1.42:8733/?token=ugRF…
 ```
 
 The log file is next to the configuration
@@ -553,7 +554,7 @@ prints the address.
 Use Chrome on Android and Safari on the iPhone. The address has to be opened only once: afterwards the
 phone keeps the token in a cookie and the address bar shows just `http://192.168.1.42:8733/`.
 
-The phone has the same two jobs the PC has, on two tabs:
+The device has the same two jobs the PC has, on two tabs:
 
 **Downloads** — paste a link, choose MP3 or MP4 and tap **Download**. The list below shows every
 download with its length, size, date and status; ▶ plays it, ⤓ saves it to the phone, ✕ deletes the
@@ -619,12 +620,12 @@ send.
   read every file you have already downloaded. Treat it like a password.
 - **Do not forward the port in your router.** To reach the PC from outside your home, use a VPN such
   as [Tailscale](https://tailscale.com/) or WireGuard, which does not expose anything to the internet.
-- **Revoking a phone**: press *New token* on the **Phone** page — every phone paired so far is
-  disconnected and has to scan again. By hand: empty `"remote_token"` in `config.json` and restart.
-- **Switching it off entirely**: untick *Serve the phone interface* on the **Phone** page — it takes
+- **Revoking a device**: press *New token* on the **Remote** page — every device paired so far is
+  disconnected and has to connect again. By hand: empty `"remote_token"` in `config.json` and restart.
+- **Switching it off entirely**: untick *Allow remote control* on the **Remote** page — it takes
   effect at once and releases the port. By hand: `"remote_enabled": false` and restart.
-- The PC has to be **running and awake** — it does all the work. The phone is only the remote control.
-- The phone interface is currently **English only**, unlike the desktop windows.
+- The PC has to be **running and awake** — it does all the work. The device only steers.
+- The remote interface is currently **English only**, unlike the desktop windows.
 
 ### When something does not work
 
@@ -632,11 +633,11 @@ send.
 |---------|---------------|
 | The page does not load at all | Phone on a different Wi-Fi (or a guest network), `remote_bind` still `127.0.0.1`, or the firewall is blocking the port. `--phone-setup` checks all three |
 | "This device is not registered any more" | The cookie is gone. Open the full address with `?token=…` from step 2 again |
-| The address from the log is `0.0.0.0` | That is the bind address, not a destination. Use the "Open this on your phone" line below it, or run `python3 tools/phone_link.py` |
+| The address from the log is `0.0.0.0` | That is the bind address, not a destination. Use the "Open this on your…" line below it, or run `python3 tools/phone_link.py` |
 | Nothing happens after *Download* | Look at the PC: the navigation window shows the same download, and the log gives the reason |
-| The port is already in use | Set another `"remote_port"` and restart; the log says so plainly. The **Phone** page shows it as "Could not listen on this port" |
+| The port is already in use | Set another `"remote_port"` and restart; the log says so plainly. The **Remote** page shows it as "Could not listen on this port" |
 | The interface never starts and the log names a port range | `"remote_port"` is outside `0` … `65535`. The rest of the program keeps running; fix the value and restart |
-| The phone is refused although the token looks right | Only when `"remote_token"` was edited by hand: check for stray whitespace. Special characters themselves are fine |
+| A device is refused although the token looks right | Only when `"remote_token"` was edited by hand: check for stray whitespace. Special characters themselves are fine |
 | No *Install* entry on Android | Chrome needs the app manifest, which is only served once the token was accepted. Open the address including `?token=…` and reload the page once |
 
 ---
@@ -712,8 +713,8 @@ youtube-clipster/
     ├── downloader.py        # yt-dlp integration (metadata, download, progress)
     ├── history.py           # the persistent download list (history.json)
     ├── updater.py           # checks GitHub, fetches, restarts
-    ├── webserver.py         # the phone interface: HTTP, token, Range requests
-    ├── webapi.py            # what the phone may ask for, as plain data
+    ├── webserver.py         # the remote interface: HTTP, token, Range requests
+    ├── webapi.py            # what a remote device may ask for, as plain data
     ├── phonesetup.py        # the guided --phone-setup wizard
     ├── phone_page.py        # the Phone page of the view window
     ├── qrview.py            # draws a QR code onto a Tk canvas

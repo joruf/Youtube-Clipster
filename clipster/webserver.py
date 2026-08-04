@@ -302,10 +302,10 @@ class RemoteServer:
         :return: ``True`` when the server is listening.
         """
         if not self._token:
-            log.error("The phone interface needs a token and was not started.")
+            log.error("Remote control needs a token and was not started.")
             return False
         if not valid_port(self._port):
-            log.error("The phone interface port %r is not between 0 and 65535 - "
+            log.error("The remote control port %r is not between 0 and 65535 - "
                       "check \"remote_port\" in the configuration.", self._port)
             return False
         handler = _make_handler(self._api, self._token, self._static)
@@ -314,7 +314,7 @@ class RemoteServer:
         except (OSError, OverflowError, ValueError) as exc:
             # OverflowError and ValueError are not OSError, and an uncaught one
             # here would end the program instead of only the phone interface.
-            log.error("The phone interface cannot listen on %s:%s (%s).", self._bind, self._port, exc)
+            log.error("Remote control cannot listen on %s:%s (%s).", self._bind, self._port, exc)
             self._server = None
             return False
         self._server.daemon_threads = True
@@ -324,7 +324,7 @@ class RemoteServer:
             daemon=True,
         )
         self._thread.start()
-        log.info("The phone interface is listening on http://%s:%s/", self._bind, self.port)
+        log.info("Remote control is listening on http://%s:%s/", self._bind, self.port)
         return True
 
     def stop(self) -> None:
@@ -336,7 +336,7 @@ class RemoteServer:
                 server.shutdown()
                 server.server_close()
             except Exception:  # pragma: no cover - shutting down must never raise
-                log.debug("The phone interface did not shut down cleanly", exc_info=True)
+                log.debug("Remote control did not shut down cleanly", exc_info=True)
         thread = self._thread
         self._thread = None
         if thread is not None:
@@ -442,7 +442,7 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
             """Answer a request that did not carry the token."""
             # The path matters: a browser fetches some things without cookies,
             # and without it in the log that is very hard to work out.
-            log.warning("The phone interface refused %s %s from %s.",
+            log.warning("Remote control refused %s %s from %s.",
                         self.command, urlparse(self.path).path, self.address_string())
             self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorised"})
 
