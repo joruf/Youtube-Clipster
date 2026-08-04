@@ -53,6 +53,8 @@
   "remote_bind": "127.0.0.1",
   "remote_port": 8733,
   "remote_token": "",
+  "remote_search_delay_ms": 1500,
+  "remote_search_results": 12,
   "terms_app_version": "",
   "terms_app_accepted_at": "",
   "terms_streaming_version": "",

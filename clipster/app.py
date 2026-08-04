@@ -17,6 +17,7 @@ import collections
 import signal
 import socket
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -36,6 +37,7 @@ from .downloader import (
     extract_youtube_url,
     user_facing_ytdlp_error,
 )
+from . import discover
 from .discover import (
     DiscoverOutcome,
     DiscoverTrack,
@@ -81,13 +83,18 @@ SUBMIT_CLOSING = "closing"
 #: The formats a submission may ask for.
 MEDIA_FORMATS = ("mp3", "mp4")
 
+#: How long a resolved audio URL is reused, in seconds. YouTube's links last
+#: several hours; this stays well inside that.
+REMOTE_AUDIO_TTL = 1800.0
+
 #: Streaming commands a remote client may send.
 DISCOVER_COMMANDS = (
     "refresh", "extend", "play", "toggle", "stop", "next", "previous",
-    "like", "dislike", "download", "seek",
+    "like", "dislike", "download", "seek", "volume",
 )
 
 #: Of those, the ones that reach YouTube and therefore need the Streaming terms.
+#: Turning the volume down or stopping takes nothing new from anywhere.
 DISCOVER_TERMS_COMMANDS = ("refresh", "extend", "play", "toggle", "next", "previous", "download")
 
 
@@ -189,6 +196,9 @@ class ClipsterApp:
         self._progress_lock = threading.Lock()
         #: The remote interface, created on demand in :meth:`run`.
         self._remote: Any = None
+        #: Resolved audio URLs per video id, for playback on a remote device.
+        self._audio_urls: Dict[str, Tuple[str, float]] = {}
+        self._audio_lock = threading.Lock()
 
         self.gui.on_quit = self.request_quit
         self.gui.on_nav_closed = self._nav_closed
@@ -358,6 +368,10 @@ class ClipsterApp:
             "extending": self._discover_extending,
             "mode": self.config.discover_mode,
             "level": 0.0,
+            "volume": None,
+            "volume_controllable": False,
+            "search_delay_ms": max(200, int(self.config.remote_search_delay_ms)),
+            "search_results": max(1, int(self.config.remote_search_results)),
         }
         if page is None:
             return state
@@ -383,6 +397,8 @@ class ClipsterApp:
             state["duration"] = float(player.duration())
             state["can_seek"] = bool(player.can_seek())
             state["level"] = float(player.energy_level())
+            state["volume"] = player.volume()
+            state["volume_controllable"] = bool(player.volume_controllable())
         except Exception:  # pragma: no cover - a player without a live process
             log.debug("The player state could not be read", exc_info=True)
         current = player.current
@@ -395,6 +411,129 @@ class ClipsterApp:
                 "url": current.url,
             }
         return state
+
+    def discover_remote_audio(self, video_id: str) -> str:
+        """Resolve a browser-playable audio URL for one queued track.
+
+        Runs on the caller's thread - the web server's - because resolving means
+        asking YouTube, which must never happen on the GUI thread. Nothing here
+        touches Tk: the queue is read through a marshalled snapshot.
+
+        The result is cached, because these URLs stay valid for hours while
+        resolving one costs a second or two that the phone would wait for on
+        every single track.
+
+        :param video_id: The video id from the queue.
+        :return: A direct HTTP(S) audio URL, or an empty string.
+        """
+        if not video_id or not streaming_terms_accepted(self.config):
+            return ""
+        now = time.monotonic()
+        with self._audio_lock:
+            cached = self._audio_urls.get(video_id)
+            if cached is not None and now - cached[1] < REMOTE_AUDIO_TTL:
+                return cached[0]
+
+        known = any(item.get("video_id") == video_id
+                    for item in self.discover_remote_state()["tracks"])
+        if not known:
+            # Only what is actually queued: otherwise this would be an open
+            # resolver for any video id somebody cares to send.
+            return ""
+        watch = "https://www.youtube.com/watch?v={0}".format(video_id)
+        try:
+            from .player import BROWSER_AUDIO_FORMAT, resolve_stream_url
+
+            url = resolve_stream_url(watch, self.downloader._base_options(),
+                                     format_selector=BROWSER_AUDIO_FORMAT)
+        except Exception as exc:  # pragma: no cover - needs the network
+            log.warning("No remote audio stream for %s: %s", video_id, exc)
+            return ""
+        with self._audio_lock:
+            self._audio_urls[video_id] = (url, now)
+        log.info("Resolved a remote audio stream for %s", video_id)
+        return url
+
+    def discover_remote_search(self, query: str) -> Dict[str, Any]:
+        """Search YouTube for ``query`` on behalf of a remote device.
+
+        Runs on the caller's thread - the web server's - because it reaches the
+        network. Nothing is added to the queue yet: the device shows the results
+        and the user picks one.
+
+        :param query: What was typed on the device.
+        :return: ``{"ok": bool, "error": str, "results": [...]}``.
+        """
+        text = " ".join(str(query or "").split())
+        if not text:
+            return {"ok": True, "error": "", "results": []}
+        if not streaming_terms_accepted(self.config):
+            return {"ok": False, "error": "terms_required", "results": []}
+        try:
+            found = discover.search_tracks(
+                text,
+                self.downloader._base_options(),
+                limit=max(1, int(self.config.remote_search_results)),
+            )
+        except Exception as exc:  # pragma: no cover - needs the network
+            log.warning("The remote search for %r failed: %s", text, exc)
+            return {"ok": False, "error": str(exc), "results": []}
+        log.info("Remote search for %r returned %s results.", text, len(found))
+        return {
+            "ok": True,
+            "error": "",
+            "results": [
+                {
+                    "video_id": track.video_id,
+                    "title": track.title,
+                    "uploader": track.uploader,
+                    "duration": track.duration,
+                    "url": track.url,
+                }
+                for track in found
+            ],
+        }
+
+    def discover_remote_enqueue(self, video_id: str, title: str = "", uploader: str = "",
+                                duration: int = 0, play: bool = True) -> Dict[str, Any]:
+        """Append a searched track to the queue and start it.
+
+        Marshalled onto the GUI thread: it changes the playlist the Streaming
+        page shows.
+
+        :param video_id: The video id of the picked result.
+        :param title: Its title, so the queue can show it without a second lookup.
+        :param uploader: The channel name, when known.
+        :param duration: Its length in seconds, when known.
+        :param play: Start it right away instead of only queueing it.
+        :return: ``{"ok": bool, "error": str, "state": {...}}``.
+        """
+        if not self.bridge.on_gui_thread():
+            return dict(self.bridge.call(self.discover_remote_enqueue, video_id, title,
+                                         uploader, duration, play))
+        if not streaming_terms_accepted(self.config):
+            return {"ok": False, "error": "terms_required", "state": self.discover_remote_state()}
+        page = self.gui.view.discover if self.gui.view is not None else None
+        if page is None:
+            return {"ok": False, "error": "unavailable", "state": self.discover_remote_state()}
+        if not video_id or len(str(video_id)) != 11:
+            return {"ok": False, "error": "unknown_track", "state": self.discover_remote_state()}
+
+        track = DiscoverTrack(
+            url="https://www.youtube.com/watch?v={0}".format(video_id),
+            video_id=str(video_id),
+            title=str(title or video_id),
+            uploader=str(uploader or ""),
+            duration=max(0, int(duration or 0)),
+        )
+        existing = [item.video_id for item in page.player.tracks]
+        if track.video_id not in existing:
+            page.append_tracks([track])
+        position = [item.video_id for item in page.player.tracks].index(track.video_id)
+        log.info("A remote device queued '%s' at position %s.", track.title, position + 1)
+        if play:
+            page.play_at(position)
+        return {"ok": True, "error": "", "state": self.discover_remote_state()}
 
     def discover_remote_command(self, command: str, index: int = -1,
                                seconds: float = 0.0) -> Dict[str, Any]:
@@ -465,6 +604,9 @@ class ClipsterApp:
             page.download_current()
         elif command == "seek":
             page.player.seek(max(0.0, float(seconds)))
+        elif command == "volume":
+            # The same field carries the value: one number, one command.
+            page.player.set_volume(int(seconds))
 
     def remote_state(self) -> Dict[str, Any]:
         """Describe the phone interface for the Phone page.

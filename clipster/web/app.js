@@ -41,7 +41,29 @@ const elements = {
     streamRefresh: document.getElementById("stream-refresh"),
     queue: document.getElementById("queue"),
     queueEmpty: document.getElementById("queue-empty"),
+    search: document.getElementById("search"),
+    searchNote: document.getElementById("search-note"),
+    results: document.getElementById("results"),
+    targetNote: document.getElementById("target-note"),
+    volumeRow: document.getElementById("volume-row"),
+    volume: document.getElementById("volume"),
+    volumeValue: document.getElementById("volume-value"),
 };
+
+/** Where the sound comes out: "host" (the PC) or "guest" (this device). */
+let target = "host";
+
+/** Pending search timer, so only the last keystroke starts a search. */
+let searchTimer = null;
+
+/** Idle time before searching, in ms; the PC's setting wins over this default. */
+let searchDelay = 1500;
+
+/** The queue as the device knows it, needed to play the next one locally. */
+let queueTracks = [];
+
+/** Position being played on this device, while target is "guest". */
+let guestIndex = -1;
 
 /** Which view is on screen: "downloads" or "streaming". */
 let view = "downloads";
@@ -533,6 +555,34 @@ function sayStream(text, kind) {
 }
 
 /**
+ * Run one transport action on whichever side is playing.
+ *
+ * @param {string} command "toggle", "next", "previous" or "stop".
+ * @returns {void}
+ */
+function transport(command) {
+    if (target !== "guest") {
+        stream(command);
+        return;
+    }
+    if (command === "toggle") {
+        if (elements.player.paused) {
+            elements.player.play().catch(() => undefined);
+        } else {
+            elements.player.pause();
+        }
+    } else if (command === "next") {
+        playNextHere();
+    } else if (command === "previous") {
+        if (guestIndex > 0) {
+            playHere(queueTracks[guestIndex - 1].video_id);
+        }
+    } else if (command === "stop") {
+        elements.player.pause();
+    }
+}
+
+/**
  * Send one Streaming command to the PC.
  *
  * @param {string} command The command name.
@@ -594,14 +644,28 @@ function queueRow(track, current) {
         meta.textContent = facts.join(" · ");
         body.appendChild(meta);
     }
-    body.addEventListener("click", () => stream("play", {index: track.index}));
+    body.addEventListener("click", () => playTrack(track));
     row.appendChild(body);
 
     const actions = document.createElement("div");
     actions.className = "actions";
-    actions.appendChild(button("▶", "Play", () => stream("play", {index: track.index})));
+    actions.appendChild(button("▶", "Play", () => playTrack(track)));
     row.appendChild(actions);
     return row;
+}
+
+/**
+ * Play one queued track on whichever side is selected.
+ *
+ * @param {object} track One entry of the Streaming queue.
+ * @returns {void}
+ */
+function playTrack(track) {
+    if (target === "guest") {
+        playHere(track.video_id);
+        return;
+    }
+    stream("play", {index: track.index});
 }
 
 /**
@@ -619,13 +683,22 @@ function renderStream(state) {
         sayStream("Streaming needs its terms of use accepted once on the PC.", "bad");
     }
 
-    const current = state.current;
+    let current = state.current;
+    if (target === "guest" && guestIndex >= 0 && (state.tracks || [])[guestIndex]) {
+        // In guest mode the PC is stopped, so its "current" says nothing.
+        current = (state.tracks || [])[guestIndex];
+    }
     elements.streamTitle.textContent = current ? current.title : "Nothing yet.";
     elements.streamUploader.textContent = current ? (current.uploader || "") : "";
-    elements.streamToggle.textContent = state.playing ? "⏸" : "▶";
+    const localPlaying = target === "guest" && !elements.player.paused && !elements.player.ended;
+    elements.streamToggle.textContent = (target === "guest" ? localPlaying : state.playing) ? "⏸" : "▶";
 
-    const duration = state.duration || (current ? current.duration : 0) || 0;
-    const position = state.position || 0;
+    let duration = state.duration || (current ? current.duration : 0) || 0;
+    let position = state.position || 0;
+    if (target === "guest") {
+        duration = elements.player.duration || (current ? current.duration : 0) || 0;
+        position = elements.player.currentTime || 0;
+    }
     const percent = duration > 0 ? Math.max(0, Math.min(100, (position / duration) * 100)) : 0;
     elements.streamFill.style.width = percent + "%";
     elements.streamTime.textContent = formatDuration(position) + " / " + formatDuration(duration);
@@ -633,7 +706,21 @@ function renderStream(state) {
     elements.streamTrack.style.cursor = state.can_seek ? "pointer" : "default";
     elements.streamLevel.style.width = Math.max(0, Math.min(100, (state.level || 0) * 100)) + "%";
 
+    if (typeof state.search_delay_ms === "number" && state.search_delay_ms > 0) {
+        searchDelay = state.search_delay_ms;
+    }
+    if (state.volume_controllable !== undefined) {
+        elements.volume.dataset.controllable = state.volume_controllable ? "yes" : "no";
+    }
+    if (target === "host" && typeof state.volume === "number" && document.activeElement !== elements.volume) {
+        // Not while it is being dragged, or the slider would fight the user.
+        elements.volume.value = String(state.volume);
+        elements.volumeValue.textContent = String(state.volume);
+    }
+    updateVolumeRow();
+
     const tracks = state.tracks || [];
+    queueTracks = tracks;
     const signature = JSON.stringify([tracks.map((t) => t.video_id), state.index]);
     if (signature !== lastQueue) {
         lastQueue = signature;
@@ -660,6 +747,217 @@ async function pollStream() {
     } catch (error) {
         setConnection(false);
     }
+}
+
+// ---------------------------------------------------------------- searching
+/**
+ * Build one row of the search results.
+ *
+ * @param {object} found One result from /api/discover/search.
+ * @returns {HTMLLIElement} The row.
+ */
+function resultRow(found) {
+    const row = document.createElement("li");
+
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = formatDuration(found.duration);
+    row.appendChild(badge);
+
+    const body = document.createElement("div");
+    body.className = "body";
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = found.title;
+    body.appendChild(name);
+    if (found.uploader) {
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = found.uploader;
+        body.appendChild(meta);
+    }
+    body.addEventListener("click", () => pick(found));
+    row.appendChild(body);
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    actions.appendChild(button("＋", "Add and play", () => pick(found), "result-add"));
+    row.appendChild(actions);
+    return row;
+}
+
+/**
+ * Search YouTube for whatever is in the box.
+ *
+ * @returns {Promise<void>}
+ */
+async function runSearch() {
+    const query = elements.search.value.trim();
+    elements.results.textContent = "";
+    if (!query) {
+        elements.searchNote.textContent = "";
+        return;
+    }
+    elements.searchNote.textContent = "Searching for “" + query + "”...";
+    try {
+        const answer = await api("/api/discover/search", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({query: query}),
+        });
+        if (answer.status === 403) {
+            elements.searchNote.textContent = "Accept the Streaming terms once on the PC.";
+            return;
+        }
+        const results = answer.body.results || [];
+        if (!answer.body.ok) {
+            elements.searchNote.textContent = "The search failed on the PC.";
+            return;
+        }
+        elements.searchNote.textContent = results.length
+            ? results.length + " results — tap one to play it"
+            : "Nothing found.";
+        results.forEach((found) => elements.results.appendChild(resultRow(found)));
+    } catch (error) {
+        setConnection(false);
+        elements.searchNote.textContent = "The PC cannot be reached.";
+    }
+}
+
+/**
+ * Restart the idle timer after every keystroke.
+ *
+ * Only the last one searches: typing "beatles" would otherwise cost seven
+ * searches, and the PC would answer them all.
+ *
+ * @returns {void}
+ */
+function scheduleSearch() {
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(runSearch, searchDelay);
+}
+
+/**
+ * Add a search result to the queue and start it.
+ *
+ * @param {object} found One result from the search.
+ * @returns {Promise<void>}
+ */
+async function pick(found) {
+    elements.searchNote.textContent = "Adding “" + found.title + "”...";
+    try {
+        const answer = await api("/api/discover/queue", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                video_id: found.video_id,
+                title: found.title,
+                uploader: found.uploader,
+                duration: found.duration,
+                // In guest mode the PC only queues it; this device plays it.
+                play: target === "host",
+            }),
+        });
+        if (!answer.body.ok) {
+            elements.searchNote.textContent = answer.status === 403
+                ? "Accept the Streaming terms once on the PC."
+                : "The PC did not accept that track.";
+            return;
+        }
+        elements.searchNote.textContent = "Added: " + found.title;
+        if (answer.body.state) {
+            renderStream(answer.body.state);
+        }
+        if (target === "guest") {
+            playHere(found.video_id);
+        }
+    } catch (error) {
+        setConnection(false);
+        elements.searchNote.textContent = "The PC cannot be reached.";
+    }
+}
+
+// ------------------------------------------------------- where it plays
+/**
+ * Switch between playing on the PC and playing on this device.
+ *
+ * @param {string} name "host" or "guest".
+ * @returns {Promise<void>}
+ */
+async function setTarget(name) {
+    target = name;
+    const guest = name === "guest";
+    elements.targetNote.textContent = guest
+        ? "The sound comes out of this device — useful when it is paired with a speaker."
+        : "The sound comes out of the PC.";
+    elements.player.hidden = !guest;
+    if (guest) {
+        // Both at once would be two songs over each other.
+        await stream("stop");
+    } else {
+        elements.player.pause();
+    }
+    updateVolumeRow();
+}
+
+/**
+ * Play one track on this device, relayed by the PC.
+ *
+ * @param {string} videoId The video id to play.
+ * @returns {void}
+ */
+function playHere(videoId) {
+    guestIndex = queueTracks.findIndex((track) => track.video_id === videoId);
+    elements.player.hidden = false;
+    elements.player.src = "/stream/" + encodeURIComponent(videoId);
+    elements.player.play().catch(() => {
+        sayStream("Tap play in the player — the phone wants a tap first.", "");
+    });
+}
+
+/**
+ * Play whatever follows the track this device is on.
+ *
+ * @returns {void}
+ */
+function playNextHere() {
+    if (guestIndex < 0 || guestIndex + 1 >= queueTracks.length) {
+        return;
+    }
+    playHere(queueTracks[guestIndex + 1].video_id);
+}
+
+/**
+ * Show the volume row in the shape the current target needs.
+ *
+ * @returns {void}
+ */
+function updateVolumeRow() {
+    if (target === "guest") {
+        elements.volumeRow.classList.remove("unavailable");
+        elements.volume.disabled = false;
+        elements.volume.value = String(Math.round(elements.player.volume * 100));
+        elements.volumeValue.textContent = elements.volume.value;
+        return;
+    }
+    const usable = elements.volume.dataset.controllable === "yes";
+    elements.volumeRow.classList.toggle("unavailable", !usable);
+    elements.volume.disabled = !usable;
+}
+
+/**
+ * Apply the slider to whichever side is playing.
+ *
+ * @returns {void}
+ */
+function applyVolume() {
+    const value = Number(elements.volume.value);
+    elements.volumeValue.textContent = String(value);
+    if (target === "guest") {
+        elements.player.volume = Math.max(0, Math.min(1, value / 100));
+        return;
+    }
+    stream("volume", {seconds: value});
 }
 
 /**
@@ -708,17 +1006,32 @@ document.addEventListener("DOMContentLoaded", () => {
 
     elements.tabDownloads.addEventListener("click", () => showView("downloads"));
     elements.tabStreaming.addEventListener("click", () => showView("streaming"));
-    const transport = [
-        ["stream-previous", "previous"],
-        ["stream-next", "next"],
-        ["stream-like", "like"],
-        ["stream-dislike", "dislike"],
-        ["stream-download", "download"],
-    ];
-    transport.forEach(([id, command]) => {
+    // Likes, dislikes and downloads always belong to the PC; the transport
+    // follows whichever side is playing.
+    [["stream-like", "like"], ["stream-dislike", "dislike"],
+     ["stream-download", "download"]].forEach(([id, command]) => {
         document.getElementById(id).addEventListener("click", () => stream(command));
     });
-    elements.streamToggle.addEventListener("click", () => stream("toggle"));
+    [["stream-previous", "previous"], ["stream-next", "next"]].forEach(([id, command]) => {
+        document.getElementById(id).addEventListener("click", () => transport(command));
+    });
+    elements.streamToggle.addEventListener("click", () => transport("toggle"));
+
+    elements.search.addEventListener("input", scheduleSearch);
+    elements.search.addEventListener("search", runSearch);
+    document.querySelectorAll("input[name=target]").forEach((radio) => {
+        radio.addEventListener("change", () => setTarget(radio.value));
+    });
+    elements.volume.addEventListener("input", applyVolume);
+    // One song ends, the next starts - the same as on the PC.
+    elements.player.addEventListener("ended", () => {
+        // The same element also plays finished downloads; only a relayed stream
+        // means "go on to the next song".
+        const relayed = (elements.player.currentSrc || "").indexOf("/stream/") !== -1;
+        if (target === "guest" && relayed) {
+            playNextHere();
+        }
+    });
     elements.streamRefresh.addEventListener("click", () => {
         sayStream("Looking for similar songs...");
         stream("refresh");

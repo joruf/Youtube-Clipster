@@ -160,17 +160,25 @@ class _CachedStream:
     resolved_at: float
 
 
+#: Format for a stream a phone browser has to play. m4a first, because Safari
+#: plays AAC but not the Opus-in-WebM that "bestaudio" usually picks.
+BROWSER_AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio/best"
+
+
 def resolve_stream_url(
     page_url: str,
     base_options: Optional[Dict[str, Any]] = None,
     *,
     prefer_video: bool = True,
+    format_selector: str = "",
 ) -> str:
     """Return a direct media URL for ``page_url`` via yt-dlp.
 
     :param page_url: Canonical YouTube watch URL.
     :param base_options: Optional yt-dlp options from the downloader.
     :param prefer_video: Prefer a progressive A+V stream for the embedded panel.
+    :param format_selector: Overrides the format entirely, for callers that need
+        a specific container - see :data:`BROWSER_AUDIO_FORMAT`.
     :return: A playable HTTP(S) media URL.
     :raises RuntimeError: When no stream URL can be resolved.
     """
@@ -180,7 +188,9 @@ def resolve_stream_url(
     opts["no_warnings"] = True
     opts["skip_download"] = True
     opts["noplaylist"] = True
-    if prefer_video:
+    if format_selector:
+        opts["format"] = format_selector
+    elif prefer_video:
         # Progressive file works best for simple players; otherwise bestaudio.
         opts["format"] = "best[height<=720][protocol^=http]/bestaudio/best"
     else:
@@ -895,15 +905,24 @@ class DiscoverPlayer:
         self._ipc_path = path
         return path
 
-    def _mpv_cache_speed(self) -> Optional[float]:
-        """Query mpv ``cache-speed`` via IPC, or ``None`` when unavailable."""
+    def _mpv_send(self, command: List[Any], *, expect_reply: bool = True) -> Optional[Any]:
+        """Send one command to mpv over its IPC channel.
+
+        The single place that talks to mpv: POSIX uses a unix socket, Windows a
+        named pipe whose open/readline can block, so there it runs on a worker
+        with a deadline and never stalls the caller.
+
+        :param command: The mpv command, e.g. ``["set_property", "volume", 50]``.
+        :param expect_reply: Whether the ``data`` field of the answer is wanted.
+        :return: The answer's ``data``, ``True`` for an accepted command without
+            a reply, or ``None`` when mpv could not be reached.
+        """
         path = self._ipc_path
         if not path or self._backend not in (BACKEND_MPV, BACKEND_AUDIO):
             return None
-        payload = b'{"command":["get_property","cache-speed"]}\n'
+        payload = (json.dumps({"command": command}) + "\n").encode("utf-8")
         try:
             if paths.IS_WINDOWS:
-                # Named-pipe open/readline can block; never stall the UI thread.
                 holder: Dict[str, Any] = {"raw": None}
 
                 def _query() -> None:
@@ -932,12 +951,43 @@ class DiscoverPlayer:
             data = json.loads(raw.decode("utf-8", errors="replace").split("\n", 1)[0])
             if not isinstance(data, dict) or data.get("error") not in (None, "success"):
                 return None
-            value = data.get("data")
-            if isinstance(value, (int, float)):
-                return float(value)
+            return data.get("data") if expect_reply else True
         except Exception:
+            log.debug("mpv did not answer %s", command[0] if command else "?", exc_info=True)
             return None
+
+    def volume(self) -> Optional[int]:
+        """Return the player volume in percent, or ``None`` when unknown.
+
+        :return: 0-100, or ``None`` without a controllable backend.
+        """
+        value = self._mpv_send(["get_property", "volume"])
+        if isinstance(value, (int, float)):
+            return max(0, min(100, int(round(float(value)))))
         return None
+
+    def set_volume(self, percent: int) -> bool:
+        """Set the player volume.
+
+        :param percent: 0-100; anything outside is clamped.
+        :return: ``True`` when mpv accepted it.
+        """
+        wanted = max(0, min(100, int(percent)))
+        return self._mpv_send(["set_property", "volume", wanted], expect_reply=False) is True
+
+    def volume_controllable(self) -> bool:
+        """Return whether the volume can be changed at all right now.
+
+        ``ffplay`` takes its volume only at start, so with that backend the
+        answer is no - and the interface has to say so instead of offering a
+        slider that does nothing.
+        """
+        return bool(self._ipc_path) and self._backend in (BACKEND_MPV, BACKEND_AUDIO)
+
+    def _mpv_cache_speed(self) -> Optional[float]:
+        """Query mpv ``cache-speed`` via IPC, or ``None`` when unavailable."""
+        value = self._mpv_send(["get_property", "cache-speed"])
+        return float(value) if isinstance(value, (int, float)) else None
 
     def _start_feeder(self, stream: str, dest_stdin: Any) -> None:
         """Feed HTTP ``stream`` bytes into ``dest_stdin`` while measuring rate."""
@@ -1123,18 +1173,22 @@ class DiscoverPlayer:
         start_at: float = 0.0,
     ) -> PlayStartResult:
         """Launch mpv for audio-only playback (stream piped to stdin)."""
+        # An IPC socket for audio too, not only for the embedded video: without
+        # it the volume of the usual case - listening to music - cannot be
+        # changed at all, neither here nor by remote control.
+        ipc = self._prepare_ipc_path()
         cmd = [
             mpv,
             "--no-video",
             "--no-terminal",
             "--idle=no",
             "--force-window=no",
+            "--input-ipc-server={0}".format(ipc),
         ]
         if start_at > 0.05:
             cmd.append("--start={0}".format(start_at))
         cmd.append("-")
         try:
-            self._cleanup_ipc()
             self._process = _popen(cmd, stdin=subprocess.PIPE)
             self._backend = BACKEND_AUDIO
             player_in = getattr(self._process, "stdin", None)

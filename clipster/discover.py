@@ -913,6 +913,41 @@ def _extract_flat(query: str, options: Dict[str, Any], *, allow_partial: bool = 
     return [info]
 
 
+def search_tracks(
+    query: str,
+    base_options: Optional[Dict[str, Any]] = None,
+    *,
+    limit: int = 12,
+) -> List[DiscoverTrack]:
+    """Search YouTube for ``query`` and return the results as tracks.
+
+    A plain search, unlike :func:`discover_tracks`: no seeds, no genre sorting
+    and no suffix filter - whoever typed the term meant exactly that term.
+
+    :param query: What the user typed.
+    :param base_options: yt-dlp options already prepared by the downloader.
+    :param limit: Maximum number of results.
+    :return: The results in the order YouTube gave them.
+    :raises DiscoverExtractError: When YouTube returns nothing usable.
+    """
+    text = " ".join(str(query or "").split())
+    if not text:
+        return []
+    count = max(1, min(int(limit), 25))
+    rows = _extract_flat("ytsearch{0}:{1}".format(count, text), dict(base_options or {}))
+    tracks: List[DiscoverTrack] = []
+    seen: Set[str] = set()
+    for row in rows:
+        track = _track_from_info(row, seed_title="", suffix="", require_suffix=False)
+        if track is None or track.video_id in seen:
+            continue
+        seen.add(track.video_id)
+        tracks.append(track)
+        if len(tracks) >= count:
+            break
+    return tracks
+
+
 def discover_tracks(
     seeds: Sequence[HistoryEntry],
     config: Config,

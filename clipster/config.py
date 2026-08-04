@@ -110,6 +110,12 @@ class Config:
     remote_port: int = 8733
     #: Shared secret every request has to carry; generated when empty.
     remote_token: str = ""
+    #: Idle time after the last keystroke before the remote search runs, in
+    #: milliseconds. Short enough to feel instant, long enough not to search
+    #: every letter.
+    remote_search_delay_ms: int = 1500
+    #: Maximum number of search results shown on a remote device.
+    remote_search_results: int = 12
     #: Accepted revision of the general terms of use (empty = not accepted).
     terms_app_version: str = ""
     #: UTC ISO timestamp when the general terms were accepted.

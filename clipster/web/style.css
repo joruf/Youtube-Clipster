@@ -447,3 +447,48 @@ button {
     margin-top: 10px;
     cursor: pointer;
 }
+
+/* --------------------------------------------------------------- searching */
+input[type="search"] {
+    width: 100%;
+    padding: 12px;
+    background: var(--elevated);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font-size: 1rem;
+}
+
+input[type="search"]:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+#search-note:empty,
+#target-note:empty {
+    display: none;
+}
+
+.result-add {
+    color: var(--success);
+}
+
+/* ---------------------------------------------------------------- volume */
+#volume-row {
+    margin-top: 12px;
+}
+
+#volume {
+    flex: 1;
+    accent-color: var(--accent);
+    background: transparent;
+}
+
+#volume-value {
+    min-width: 2.2em;
+    text-align: right;
+}
+
+#volume-row.unavailable {
+    opacity: 0.45;
+}

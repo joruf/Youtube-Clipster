@@ -978,3 +978,225 @@ def test_the_answer_carries_the_new_state(app, streaming) -> None:
     result = app.discover_remote_command("stop")
     assert isinstance(result["state"], dict)
     assert "tracks" in result["state"]
+
+
+# ----------------------------------------------------------------------
+# Volume on the host
+# ----------------------------------------------------------------------
+def test_the_volume_is_reported(app, streaming) -> None:
+    page, _, _ = streaming
+    page.player.volume = lambda: 42
+    page.player.volume_controllable = lambda: True
+    state = app.discover_remote_state()
+    assert state["volume"] == 42
+    assert state["volume_controllable"] is True
+
+
+def test_an_uncontrollable_backend_says_so(app, streaming) -> None:
+    """ffplay takes its volume only at start; a slider would do nothing."""
+    page, _, _ = streaming
+    page.player.volume = lambda: None
+    page.player.volume_controllable = lambda: False
+    state = app.discover_remote_state()
+    assert state["volume"] is None
+    assert state["volume_controllable"] is False
+
+
+def test_setting_the_volume_reaches_the_player(app, streaming) -> None:
+    page, _, _ = streaming
+    seen: list = []
+    page.player.set_volume = lambda percent: seen.append(percent) or True
+    assert app.discover_remote_command("volume", seconds=35)["ok"] is True
+    assert seen == [35]
+
+
+def test_the_volume_needs_no_streaming_terms(app, streaming) -> None:
+    """Turning the sound down takes nothing new from YouTube."""
+    page, _, _ = streaming
+    seen: list = []
+    page.player.set_volume = lambda percent: seen.append(percent) or True
+    assert app.discover_remote_command("volume", seconds=10)["ok"] is True
+    assert seen == [10]
+
+
+@pytest.mark.parametrize("wanted,expected", [(-20, 0), (0, 0), (50, 50), (100, 100), (250, 100)])
+def test_the_player_clamps_the_volume(wanted: int, expected: int) -> None:
+    """Whatever arrives over the network, mpv only ever sees 0-100."""
+    from clipster.player import DiscoverPlayer
+
+    player = DiscoverPlayer()
+    seen: list = []
+    player._mpv_send = lambda command, expect_reply=True: seen.append(command) or True
+    player.set_volume(wanted)
+    assert seen == [["set_property", "volume", expected]]
+
+
+# ----------------------------------------------------------------------
+# Searching from a remote device
+# ----------------------------------------------------------------------
+def test_a_search_returns_results(app, streaming, monkeypatch) -> None:
+    from clipster import app as app_module
+    from clipster.terms import accept_streaming_terms
+
+    accept_streaming_terms(app.config)
+    monkeypatch.setattr(app_module.discover, "search_tracks",
+                        lambda query, options=None, limit=12: _tracks(2))
+    result = app.discover_remote_search("beatles")
+    assert result["ok"] is True
+    assert [item["title"] for item in result["results"]] == ["Song 0", "Song 1"]
+    assert result["results"][0]["video_id"] == "vid0"
+
+
+def test_an_empty_search_asks_youtube_nothing(app, streaming, monkeypatch) -> None:
+    from clipster import app as app_module
+
+    monkeypatch.setattr(app_module.discover, "search_tracks",
+                        lambda *a, **k: pytest.fail("YouTube was asked for nothing"))
+    for query in ("", "   ", None):
+        assert app.discover_remote_search(query) == {"ok": True, "error": "", "results": []}
+
+
+def test_a_search_needs_the_streaming_terms(app, streaming, monkeypatch) -> None:
+    from clipster import app as app_module
+
+    monkeypatch.setattr(app_module.discover, "search_tracks",
+                        lambda *a, **k: pytest.fail("searched without consent"))
+    result = app.discover_remote_search("beatles")
+    assert result["ok"] is False
+    assert result["error"] == "terms_required"
+
+
+def test_a_failing_search_is_reported_not_raised(app, streaming, monkeypatch) -> None:
+    from clipster import app as app_module
+    from clipster.terms import accept_streaming_terms
+
+    accept_streaming_terms(app.config)
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("YouTube said no")
+
+    monkeypatch.setattr(app_module.discover, "search_tracks", explode)
+    result = app.discover_remote_search("beatles")
+    assert result["ok"] is False
+    assert "YouTube said no" in result["error"]
+
+
+def test_the_search_delay_is_published(app, streaming) -> None:
+    """The device has to know how long to wait after the last keystroke."""
+    app.config.remote_search_delay_ms = 900
+    state = app.discover_remote_state()
+    assert state["search_delay_ms"] == 900
+
+
+def test_an_absurd_search_delay_is_floored(app, streaming) -> None:
+    app.config.remote_search_delay_ms = 0
+    assert app.discover_remote_state()["search_delay_ms"] >= 200
+
+
+# ----------------------------------------------------------------------
+# Adding a search result to the queue
+# ----------------------------------------------------------------------
+def test_a_picked_result_is_queued_and_started(app, streaming) -> None:
+    from clipster.terms import accept_streaming_terms
+
+    page, calls, _ = streaming
+    accept_streaming_terms(app.config)
+    result = app.discover_remote_enqueue("bbbbbbbbbbb", "Picked", "Channel", 321)
+    assert result["ok"] is True
+    assert [item["title"] for item in result["state"]["tracks"]] == ["Picked"]
+    assert calls == ["play_at"]
+
+
+def test_queueing_without_playing(app, streaming) -> None:
+    from clipster.terms import accept_streaming_terms
+
+    page, calls, _ = streaming
+    accept_streaming_terms(app.config)
+    app.discover_remote_enqueue("bbbbbbbbbbb", "Picked", play=False)
+    assert calls == []
+    assert [item.video_id for item in page.player.tracks] == ["bbbbbbbbbbb"]
+
+
+def test_the_same_track_is_not_queued_twice(app, streaming) -> None:
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    app.discover_remote_enqueue("bbbbbbbbbbb", "Picked", play=False)
+    app.discover_remote_enqueue("bbbbbbbbbbb", "Picked again", play=False)
+    assert [item.video_id for item in page.player.tracks] == ["bbbbbbbbbbb"]
+
+
+@pytest.mark.parametrize("video_id", ["", "short", "waytoolongforanid", "../../etc/passwd", None])
+def test_only_a_real_video_id_is_queued(app, streaming, video_id) -> None:
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    result = app.discover_remote_enqueue(video_id or "", "Nope")
+    assert result["ok"] is False
+    assert page.player.tracks == []
+
+
+def test_queueing_needs_the_streaming_terms(app, streaming) -> None:
+    page, calls, _ = streaming
+    result = app.discover_remote_enqueue("bbbbbbbbbbb", "Picked")
+    assert result["ok"] is False
+    assert result["error"] == "terms_required"
+    assert calls == []
+
+
+# ----------------------------------------------------------------------
+# The audio stream a device plays itself
+# ----------------------------------------------------------------------
+def test_only_a_queued_track_can_be_resolved(app, streaming) -> None:
+    """Otherwise this would be an open resolver for any video id sent to it."""
+    from clipster.terms import accept_streaming_terms
+
+    accept_streaming_terms(app.config)
+    assert app.discover_remote_audio("zzzzzzzzzzz") == ""
+    assert app.discover_remote_audio("") == ""
+
+
+def test_resolving_needs_the_streaming_terms(app, streaming, monkeypatch) -> None:
+    page, _, _ = streaming
+    page.player.set_playlist(_tracks(1))
+    monkeypatch.setattr("clipster.player.resolve_stream_url",
+                        lambda *a, **k: pytest.fail("resolved without consent"))
+    assert app.discover_remote_audio("vid0") == ""
+
+
+def test_a_resolved_url_is_reused(app, streaming, monkeypatch) -> None:
+    """Resolving costs a second or two; a phone must not pay it twice."""
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    page.player.set_playlist(_tracks(1))
+    calls: list = []
+    monkeypatch.setattr("clipster.player.resolve_stream_url",
+                        lambda *a, **k: calls.append(1) or "https://example.invalid/audio.m4a")
+    first = app.discover_remote_audio("vid0")
+    second = app.discover_remote_audio("vid0")
+    assert first == second == "https://example.invalid/audio.m4a"
+    assert len(calls) == 1
+
+
+def test_the_browser_format_prefers_what_safari_can_play(app, streaming, monkeypatch) -> None:
+    """Opus in WebM plays on Android but not on the iPhone."""
+    from clipster.player import BROWSER_AUDIO_FORMAT
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    page.player.set_playlist(_tracks(1))
+    seen: dict = {}
+
+    def resolve(url, options=None, *, prefer_video=True, format_selector=""):
+        seen["format"] = format_selector
+        return "https://example.invalid/audio.m4a"
+
+    monkeypatch.setattr("clipster.player.resolve_stream_url", resolve)
+    app.discover_remote_audio("vid0")
+    assert seen["format"] == BROWSER_AUDIO_FORMAT
+    assert "m4a" in seen["format"]

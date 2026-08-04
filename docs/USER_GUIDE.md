@@ -55,8 +55,10 @@ you can see it working; it also shows the firewall command if one is needed.
 ![The Remote page](images/phone-page.png)
 
 The phone has two tabs: **Downloads** for links and the download list, and **Streaming** as a remote
-control for the Streaming page - queue, transport, likes and *Find similar*. The sound stays on the PC;
-the phone steers. Streaming needs its terms accepted once on the PC before the phone may use it.
+control - search, queue, transport, likes, volume and *Find similar*. Type into the search box, stop
+typing, and the results appear; tap one and it plays and joins the queue. **Play on** decides whether
+the sound comes out of the PC or out of the device itself - the latter is what you want when the phone
+is paired with a speaker. Streaming needs its terms accepted once on the PC before the phone may use it.
 
 ![Streaming from the phone](images/phone-streaming.png)
 

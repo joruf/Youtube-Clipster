@@ -33,6 +33,9 @@ class FakeApp:
         self.raise_on_submit = False
         self.delete_result = True
         self.commands: List[Tuple[str, int, float]] = []
+        self.searches: List[str] = []
+        self.enqueued: List[Tuple[str, str, bool]] = []
+        self.audio_url = ""
         self.terms_missing = False
         self.history = self  # the API reaches the history through the app
 
@@ -63,7 +66,28 @@ class FakeApp:
             {"index": 0, "video_id": "v1", "title": "Song One", "uploader": "Artist",
              "duration": 214, "seed_title": ""}],
             "index": 0, "playing": True, "position": 12.0, "duration": 214.0,
-            "can_seek": True, "busy": False, "extending": False, "mode": "related", "level": 0.4}
+            "can_seek": True, "busy": False, "extending": False, "mode": "related", "level": 0.4,
+            "volume": 42, "volume_controllable": True, "search_delay_ms": 1500,
+            "search_results": 12}
+
+    def discover_remote_search(self, query: str) -> Dict[str, Any]:
+        self.searches.append(query)
+        if self.terms_missing:
+            return {"ok": False, "error": "terms_required", "results": []}
+        return {"ok": True, "error": "", "results": [
+            {"video_id": "bbbbbbbbbbb", "title": "Hit for " + query,
+             "uploader": "Finder", "duration": 321,
+             "url": "https://youtu.be/bbbbbbbbbbb"}]}
+
+    def discover_remote_enqueue(self, video_id: str, title: str = "", uploader: str = "",
+                                duration: int = 0, play: bool = True) -> Dict[str, Any]:
+        self.enqueued.append((video_id, title, play))
+        if len(video_id) != 11:
+            return {"ok": False, "error": "unknown_track", "state": {}}
+        return {"ok": True, "error": "", "state": self.discover_remote_state()}
+
+    def discover_remote_audio(self, video_id: str) -> str:
+        return self.audio_url if video_id == "aaaaaaaaaaa" else ""
 
     def discover_remote_command(self, command: str, index: int = -1,
                                 seconds: float = 0.0) -> Dict[str, Any]:
@@ -947,3 +971,181 @@ def test_hiding_a_view_really_hides_it(real_web) -> None:
     assert match is not None, "no [hidden] rule at all"
     assert "display: none" in match.group(1)
     assert "!important" in match.group(1), "an author display rule would win otherwise"
+
+
+# ----------------------------------------------------------------------
+# Volume, search and the audio relay over HTTP
+# ----------------------------------------------------------------------
+def test_the_volume_is_part_of_the_state(served) -> None:
+    _, base, _ = served
+    payload = json.loads(_request(base + "/api/discover")[2])
+    assert payload["volume"] == 42
+    assert payload["volume_controllable"] is True
+    assert payload["search_delay_ms"] == 1500
+
+
+def test_a_volume_command_carries_its_value(served) -> None:
+    app, base, _ = served
+    _request(base + "/api/discover", method="POST", body={"command": "volume", "seconds": 35})
+    assert app.commands[-1] == ("volume", -1, 35.0)
+
+
+def test_a_search_is_passed_on(served) -> None:
+    app, base, _ = served
+    status, _, raw = _request(base + "/api/discover/search", method="POST",
+                              body={"query": "beatles"})
+    assert status == 200
+    assert app.searches == ["beatles"]
+    assert json.loads(raw)["results"][0]["title"] == "Hit for beatles"
+
+
+def test_a_search_needs_the_token(served) -> None:
+    app, base, _ = served
+    assert _request(base + "/api/discover/search", method="POST", token=None,
+                    body={"query": "x"})[0] == 401
+    assert app.searches == []
+
+
+def test_a_search_without_the_terms_is_403(served) -> None:
+    app, base, _ = served
+    app.terms_missing = True
+    status, _, raw = _request(base + "/api/discover/search", method="POST", body={"query": "x"})
+    assert status == 403
+    assert json.loads(raw)["error"] == "terms_required"
+
+
+def test_picking_a_result_queues_it(served) -> None:
+    app, base, _ = served
+    status, _, raw = _request(base + "/api/discover/queue", method="POST",
+                              body={"video_id": "bbbbbbbbbbb", "title": "Hit", "play": True})
+    assert status == 200
+    assert app.enqueued[-1] == ("bbbbbbbbbbb", "Hit", True)
+    assert json.loads(raw)["ok"] is True
+
+
+def test_queueing_can_skip_the_playing(served) -> None:
+    app, base, _ = served
+    _request(base + "/api/discover/queue", method="POST",
+             body={"video_id": "bbbbbbbbbbb", "title": "Hit", "play": False})
+    assert app.enqueued[-1][2] is False
+
+
+def test_a_nonsense_track_is_a_400(served) -> None:
+    _, base, _ = served
+    status, _, _ = _request(base + "/api/discover/queue", method="POST",
+                            body={"video_id": "short"})
+    assert status == 400
+
+
+def test_queueing_needs_the_token(served) -> None:
+    app, base, _ = served
+    assert _request(base + "/api/discover/queue", method="POST", token=None,
+                    body={"video_id": "bbbbbbbbbbb"})[0] == 401
+    assert app.enqueued == []
+
+
+def test_an_unresolvable_track_is_a_404(served) -> None:
+    _, base, _ = served
+    assert _request(base + "/stream/zzzzzzzzzzz")[0] == 404
+
+
+def test_the_relay_needs_the_token(served) -> None:
+    _, base, _ = served
+    assert _request(base + "/stream/aaaaaaaaaaa", token=None)[0] == 401
+
+
+def test_the_relay_passes_the_stream_through(served, tmp_path: Path) -> None:
+    """A second server stands in for YouTube, so nothing leaves this machine."""
+    app, base, _ = served
+    upstream_dir = tmp_path / "upstream"
+    upstream_dir.mkdir()
+    payload = bytes(range(256)) * 8
+    (upstream_dir / "audio.m4a").write_bytes(payload)
+
+    class Upstream(FakeApp):
+        pass
+
+    upstream = webserver.RemoteServer(RemoteApi(Upstream()), token="up", bind="127.0.0.1",
+                                      port=0, web_root=upstream_dir)
+    assert upstream.start()
+    try:
+        app.audio_url = "http://127.0.0.1:{0}/audio.m4a?token=up".format(upstream.port)
+        status, headers, body = _request(base + "/stream/aaaaaaaaaaa")
+        assert status == 200, body[:200]
+        assert body == payload
+        assert headers.get("Accept-Ranges") == "bytes"
+
+        status, headers, body = _request(base + "/stream/aaaaaaaaaaa",
+                                        headers={"Range": "bytes=10-19"})
+        assert status == 206, "Safari plays nothing without a 206"
+        assert body == payload[10:20]
+        assert headers.get("Content-Range", "").endswith("/2048")
+    finally:
+        upstream.stop()
+
+
+def test_the_interface_offers_a_search_box_and_a_target(real_web) -> None:
+    _, base = real_web
+    page = _request(base + "/")[2].decode("utf-8")
+    assert 'id="search"' in page
+    assert 'name="target"' in page
+    assert 'id="volume"' in page
+
+
+def test_the_script_debounces_the_search(real_web) -> None:
+    """Searching on every letter would ask the PC seven times for one word."""
+    _, base = real_web
+    script = _request(base + "/app.js")[2].decode("utf-8")
+    assert "clearTimeout" in script and "setTimeout" in script
+    assert "/api/discover/search" in script
+    assert "search_delay_ms" in script, "the PC's setting has to win over the default"
+
+
+def test_the_relay_makes_its_own_206_when_the_source_ignores_the_range(served, tmp_path: Path) -> None:
+    """Safari plays nothing without a 206, whatever the source answers.
+
+    The stand-in here serves static files and ignores Range on purpose - so this
+    proves the range is honoured by the relay itself.
+    """
+    app, base, _ = served
+    upstream_dir = tmp_path / "no-range"
+    upstream_dir.mkdir()
+    payload = bytes(range(256)) * 4
+    (upstream_dir / "audio.m4a").write_bytes(payload)
+    upstream = webserver.RemoteServer(RemoteApi(FakeApp()), token="up", bind="127.0.0.1",
+                                     port=0, web_root=upstream_dir)
+    assert upstream.start()
+    try:
+        app.audio_url = "http://127.0.0.1:{0}/audio.m4a?token=up".format(upstream.port)
+        status, headers, body = _request(base + "/stream/aaaaaaaaaaa",
+                                        headers={"Range": "bytes=100-199"})
+        assert status == 206
+        assert body == payload[100:200]
+        assert headers["Content-Range"] == "bytes 100-199/{0}".format(len(payload))
+        assert headers["Content-Length"] == "100"
+
+        # An open-ended range has to work too.
+        status, _, body = _request(base + "/stream/aaaaaaaaaaa",
+                                   headers={"Range": "bytes=900-"})
+        assert status == 206
+        assert body == payload[900:]
+    finally:
+        upstream.stop()
+
+
+def test_a_relay_without_a_range_stays_a_200(served, tmp_path: Path) -> None:
+    app, base, _ = served
+    upstream_dir = tmp_path / "plain"
+    upstream_dir.mkdir()
+    (upstream_dir / "audio.m4a").write_bytes(b"abcdef")
+    upstream = webserver.RemoteServer(RemoteApi(FakeApp()), token="up", bind="127.0.0.1",
+                                     port=0, web_root=upstream_dir)
+    assert upstream.start()
+    try:
+        app.audio_url = "http://127.0.0.1:{0}/audio.m4a?token=up".format(upstream.port)
+        status, headers, body = _request(base + "/stream/aaaaaaaaaaa")
+        assert status == 200
+        assert body == b"abcdef"
+        assert headers["Accept-Ranges"] == "bytes"
+    finally:
+        upstream.stop()

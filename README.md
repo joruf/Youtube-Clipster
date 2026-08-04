@@ -356,6 +356,8 @@ For a **portable setup** copy `config.example.json` to `config.json` **next to
 | `remote_bind` | `"127.0.0.1"` | `0.0.0.0` lets other devices in; the default keeps it on this PC |
 | `remote_port` | `8733` | TCP port of the remote interface; `0` … `65535`, where `0` picks a free one. Anything outside that range is refused with a message in the log instead of stopping the program |
 | `remote_token` | `""` | Shared secret; generated on first start and written back here. Any characters are allowed — it is percent-encoded into the address |
+| `remote_search_delay_ms` | `1500` | Idle time after the last keystroke before the remote search runs |
+| `remote_search_results` | `12` | Maximum number of search results shown on a remote device |
 | `update_check_hours` | `24` | Hours between two yt-dlp update checks (`0` = every start) |
 | `log_level` | `"INFO"` | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
 | `discover_search_suffix` | `"lyrics"` | Word appended to Streaming searches; empty disables it |
@@ -560,17 +562,39 @@ The device has the same two jobs the PC has, on two tabs:
 download with its length, size, date and status; ▶ plays it, ⤓ saves it to the phone, ✕ deletes the
 file on the PC.
 
-**Streaming** — the phone becomes the remote control for the Streaming page on the PC:
+**Streaming** — the device becomes the remote control for the Streaming page on the PC:
 
 ![Streaming from the phone](docs/images/phone-streaming.png)
 
+- **Search YouTube** — type a term and stop typing; after 1.5 seconds the PC searches and shows what
+  it found. Tap a result and it is added to the queue and played. Type again for the next one. The
+  delay is `remote_search_delay_ms`, the number of results `remote_search_results`.
+- **Play on** — *The PC* or *This device*, plus a **volume slider**
 - the track playing right now, with position, length and a live level meter
 - previous / play-pause / next, plus 👍 👎 and ⤓ for the current track
 - the whole queue — tap any song to play it
 - *Find similar* starts the same search as the button on the PC
 
-**The PC plays the sound**, not the phone: this is a remote control for the stereo, not a second
-player. What you hear comes out of the PC's speakers, exactly as if you had clicked there.
+### Where the sound comes out
+
+| *Play on* | What happens |
+|-----------|--------------|
+| **The PC** | The PC plays, exactly as if you had clicked there. The slider sets the **PC's** player volume. |
+| **This device** | The PC stops and relays the audio to your device, which plays it. Useful when the phone is paired with a Bluetooth speaker. The slider then sets **that device's** volume. |
+
+Only one side plays at a time: switching to *This device* stops the PC first.
+
+Two things to know about playing on the device:
+
+- The PC **relays** the audio rather than sending YouTube's own address, because those addresses are
+  bound to the machine that resolved them and expire. That costs the PC a little upload bandwidth on
+  your own network, and in exchange it works reliably and stays behind the token.
+- The audio is requested as **m4a** where YouTube offers it, because Safari plays AAC but not the
+  Opus-in-WebM that would otherwise be picked. Seeking works: the relay answers a range request with
+  a `206` even when the source ignores the range.
+
+The volume slider needs **mpv** on the PC. With the `ffplay` fallback the volume can only be set at
+start, so the slider is shown greyed out instead of pretending to work.
 
 Streaming needs its terms of use accepted **once on the PC**. Until then the phone answers "Accept the
 Streaming terms once on the PC" and does nothing — a legal confirmation is not something to click by

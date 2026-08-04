@@ -37,6 +37,7 @@ _DISCOVER_STATUS = {
     # The terms question is a dialog on the PC, so this is not something the
     # phone can resolve by retrying - it needs a person at the machine.
     "terms_required": 403,
+    "unknown_track": 400,
     "unavailable": 503,
     "closing": 503,
 }
@@ -162,6 +163,57 @@ class RemoteApi:
         if result.get("ok"):
             return 200, result
         return _DISCOVER_STATUS.get(str(result.get("error")), 400), result
+
+    def discover_search(self, query: str) -> Tuple[int, Dict[str, Any]]:
+        """Search YouTube for a term typed on the device.
+
+        :param query: The search term.
+        :return: The HTTP status and the results.
+        """
+        self._record_contact()
+        try:
+            result = self._app.discover_remote_search(query)
+        except RuntimeError as exc:
+            log.debug("Streaming search refused: %s", exc)
+            return 503, {"ok": False, "error": "closing", "results": []}
+        if result.get("ok"):
+            return 200, result
+        return _DISCOVER_STATUS.get(str(result.get("error")), 502), result
+
+    def discover_enqueue(self, track: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Add a searched track to the queue and start it.
+
+        :param track: ``{"video_id", "title", "uploader", "duration", "play"}``.
+        :return: The HTTP status and the result including the new state.
+        """
+        self._record_contact()
+        try:
+            result = self._app.discover_remote_enqueue(
+                str(track.get("video_id") or ""),
+                str(track.get("title") or ""),
+                str(track.get("uploader") or ""),
+                int(track.get("duration") or 0),
+                bool(track.get("play", True)),
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            log.debug("Streaming enqueue refused: %s", exc)
+            return 503, {"ok": False, "error": "closing"}
+        if result.get("ok"):
+            return 200, result
+        return _DISCOVER_STATUS.get(str(result.get("error")), 400), result
+
+    def discover_audio(self, video_id: str) -> str:
+        """Resolve the audio stream of a queued track for playback on a device.
+
+        :param video_id: The video id from the queue.
+        :return: The upstream URL, or an empty string.
+        """
+        self._record_contact()
+        try:
+            return str(self._app.discover_remote_audio(video_id) or "")
+        except RuntimeError as exc:
+            log.debug("Streaming audio refused: %s", exc)
+            return ""
 
     def media(self, entry_id: str) -> Optional[Path]:
         """Resolve a download id to the file on disk.

@@ -23,6 +23,7 @@ import json
 import secrets
 import socket
 import threading
+import urllib.request
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -483,6 +484,8 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
                 self._answer(*api.discover())
             elif path.startswith("/media/"):
                 self._serve_media(path[len("/media/"):])
+            elif path.startswith("/stream/"):
+                self._relay_stream(path[len("/stream/"):])
             elif path in static:
                 self._serve_static(path)
             else:
@@ -498,12 +501,19 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
                 self._deny()
                 return
             route = urlparse(self.path).path
-            if route not in ("/api/submit", "/api/discover"):
+            if route not in ("/api/submit", "/api/discover", "/api/discover/search",
+                             "/api/discover/queue"):
                 self._not_found()
                 return
             payload = self._read_json()
             if payload is None:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "expected a JSON object"})
+                return
+            if route == "/api/discover/search":
+                self._answer(*api.discover_search(str(payload.get("query") or "")))
+                return
+            if route == "/api/discover/queue":
+                self._answer(*api.discover_enqueue(payload))
                 return
             if route == "/api/discover":
                 self._answer(*api.discover_command(
@@ -580,6 +590,103 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
             self.end_headers()
             if self.command != "HEAD":
                 self._stream(target, start, length)
+
+        def _relay_range(self, answer: Any, wanted: str) -> Tuple[int, Optional[Tuple[int, int, int]]]:
+            """Work out what to do when the source ignored a ``Range``.
+
+            YouTube honours ranges, but a source that does not would hand the
+            device a ``200`` - and Safari then plays nothing at all. In that case
+            the range is served from here: the prefix is read and thrown away and
+            the answer becomes a proper ``206``.
+
+            :param answer: The open upstream response.
+            :param wanted: The ``Range`` header the device sent, if any.
+            :return: ``(bytes to skip, (start, end, total) or None)``.
+            """
+            if not wanted or answer.status != 200:
+                return 0, None
+            try:
+                total = int(answer.headers.get("Content-Length") or 0)
+            except ValueError:
+                return 0, None
+            window = parse_range(wanted, total)
+            if window is None:
+                return 0, None
+            start, end = window
+            log.debug("The source ignored the range; serving %s-%s of %s here", start, end, total)
+            return start, (start, end, total)
+
+        def _relay_stream(self, video_id: str) -> None:
+            """Pass a Streaming track through to the device that asked for it.
+
+            Relayed rather than redirected: YouTube's own URLs are bound to the
+            address that resolved them and expire, and a redirect would also take
+            the request out of this origin, where the token protects it.
+
+            :param video_id: The video id from the queue.
+            :return: None
+            """
+            upstream = api.discover_audio(video_id)
+            if not upstream:
+                self._not_found()
+                return
+            headers = {"User-Agent": "YoutubeClipster"}
+            wanted = self.headers.get("Range")
+            if wanted:
+                # Passed straight through: seeking on the device has to work, and
+                # Safari will not start playing without a 206 at all.
+                headers["Range"] = wanted
+            request = urllib.request.Request(upstream, headers=headers)
+            try:
+                answer = urllib.request.urlopen(request, timeout=20)
+            except Exception as exc:  # pragma: no cover - needs the network
+                log.warning("The audio stream could not be relayed: %s", exc)
+                self._send_json(HTTPStatus.BAD_GATEWAY, {"error": "upstream"})
+                return
+            try:
+                skip, window = self._relay_range(answer, wanted)
+                status = HTTPStatus.PARTIAL_CONTENT if window else answer.status
+                self.send_response(status)
+                self.send_header("Content-Type",
+                                 answer.headers.get("Content-Type") or DEFAULT_CONTENT_TYPE)
+                if window:
+                    start, end, total = window
+                    self.send_header("Content-Length", str(end - start + 1))
+                    self.send_header("Content-Range",
+                                     "bytes {0}-{1}/{2}".format(start, end, total))
+                else:
+                    length = answer.headers.get("Content-Length")
+                    if length:
+                        self.send_header("Content-Length", length)
+                    passed = answer.headers.get("Content-Range")
+                    if passed:
+                        self.send_header("Content-Range", passed)
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                if self.command == "HEAD":
+                    return
+                while skip > 0:
+                    block = answer.read(min(_CHUNK, skip))
+                    if not block:
+                        break
+                    skip -= len(block)
+                remaining = (window[1] - window[0] + 1) if window else None
+                while remaining is None or remaining > 0:
+                    block = answer.read(_CHUNK if remaining is None
+                                        else min(_CHUNK, remaining))
+                    if not block:
+                        break
+                    self.wfile.write(block)
+                    if remaining is not None:
+                        remaining -= len(block)
+            except (BrokenPipeError, ConnectionResetError):
+                # The device skipped, paused or locked its screen.
+                log.debug("The device closed the connection while receiving %s", video_id)
+            except OSError as exc:  # pragma: no cover - network error mid-stream
+                log.debug("The audio relay stopped: %s", exc)
+            finally:
+                answer.close()
 
         def _stream(self, target: Path, start: int, length: int) -> None:
             """Copy ``length`` bytes of ``target`` to the client."""

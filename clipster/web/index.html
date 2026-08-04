@@ -67,6 +67,35 @@
 </main>
 
 <main id="view-streaming" hidden>
+    <section class="card">
+        <label class="label" for="search">Search YouTube</label>
+        <input id="search" type="search" inputmode="search" autocomplete="off"
+               autocapitalize="off" spellcheck="false" placeholder="Artist, song, anything">
+        <p id="search-note" class="meta"></p>
+        <ul id="results" class="downloads"></ul>
+    </section>
+
+    <section class="card">
+        <h2>Play on</h2>
+        <div class="formats" role="radiogroup" aria-label="Playback target">
+            <label class="chip">
+                <input type="radio" name="target" value="host" checked>
+                <span>The PC</span>
+            </label>
+            <label class="chip">
+                <input type="radio" name="target" value="guest">
+                <span>This device</span>
+            </label>
+        </div>
+        <p id="target-note" class="meta"></p>
+        <div class="row" id="volume-row">
+            <span class="meta" id="volume-label">Volume</span>
+            <input id="volume" type="range" min="0" max="100" step="1" value="70"
+                   aria-label="Volume">
+            <span class="meta" id="volume-value">70</span>
+        </div>
+    </section>
+
     <section class="card" id="now-playing">
         <h2>Now playing</h2>
         <p id="stream-title" class="stream-title">Nothing yet.</p>

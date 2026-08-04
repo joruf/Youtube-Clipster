@@ -119,6 +119,15 @@ would block the phone's request until somebody walks over. Mind the player's mix
 `playing` and `current` are properties, `position()`, `duration()`, `can_seek()` and `energy_level()` are
 methods.
 
+Playing on the device goes through `GET /stream/<video_id>`: the URL is resolved with
+`player.BROWSER_AUDIO_FORMAT` (m4a first - Safari plays AAC, not Opus-in-WebM), cached for
+`REMOTE_AUDIO_TTL`, and relayed rather than redirected, because YouTube's URLs are bound to the
+resolving machine and expire. Only video ids that are actually in the queue resolve, so this is not an
+open resolver. The relay passes a `Range` through and, when the source ignores it, answers the `206`
+itself - without one Safari plays nothing. Volume goes over mpv's IPC socket (`player._mpv_send`),
+which audio-only playback now opens too; `ffplay` cannot be adjusted after start and reports itself as
+uncontrollable.
+
 Content types come from the fixed `webserver.CONTENT_TYPES` table, never from
 `mimetypes.guess_type`: that builds its table lazily and is not thread safe, and a browser fetching
 page, style, script and icon at once puts four server threads into it simultaneously - which can abort
