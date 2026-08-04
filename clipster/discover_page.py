@@ -929,6 +929,33 @@ class DiscoverPage(ttk.Frame):
                 self.set_status(self.messages.format("discover_results", count=len(self._tracks)), "ok")
         return len(fresh)
 
+    def insert_tracks(self, position: int, tracks: List[DiscoverTrack]) -> int:
+        """Put songs into the queue at ``position`` without stopping playback.
+
+        Used when a track is picked from a search: it belongs right behind the
+        one playing, not at the end of a long queue.
+
+        :param position: Where to insert; clamped into the queue.
+        :param tracks: The songs to insert.
+        :return: How many were newly inserted.
+        """
+        fresh = dedupe_tracks(tracks, against=self._tracks)
+        if not fresh:
+            return 0
+        where = max(0, min(int(position), len(self._tracks)))
+        self._tracks[where:where] = fresh
+        self.player.insert_tracks(where, fresh)
+        if self._selected >= where:
+            # The selection followed its track down the list.
+            self._selected += len(fresh)
+        self._render_rows()
+        if 0 <= self._selected < len(self._tracks):
+            self._highlight(self._selected)
+        self._update_up_next()
+        if self.player.playing or self.player.process_running:
+            self._prefetch_upcoming()
+        return len(fresh)
+
     def video_ids(self) -> set:
         """Return video ids currently in the Discover list."""
         return {track.video_id for track in self._tracks if track.video_id}
@@ -1574,6 +1601,33 @@ class DiscoverPage(ttk.Frame):
             except tk.TclError:
                 pass
 
+    def centre_on(self, index: int) -> None:
+        """Scroll the queue so row ``index`` sits in the middle.
+
+        Called when a new track starts, not on every refresh: in between the
+        user has to be able to scroll around without the list snapping back.
+
+        :param index: The row to centre.
+        :return: None
+        """
+        if not (0 <= index < len(self._row_frames)):
+            return
+        row = self._row_frames[index]
+        try:
+            self._canvas.update_idletasks()
+            area = self._canvas.bbox("all")
+            if not area:
+                return
+            content = area[3] - area[1]
+            visible = self._canvas.winfo_height()
+            if content <= visible or content <= 0:
+                return              # everything fits; there is nothing to scroll
+            middle = row.winfo_y() + row.winfo_height() / 2.0
+            top = middle - visible / 2.0
+            self._canvas.yview_moveto(max(0.0, min(1.0, top / content)))
+        except tk.TclError:  # pragma: no cover - window already gone
+            pass
+
     def _update_up_next(self) -> None:
         """Show the upcoming queue title under Now Playing."""
         nxt = self._selected + 1
@@ -1677,6 +1731,9 @@ class DiscoverPage(ttk.Frame):
         track = self._tracks[index]
         self._selected = index
         self._highlight(index)
+        # A new track: bring it back to the middle even if the user had scrolled
+        # somewhere else while the previous one played.
+        self.centre_on(index)
         self._now_title.configure(text=_shorten(track.title, 120))
         meta = track.uploader
         if track.seed_title:

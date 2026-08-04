@@ -202,18 +202,19 @@ class RemoteApi:
             return 200, result
         return _DISCOVER_STATUS.get(str(result.get("error")), 400), result
 
-    def discover_audio(self, video_id: str) -> str:
+    def discover_audio(self, video_id: str) -> Tuple[str, Dict[str, str]]:
         """Resolve the audio stream of a queued track for playback on a device.
 
         :param video_id: The video id from the queue.
-        :return: The upstream URL, or an empty string.
+        :return: ``(url, headers)``; the URL is empty when nothing was resolved.
         """
         self._record_contact()
         try:
-            return str(self._app.discover_remote_audio(video_id) or "")
+            url, headers = self._app.discover_remote_audio(video_id)
         except RuntimeError as exc:
             log.debug("Streaming audio refused: %s", exc)
-            return ""
+            return "", {}
+        return str(url or ""), dict(headers or {})
 
     def media(self, entry_id: str) -> Optional[Path]:
         """Resolve a download id to the file on disk.

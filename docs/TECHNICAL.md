@@ -119,6 +119,15 @@ would block the phone's request until somebody walks over. Mind the player's mix
 `playing` and `current` are properties, `position()`, `duration()`, `can_seek()` and `energy_level()` are
 methods.
 
+A track picked from a search is inserted at `player.index + 1` (or 0 when nothing has played), by
+`DiscoverPage.insert_tracks` / `DiscoverPlayer.insert_tracks` - deliberately not `set_playlist`, which
+stops the player and would cut off the running song. The device may play a hit before the queue has
+caught up: `discover_remote_search` remembers the ids it offered, because a phone only permits playback
+while the tap is still live and awaiting the round trip loses that permission.
+
+Both queues keep the playing row centred - `DiscoverPage.centre_on` and `centreQueue` in `app.js` - and
+only when the track changes, so scrolling by hand is not fought.
+
 Playing on the device goes through `GET /stream/<video_id>`: the URL is resolved with
 `player.BROWSER_AUDIO_FORMAT` (m4a first - Safari plays AAC, not Opus-in-WebM), cached for
 `REMOTE_AUDIO_TTL`, and relayed rather than redirected, because YouTube's URLs are bound to the

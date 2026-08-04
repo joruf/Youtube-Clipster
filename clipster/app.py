@@ -197,8 +197,12 @@ class ClipsterApp:
         #: The remote interface, created on demand in :meth:`run`.
         self._remote: Any = None
         #: Resolved audio URLs per video id, for playback on a remote device.
-        self._audio_urls: Dict[str, Tuple[str, float]] = {}
+        self._audio_urls: Dict[str, Tuple[str, Dict[str, str], float]] = {}
         self._audio_lock = threading.Lock()
+        #: Video ids a remote search has just offered. A device may play one of
+        #: these before the queue has caught up - otherwise it would have to wait
+        #: for a round trip, and the tap that started it would have expired.
+        self._offered_ids: Dict[str, float] = {}
 
         self.gui.on_quit = self.request_quit
         self.gui.on_nav_closed = self._nav_closed
@@ -412,7 +416,7 @@ class ClipsterApp:
             }
         return state
 
-    def discover_remote_audio(self, video_id: str) -> str:
+    def discover_remote_audio(self, video_id: str) -> Tuple[str, Dict[str, str]]:
         """Resolve a browser-playable audio URL for one queued track.
 
         Runs on the caller's thread - the web server's - because resolving means
@@ -424,35 +428,39 @@ class ClipsterApp:
         every single track.
 
         :param video_id: The video id from the queue.
-        :return: A direct HTTP(S) audio URL, or an empty string.
+        :return: ``(url, headers)``; the URL is empty when nothing was resolved.
+            The headers have to be replayed by whoever fetches it - YouTube
+            answers 403 to a request that arrives without them.
         """
         if not video_id or not streaming_terms_accepted(self.config):
-            return ""
+            return "", {}
         now = time.monotonic()
         with self._audio_lock:
             cached = self._audio_urls.get(video_id)
-            if cached is not None and now - cached[1] < REMOTE_AUDIO_TTL:
-                return cached[0]
+            if cached is not None and now - cached[2] < REMOTE_AUDIO_TTL:
+                return cached[0], dict(cached[1])
 
-        known = any(item.get("video_id") == video_id
-                    for item in self.discover_remote_state()["tracks"])
+        with self._audio_lock:
+            offered = video_id in self._offered_ids
+        known = offered or any(item.get("video_id") == video_id
+                               for item in self.discover_remote_state()["tracks"])
         if not known:
-            # Only what is actually queued: otherwise this would be an open
-            # resolver for any video id somebody cares to send.
-            return ""
+            # Only what is queued or what a search here just offered: otherwise
+            # this would be an open resolver for any video id somebody sends.
+            return "", {}
         watch = "https://www.youtube.com/watch?v={0}".format(video_id)
         try:
-            from .player import BROWSER_AUDIO_FORMAT, resolve_stream_url
+            from .player import BROWSER_AUDIO_FORMAT, resolve_stream
 
-            url = resolve_stream_url(watch, self.downloader._base_options(),
-                                     format_selector=BROWSER_AUDIO_FORMAT)
+            url, headers = resolve_stream(watch, self.downloader._base_options(),
+                                          format_selector=BROWSER_AUDIO_FORMAT)
         except Exception as exc:  # pragma: no cover - needs the network
             log.warning("No remote audio stream for %s: %s", video_id, exc)
-            return ""
+            return "", {}
         with self._audio_lock:
-            self._audio_urls[video_id] = (url, now)
-        log.info("Resolved a remote audio stream for %s", video_id)
-        return url
+            self._audio_urls[video_id] = (url, dict(headers), now)
+        log.info("Resolved a remote audio stream for %s (%s headers)", video_id, len(headers))
+        return url, dict(headers)
 
     def discover_remote_search(self, query: str) -> Dict[str, Any]:
         """Search YouTube for ``query`` on behalf of a remote device.
@@ -479,6 +487,15 @@ class ClipsterApp:
             log.warning("The remote search for %r failed: %s", text, exc)
             return {"ok": False, "error": str(exc), "results": []}
         log.info("Remote search for %r returned %s results.", text, len(found))
+        now = time.monotonic()
+        with self._audio_lock:
+            for track in found:
+                if track.video_id:
+                    self._offered_ids[track.video_id] = now
+            # Keep it from growing without bound over a long session.
+            for stale in [key for key, when in self._offered_ids.items()
+                          if now - when > REMOTE_AUDIO_TTL]:
+                self._offered_ids.pop(stale, None)
         return {
             "ok": True,
             "error": "",
@@ -527,9 +544,16 @@ class ClipsterApp:
             duration=max(0, int(duration or 0)),
         )
         existing = [item.video_id for item in page.player.tracks]
-        if track.video_id not in existing:
-            page.append_tracks([track])
-        position = [item.video_id for item in page.player.tracks].index(track.video_id)
+        if track.video_id in existing:
+            # Already queued: play it where it is instead of adding it twice.
+            position = existing.index(track.video_id)
+        else:
+            # Right behind what is playing, so a pick is heard next instead of
+            # after everything else. Nothing played yet - the player's index is
+            # still -1 - means it goes first.
+            current = int(page.player.index)
+            position = 0 if current < 0 else current + 1
+            page.insert_tracks(position, [track])
         log.info("A remote device queued '%s' at position %s.", track.title, position + 1)
         if play:
             page.play_at(position)

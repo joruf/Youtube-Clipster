@@ -855,8 +855,10 @@ def _tracks(count: int = 3):
     """Return believable Streaming results."""
     from clipster.discover import DiscoverTrack
 
-    return [DiscoverTrack(url="https://youtu.be/a{0:010d}".format(index),
-                          video_id="vid{0}".format(index), title="Song {0}".format(index),
+    # Real YouTube ids are exactly 11 characters, and the code checks that.
+    return [DiscoverTrack(url="https://youtu.be/aaaaaaaaaa{0}".format(index),
+                          video_id="aaaaaaaaaa{0}".format(index),
+                          title="Song {0}".format(index),
                           uploader="Artist {0}".format(index), duration=180 + index)
             for index in range(count)]
 
@@ -1044,7 +1046,7 @@ def test_a_search_returns_results(app, streaming, monkeypatch) -> None:
     result = app.discover_remote_search("beatles")
     assert result["ok"] is True
     assert [item["title"] for item in result["results"]] == ["Song 0", "Song 1"]
-    assert result["results"][0]["video_id"] == "vid0"
+    assert result["results"][0]["video_id"] == "aaaaaaaaaa0"
 
 
 def test_an_empty_search_asks_youtube_nothing(app, streaming, monkeypatch) -> None:
@@ -1107,6 +1109,91 @@ def test_a_picked_result_is_queued_and_started(app, streaming) -> None:
     assert calls == ["play_at"]
 
 
+# ----------------------------------------------------------------------
+# Where a picked result lands
+# ----------------------------------------------------------------------
+def test_a_pick_lands_right_after_the_playing_track(app, streaming) -> None:
+    """Not at the end: a pick should be heard next, not after ten other songs."""
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    page.set_tracks(_tracks(4))
+    page.player.set_playlist(page._tracks)
+    page.player._index = 1                      # "Song 1" is playing
+    app.discover_remote_enqueue("bbbbbbbbbbb", "Picked", play=False)
+    assert [item.title for item in page.player.tracks] == [
+        "Song 0", "Song 1", "Picked", "Song 2", "Song 3"]
+
+
+def test_a_pick_goes_first_while_nothing_has_played(app, streaming) -> None:
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    page.set_tracks(_tracks(3))
+    page.player.set_playlist(page._tracks)
+    page.player._index = -1                     # nothing played yet
+    app.discover_remote_enqueue("bbbbbbbbbbb", "Picked", play=False)
+    assert [item.title for item in page.player.tracks][0] == "Picked"
+
+
+def test_a_pick_into_an_empty_queue_goes_first(app, streaming) -> None:
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    app.discover_remote_enqueue("bbbbbbbbbbb", "Picked", play=False)
+    assert [item.title for item in page.player.tracks] == ["Picked"]
+
+
+def test_the_pick_is_the_one_that_gets_played(app, streaming) -> None:
+    """The position handed to play_at has to be the inserted one."""
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    page.set_tracks(_tracks(4))
+    page.player.set_playlist(page._tracks)
+    page.player._index = 2
+    started: list = []
+    page.play_at = lambda index: started.append(index)
+    app.discover_remote_enqueue("bbbbbbbbbbb", "Picked")
+    assert started == [3]
+    assert page.player.tracks[3].title == "Picked"
+
+
+def test_the_running_track_keeps_playing_when_one_is_inserted(app, streaming) -> None:
+    """set_playlist would stop the player; inserting must not."""
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    page.set_tracks(_tracks(3))
+    page.player.set_playlist(page._tracks)
+    page.player._index = 1
+    stopped: list = []
+    page.player.stop = lambda: stopped.append(True)
+    app.discover_remote_enqueue("bbbbbbbbbbb", "Picked", play=False)
+    assert stopped == [], "the player was stopped"
+    assert page.player.current.title == "Song 1", "it lost track of what is playing"
+
+
+def test_an_already_queued_pick_is_played_where_it_is(app, streaming) -> None:
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    page.set_tracks(_tracks(3))
+    page.player.set_playlist(page._tracks)
+    page.player._index = 0
+    started: list = []
+    page.play_at = lambda index: started.append(index)
+    app.discover_remote_enqueue("aaaaaaaaaa2", "Song 2")
+    assert len(page.player.tracks) == 3, "it must not be queued twice"
+    assert started == [2]
+
+
 def test_queueing_without_playing(app, streaming) -> None:
     from clipster.terms import accept_streaming_terms
 
@@ -1154,16 +1241,16 @@ def test_only_a_queued_track_can_be_resolved(app, streaming) -> None:
     from clipster.terms import accept_streaming_terms
 
     accept_streaming_terms(app.config)
-    assert app.discover_remote_audio("zzzzzzzzzzz") == ""
-    assert app.discover_remote_audio("") == ""
+    assert app.discover_remote_audio("zzzzzzzzzzz") == ("", {})
+    assert app.discover_remote_audio("") == ("", {})
 
 
 def test_resolving_needs_the_streaming_terms(app, streaming, monkeypatch) -> None:
     page, _, _ = streaming
     page.player.set_playlist(_tracks(1))
-    monkeypatch.setattr("clipster.player.resolve_stream_url",
+    monkeypatch.setattr("clipster.player.resolve_stream",
                         lambda *a, **k: pytest.fail("resolved without consent"))
-    assert app.discover_remote_audio("vid0") == ""
+    assert app.discover_remote_audio("aaaaaaaaaa0") == ("", {})
 
 
 def test_a_resolved_url_is_reused(app, streaming, monkeypatch) -> None:
@@ -1174,11 +1261,11 @@ def test_a_resolved_url_is_reused(app, streaming, monkeypatch) -> None:
     accept_streaming_terms(app.config)
     page.player.set_playlist(_tracks(1))
     calls: list = []
-    monkeypatch.setattr("clipster.player.resolve_stream_url",
-                        lambda *a, **k: calls.append(1) or "https://example.invalid/audio.m4a")
-    first = app.discover_remote_audio("vid0")
-    second = app.discover_remote_audio("vid0")
-    assert first == second == "https://example.invalid/audio.m4a"
+    monkeypatch.setattr("clipster.player.resolve_stream",
+                        lambda *a, **k: calls.append(1) or ("https://example.invalid/audio.m4a", {}))
+    first = app.discover_remote_audio("aaaaaaaaaa0")
+    second = app.discover_remote_audio("aaaaaaaaaa0")
+    assert first == second == ("https://example.invalid/audio.m4a", {})
     assert len(calls) == 1
 
 
@@ -1194,9 +1281,126 @@ def test_the_browser_format_prefers_what_safari_can_play(app, streaming, monkeyp
 
     def resolve(url, options=None, *, prefer_video=True, format_selector=""):
         seen["format"] = format_selector
-        return "https://example.invalid/audio.m4a"
+        return "https://example.invalid/audio.m4a", {}
 
-    monkeypatch.setattr("clipster.player.resolve_stream_url", resolve)
-    app.discover_remote_audio("vid0")
+    monkeypatch.setattr("clipster.player.resolve_stream", resolve)
+    app.discover_remote_audio("aaaaaaaaaa0")
     assert seen["format"] == BROWSER_AUDIO_FORMAT
     assert "m4a" in seen["format"]
+
+
+# ----------------------------------------------------------------------
+# The queue follows the playing track
+# ----------------------------------------------------------------------
+def _long_queue(count: int = 20):
+    """Return distinctly named tracks - similar titles get deduplicated."""
+    from clipster.discover import DiscoverTrack
+
+    names = ["Bohemian Rhapsody", "Smells Like Teen Spirit", "Billie Jean", "Hotel California",
+             "Stairway To Heaven", "Purple Haze", "Imagine", "Like A Rolling Stone",
+             "Hey Jude", "Wish You Were Here", "London Calling", "Sweet Child O Mine",
+             "Nothing Else Matters", "Under Pressure", "Riders On The Storm", "Paint It Black",
+             "Comfortably Numb", "Whole Lotta Love", "Space Oddity", "Heroes"]
+    return [DiscoverTrack(url="https://youtu.be/qqqqqqqqq{0:02d}".format(index),
+                          video_id="qqqqqqqqq{0:02d}".format(index), title=name,
+                          uploader="Artist {0}".format(index), duration=200 + index)
+            for index, name in enumerate(names[:count])]
+
+
+def test_centring_scrolls_the_queue(app, streaming) -> None:
+    page, _, _ = streaming
+    page.set_tracks(_long_queue())
+    app.gui.root.update()
+    page.centre_on(0)
+    app.gui.root.update()
+    at_top = page._canvas.yview()[0]
+    page.centre_on(15)
+    app.gui.root.update()
+    assert page._canvas.yview()[0] > at_top, "the list did not follow the track"
+
+
+def test_centring_puts_the_row_in_the_middle(app, streaming) -> None:
+    page, _, _ = streaming
+    page.set_tracks(_long_queue())
+    app.gui.root.update()
+    page.centre_on(12)
+    app.gui.root.update()
+    row = page._row_frames[12]
+    middle = row.winfo_y() + row.winfo_height() / 2
+    top, _ = page._canvas.yview()
+    content = page._canvas.bbox("all")[3]
+    view_middle = top * content + page._canvas.winfo_height() / 2
+    assert abs(middle - view_middle) < 60, (middle, view_middle)
+
+
+def test_centring_an_impossible_row_is_harmless(app, streaming) -> None:
+    page, _, _ = streaming
+    page.set_tracks(_long_queue(3))
+    app.gui.root.update()
+    page.centre_on(-1)
+    page.centre_on(99)
+
+
+def test_a_queue_that_fits_is_not_scrolled(app, streaming, monkeypatch) -> None:
+    """With everything visible there is nothing to centre.
+
+    The viewport height is forced: in a window that was never shown Tk reports
+    one pixel, and then even two rows would look like they need scrolling.
+    """
+    page, _, _ = streaming
+    page.set_tracks(_long_queue(3))
+    app.gui.root.update()
+    monkeypatch.setattr(page._canvas, "winfo_height", lambda: 5000)
+    page.centre_on(2)
+    app.gui.root.update()
+    assert page._canvas.yview()[0] == 0.0
+
+
+# ----------------------------------------------------------------------
+# A searched track can be played before the queue caught up
+# ----------------------------------------------------------------------
+def test_a_searched_track_may_be_resolved_at_once(app, streaming, monkeypatch) -> None:
+    """The tap that starts playback expires while the PC is still queueing."""
+    from clipster import app as app_module
+    from clipster.terms import accept_streaming_terms
+
+    accept_streaming_terms(app.config)
+    monkeypatch.setattr(app_module.discover, "search_tracks",
+                        lambda query, options=None, limit=12: _tracks(1))
+    monkeypatch.setattr("clipster.player.resolve_stream",
+                        lambda *a, **k: ("https://example.invalid/a.m4a", {"User-Agent": "yt"}))
+    # Not in the queue - only offered by the search.
+    assert app.discover_remote_audio("aaaaaaaaaa0") == ("", {})
+    app.discover_remote_search("anything")
+    url, headers = app.discover_remote_audio("aaaaaaaaaa0")
+    assert url == "https://example.invalid/a.m4a"
+    assert headers == {"User-Agent": "yt"}
+
+
+def test_an_id_no_search_ever_offered_stays_refused(app, streaming, monkeypatch) -> None:
+    from clipster import app as app_module
+    from clipster.terms import accept_streaming_terms
+
+    accept_streaming_terms(app.config)
+    monkeypatch.setattr(app_module.discover, "search_tracks",
+                        lambda query, options=None, limit=12: _tracks(1))
+    monkeypatch.setattr("clipster.player.resolve_stream",
+                        lambda *a, **k: pytest.fail("resolved an id nobody offered"))
+    app.discover_remote_search("anything")
+    assert app.discover_remote_audio("zzzzzzzzzzz") == ("", {})
+
+
+def test_the_resolved_headers_travel_with_the_url(app, streaming, monkeypatch) -> None:
+    """YouTube hands out per-format headers; a relay has to replay them."""
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    page.player.set_playlist(_tracks(1))
+    monkeypatch.setattr("clipster.player.resolve_stream",
+                        lambda *a, **k: ("https://example.invalid/a.m4a",
+                                         {"User-Agent": "Mozilla", "Accept": "*/*"}))
+    url, headers = app.discover_remote_audio("aaaaaaaaaa0")
+    assert headers["User-Agent"] == "Mozilla"
+    # Cached with its headers, not just the URL.
+    assert app.discover_remote_audio("aaaaaaaaaa0")[1]["Accept"] == "*/*"

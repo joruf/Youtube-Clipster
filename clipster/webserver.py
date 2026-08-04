@@ -626,11 +626,13 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
             :param video_id: The video id from the queue.
             :return: None
             """
-            upstream = api.discover_audio(video_id)
+            upstream, upstream_headers = api.discover_audio(video_id)
             if not upstream:
                 self._not_found()
                 return
-            headers = {"User-Agent": "YoutubeClipster"}
+            # Exactly the headers yt-dlp resolved the format with: YouTube
+            # refuses a request that turns up with anything else.
+            headers = dict(upstream_headers)
             wanted = self.headers.get("Range")
             if wanted:
                 # Passed straight through: seeking on the device has to work, and

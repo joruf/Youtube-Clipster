@@ -44,6 +44,7 @@ const elements = {
     search: document.getElementById("search"),
     searchNote: document.getElementById("search-note"),
     results: document.getElementById("results"),
+    resultsToggle: document.getElementById("results-toggle"),
     targetNote: document.getElementById("target-note"),
     volumeRow: document.getElementById("volume-row"),
     volume: document.getElementById("volume"),
@@ -62,8 +63,14 @@ let searchDelay = 1500;
 /** The queue as the device knows it, needed to play the next one locally. */
 let queueTracks = [];
 
-/** Position being played on this device, while target is "guest". */
+/** Track being played on this device, while target is "guest". */
+let guestVideoId = "";
+
+/** Its position in the queue, or -1 while the queue has not caught up. */
 let guestIndex = -1;
+
+/** The track the queue was last centred on, so scrolling only follows changes. */
+let centredOn = "";
 
 /** Which view is on screen: "downloads" or "streaming". */
 let view = "downloads";
@@ -624,6 +631,7 @@ async function stream(command, extra) {
 function queueRow(track, current) {
     const row = document.createElement("li");
     row.className = current ? "queue-row current" : "queue-row";
+    row.dataset.video = track.video_id;
 
     const badge = document.createElement("span");
     badge.className = "badge" + (current ? " ok" : "");
@@ -669,6 +677,32 @@ function playTrack(track) {
 }
 
 /**
+ * Scroll the queue so the playing track sits in the middle.
+ *
+ * Only when the track actually changed: in between the user has to be able to
+ * scroll around without the list yanking itself back.
+ *
+ * @param {string} videoId The track that is playing.
+ * @returns {void}
+ */
+function centreQueue(videoId) {
+    if (!videoId || videoId === centredOn) {
+        return;
+    }
+    const row = elements.queue.querySelector('[data-video="' + videoId + '"]');
+    if (!row) {
+        return;                     // the queue has not caught up yet
+    }
+    centredOn = videoId;
+    // Measured from the boxes, not from offsetTop: that is relative to the
+    // nearest positioned ancestor, which is not necessarily this list.
+    const box = elements.queue.getBoundingClientRect();
+    const rowBox = row.getBoundingClientRect();
+    const delta = (rowBox.top + rowBox.height / 2) - (box.top + box.height / 2);
+    elements.queue.scrollTop = Math.max(0, elements.queue.scrollTop + delta);
+}
+
+/**
  * Show one Streaming state.
  *
  * @param {object} state The answer of /api/discover.
@@ -684,9 +718,10 @@ function renderStream(state) {
     }
 
     let current = state.current;
-    if (target === "guest" && guestIndex >= 0 && (state.tracks || [])[guestIndex]) {
+    if (target === "guest") {
         // In guest mode the PC is stopped, so its "current" says nothing.
-        current = (state.tracks || [])[guestIndex];
+        const mine = (state.tracks || []).find((track) => track.video_id === guestVideoId);
+        current = mine || current;
     }
     elements.streamTitle.textContent = current ? current.title : "Nothing yet.";
     elements.streamUploader.textContent = current ? (current.uploader || "") : "";
@@ -721,6 +756,11 @@ function renderStream(state) {
 
     const tracks = state.tracks || [];
     queueTracks = tracks;
+    if (guestVideoId) {
+        // Recovered from the id, not remembered as a number: the queue shifts
+        // whenever something is inserted in front of the current track.
+        guestIndex = tracks.findIndex((track) => track.video_id === guestVideoId);
+    }
     const signature = JSON.stringify([tracks.map((t) => t.video_id), state.index]);
     if (signature !== lastQueue) {
         lastQueue = signature;
@@ -731,6 +771,11 @@ function renderStream(state) {
     }
     elements.streamRefresh.textContent = state.busy ? "Searching..." : "Find similar";
     elements.streamRefresh.disabled = Boolean(state.busy);
+
+    const playingId = target === "guest"
+        ? guestVideoId
+        : (tracks[state.index] || {}).video_id || "";
+    centreQueue(playingId);
 }
 
 /**
@@ -761,7 +806,7 @@ function resultRow(found) {
 
     const badge = document.createElement("span");
     badge.className = "badge";
-    badge.textContent = formatDuration(found.duration);
+    badge.textContent = "♪";
     row.appendChild(badge);
 
     const body = document.createElement("div");
@@ -770,10 +815,12 @@ function resultRow(found) {
     name.className = "name";
     name.textContent = found.title;
     body.appendChild(name);
-    if (found.uploader) {
+    const facts = [found.uploader, formatDuration(found.duration)].filter(
+        (fact) => fact && fact !== "-");
+    if (facts.length > 0) {
         const meta = document.createElement("div");
         meta.className = "meta";
-        meta.textContent = found.uploader;
+        meta.textContent = facts.join(" · ");
         body.appendChild(meta);
     }
     body.addEventListener("click", () => pick(found));
@@ -787,6 +834,19 @@ function resultRow(found) {
 }
 
 /**
+ * Fold the result list away, or open it again.
+ *
+ * @param {boolean} [open] Force a state; toggles when omitted.
+ * @returns {void}
+ */
+function showResults(open) {
+    const wanted = open === undefined ? elements.results.hidden : open;
+    elements.results.hidden = !wanted;
+    elements.resultsToggle.textContent = wanted ? "▲ Hide" : "▼ Show";
+    elements.resultsToggle.setAttribute("aria-expanded", wanted ? "true" : "false");
+}
+
+/**
  * Search YouTube for whatever is in the box.
  *
  * @returns {Promise<void>}
@@ -796,6 +856,7 @@ async function runSearch() {
     elements.results.textContent = "";
     if (!query) {
         elements.searchNote.textContent = "";
+        elements.resultsToggle.hidden = true;
         return;
     }
     elements.searchNote.textContent = "Searching for “" + query + "”...";
@@ -818,6 +879,8 @@ async function runSearch() {
             ? results.length + " results — tap one to play it"
             : "Nothing found.";
         results.forEach((found) => elements.results.appendChild(resultRow(found)));
+        elements.resultsToggle.hidden = results.length === 0;
+        showResults(results.length > 0);
     } catch (error) {
         setConnection(false);
         elements.searchNote.textContent = "The PC cannot be reached.";
@@ -844,6 +907,12 @@ function scheduleSearch() {
  * @returns {Promise<void>}
  */
 async function pick(found) {
+    // Started before any await: a phone only allows playback while the tap is
+    // still "live", and awaiting the PC first loses that permission - which is
+    // why playing on the device did nothing at all.
+    if (target === "guest") {
+        playHere(found.video_id);
+    }
     elements.searchNote.textContent = "Adding “" + found.title + "”...";
     try {
         const answer = await api("/api/discover/queue", {
@@ -867,9 +936,6 @@ async function pick(found) {
         elements.searchNote.textContent = "Added: " + found.title;
         if (answer.body.state) {
             renderStream(answer.body.state);
-        }
-        if (target === "guest") {
-            playHere(found.video_id);
         }
     } catch (error) {
         setConnection(false);
@@ -896,6 +962,8 @@ async function setTarget(name) {
         await stream("stop");
     } else {
         elements.player.pause();
+        guestVideoId = "";
+        guestIndex = -1;
     }
     updateVolumeRow();
 }
@@ -907,6 +975,9 @@ async function setTarget(name) {
  * @returns {void}
  */
 function playHere(videoId) {
+    guestVideoId = videoId;
+    // May be -1 for a fresh search hit the queue has not caught up with yet;
+    // renderStream fills it in as soon as the queue arrives.
     guestIndex = queueTracks.findIndex((track) => track.video_id === videoId);
     elements.player.hidden = false;
     elements.player.src = "/stream/" + encodeURIComponent(videoId);
@@ -1037,6 +1108,7 @@ document.addEventListener("DOMContentLoaded", () => {
         stream("refresh");
     });
     elements.streamTrack.addEventListener("click", seekFromClick);
+    elements.resultsToggle.addEventListener("click", () => showResults());
     document.addEventListener("visibilitychange", syncPolling);
     showView(wanted);
     if (shared) {

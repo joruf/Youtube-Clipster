@@ -68,7 +68,11 @@
 
 <main id="view-streaming" hidden>
     <section class="card">
-        <label class="label" for="search">Search YouTube</label>
+        <div class="row between">
+            <label class="label" for="search">Search YouTube</label>
+            <button id="results-toggle" type="button" class="quiet" hidden
+                    aria-expanded="true" aria-controls="results">▲ Hide</button>
+        </div>
         <input id="search" type="search" inputmode="search" autocomplete="off"
                autocapitalize="off" spellcheck="false" placeholder="Artist, song, anything">
         <p id="search-note" class="meta"></p>

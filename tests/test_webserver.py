@@ -86,8 +86,11 @@ class FakeApp:
             return {"ok": False, "error": "unknown_track", "state": {}}
         return {"ok": True, "error": "", "state": self.discover_remote_state()}
 
-    def discover_remote_audio(self, video_id: str) -> str:
-        return self.audio_url if video_id == "aaaaaaaaaaa" else ""
+    def discover_remote_audio(self, video_id: str) -> Tuple[str, Dict[str, str]]:
+        # The headers travel with the URL: YouTube hands them out per format.
+        if video_id == "aaaaaaaaaaa" and self.audio_url:
+            return self.audio_url, {"User-Agent": "test"}
+        return "", {}
 
     def discover_remote_command(self, command: str, index: int = -1,
                                 seconds: float = 0.0) -> Dict[str, Any]:
@@ -1149,3 +1152,64 @@ def test_a_relay_without_a_range_stays_a_200(served, tmp_path: Path) -> None:
         assert headers["Accept-Ranges"] == "bytes"
     finally:
         upstream.stop()
+
+
+# ----------------------------------------------------------------------
+# The queue in the web interface
+# ----------------------------------------------------------------------
+def test_the_queue_is_a_scrollable_box(real_web) -> None:
+    _, base = real_web
+    css = _request(base + "/style.css")[2].decode("utf-8")
+    assert "#queue" in css
+    block = css.split("#queue", 1)[1].split("}", 1)[0]
+    assert "max-height" in block
+    assert "overflow-y: auto" in block
+
+
+def test_the_queue_follows_the_playing_track(real_web) -> None:
+    _, base = real_web
+    script = _request(base + "/app.js")[2].decode("utf-8")
+    assert "centreQueue" in script
+    assert "getBoundingClientRect" in script, "offsetTop is relative to the wrong box"
+    assert "centredOn" in script, "it must only scroll when the track changed"
+
+
+def test_a_row_carries_its_video_id(real_web) -> None:
+    """Needed to find the playing row again after the queue was rebuilt."""
+    _, base = real_web
+    script = _request(base + "/app.js")[2].decode("utf-8")
+    assert "dataset.video" in script
+    assert "data-video" in script
+
+
+def test_the_results_can_be_folded_away(real_web) -> None:
+    _, base = real_web
+    page = _request(base + "/")[2].decode("utf-8")
+    assert 'id="results-toggle"' in page
+    assert 'aria-controls="results"' in page
+    script = _request(base + "/app.js")[2].decode("utf-8")
+    assert "showResults" in script
+    assert "aria-expanded" in script
+
+
+def test_a_result_lists_its_length(real_web) -> None:
+    """The duration comes back from a flat search, so it is shown."""
+    _, base = real_web
+    script = _request(base + "/app.js")[2].decode("utf-8")
+    results = script.split("function resultRow", 1)[1].split("\nfunction ", 1)[0]
+    assert "formatDuration(found.duration)" in results
+    assert "found.uploader" in results
+
+
+def test_playback_on_the_device_starts_before_the_round_trip(real_web) -> None:
+    """A phone only permits playback while the tap is still live.
+
+    Awaiting the PC first loses that permission, and playing on the device then
+    silently does nothing at all.
+    """
+    _, base = real_web
+    script = _request(base + "/app.js")[2].decode("utf-8")
+    body = script.split("async function pick", 1)[1].split("\nfunction ", 1)[0]
+    play_at = body.index("playHere(found.video_id)")
+    first_await = body.index("await api(")
+    assert play_at < first_await, "playback is started after an await"

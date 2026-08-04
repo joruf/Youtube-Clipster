@@ -567,12 +567,16 @@ file on the PC.
 ![Streaming from the phone](docs/images/phone-streaming.png)
 
 - **Search YouTube** — type a term and stop typing; after 1.5 seconds the PC searches and shows what
-  it found. Tap a result and it is added to the queue and played. Type again for the next one. The
-  delay is `remote_search_delay_ms`, the number of results `remote_search_results`.
+  it found, each hit with its channel and length. Tap a result and it is played and dropped into the
+  queue **right behind the track that is running** — or first, when nothing has played yet. Type again
+  for the next one, and fold the result list away with ▲/▼. The delay is `remote_search_delay_ms`, the
+  number of results `remote_search_results`.
 - **Play on** — *The PC* or *This device*, plus a **volume slider**
 - the track playing right now, with position, length and a live level meter
 - previous / play-pause / next, plus 👍 👎 and ⤓ for the current track
-- the whole queue — tap any song to play it
+- the whole queue in a scrollable box — tap any song to play it. The track that is playing is kept in
+  the **middle** of the list; scroll around freely, and the next song brings it back to the centre.
+  The window on the PC does the same.
 - *Find similar* starts the same search as the button on the PC
 
 ### Where the sound comes out

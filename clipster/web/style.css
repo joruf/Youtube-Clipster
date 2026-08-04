@@ -492,3 +492,19 @@ input[type="search"]:focus {
 #volume-row.unavailable {
     opacity: 0.45;
 }
+
+/* ----------------------------------------------------------- queue scroll */
+#queue,
+#results {
+    /* Tall enough to see several songs, short enough to leave the transport
+       controls on screen. */
+    max-height: 46vh;
+    overflow-y: auto;
+    /* Keeps a centred row from jumping when the browser adjusts scroll on its
+       own after new rows arrive. */
+    overscroll-behavior: contain;
+    /* No smooth scrolling: centring has to be in place before the next poll
+       measures it, and a jump is what a list snapping to the current song
+       should look like anyway. */
+    position: relative;
+}

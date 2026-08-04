@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -165,6 +165,67 @@ class _CachedStream:
 BROWSER_AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio/best"
 
 
+def resolve_stream(
+    page_url: str,
+    base_options: Optional[Dict[str, Any]] = None,
+    *,
+    prefer_video: bool = True,
+    format_selector: str = "",
+) -> Tuple[str, Dict[str, str]]:
+    """Return a direct media URL *and* the headers it has to be fetched with.
+
+    YouTube hands out per-format ``http_headers`` and refuses requests that
+    arrive without them - a relay that invents its own User-Agent gets a 403 and
+    the device plays nothing. Whoever fetches the URL has to replay these.
+
+    :param page_url: Canonical YouTube watch URL.
+    :param base_options: Optional yt-dlp options from the downloader.
+    :param prefer_video: Prefer a progressive A+V stream for the embedded panel.
+    :param format_selector: Overrides the format entirely.
+    :return: ``(url, headers)``.
+    :raises RuntimeError: When no stream URL can be resolved.
+    """
+    youtube_dl = _import_yt_dlp()
+    opts = dict(base_options or {})
+    opts["quiet"] = True
+    opts["no_warnings"] = True
+    opts["skip_download"] = True
+    opts["noplaylist"] = True
+    if format_selector:
+        opts["format"] = format_selector
+    elif prefer_video:
+        opts["format"] = "best[height<=720][protocol^=http]/bestaudio/best"
+    else:
+        opts["format"] = "bestaudio/best"
+    with youtube_dl(opts) as ydl:
+        info = ydl.extract_info(page_url, download=False)
+    if not isinstance(info, dict):
+        raise RuntimeError("No stream metadata")
+
+    def headers_of(source: Dict[str, Any]) -> Dict[str, str]:
+        """Return the HTTP headers yt-dlp wants used for this format."""
+        raw = source.get("http_headers")
+        if not isinstance(raw, dict):
+            return {}
+        return {str(key): str(value) for key, value in raw.items() if value}
+
+    direct = info.get("url")
+    if isinstance(direct, str) and direct.startswith("http"):
+        return direct, headers_of(info)
+    for item in (info.get("requested_formats") or []):
+        if isinstance(item, dict):
+            candidate = item.get("url")
+            if isinstance(candidate, str) and candidate.startswith("http"):
+                return candidate, headers_of(item)
+    for item in reversed(info.get("formats") or []):
+        if not isinstance(item, dict):
+            continue
+        candidate = item.get("url")
+        if isinstance(candidate, str) and candidate.startswith("http"):
+            return candidate, headers_of(item)
+    raise RuntimeError("No playable stream URL")
+
+
 def resolve_stream_url(
     page_url: str,
     base_options: Optional[Dict[str, Any]] = None,
@@ -182,42 +243,8 @@ def resolve_stream_url(
     :return: A playable HTTP(S) media URL.
     :raises RuntimeError: When no stream URL can be resolved.
     """
-    youtube_dl = _import_yt_dlp()
-    opts = dict(base_options or {})
-    opts["quiet"] = True
-    opts["no_warnings"] = True
-    opts["skip_download"] = True
-    opts["noplaylist"] = True
-    if format_selector:
-        opts["format"] = format_selector
-    elif prefer_video:
-        # Progressive file works best for simple players; otherwise bestaudio.
-        opts["format"] = "best[height<=720][protocol^=http]/bestaudio/best"
-    else:
-        opts["format"] = "bestaudio/best"
-    with youtube_dl(opts) as ydl:
-        info = ydl.extract_info(page_url, download=False)
-    if not isinstance(info, dict):
-        raise RuntimeError("No stream metadata")
-    direct = info.get("url")
-    if isinstance(direct, str) and direct.startswith("http"):
-        return direct
-    requested = info.get("requested_formats")
-    if isinstance(requested, list):
-        for item in requested:
-            if isinstance(item, dict):
-                candidate = item.get("url")
-                if isinstance(candidate, str) and candidate.startswith("http"):
-                    return candidate
-    formats = info.get("formats")
-    if isinstance(formats, list):
-        for item in reversed(formats):
-            if not isinstance(item, dict):
-                continue
-            candidate = item.get("url")
-            if isinstance(candidate, str) and candidate.startswith("http"):
-                return candidate
-    raise RuntimeError("No playable stream URL")
+    return resolve_stream(page_url, base_options, prefer_video=prefer_video,
+                          format_selector=format_selector)[0]
 
 
 class DiscoverPlayer:
@@ -316,6 +343,35 @@ class DiscoverPlayer:
         if self._index < 0 and self._tracks:
             self._index = 0
         return len(self._tracks) - before
+
+    def insert_tracks(self, position: int, tracks: List[DiscoverTrack]) -> int:
+        """Insert tracks at ``position`` without interrupting playback.
+
+        Deliberately not :meth:`set_playlist`, which stops the player: a song
+        dropped into the queue must not cut off the one that is running.
+
+        :param position: Where to insert; clamped into the playlist.
+        :param tracks: New tracks to add.
+        :return: How many tracks were inserted.
+        """
+        existing = {track.video_id for track in self._tracks if track.video_id}
+        fresh = []
+        for track in tracks:
+            if track.video_id and track.video_id in existing:
+                continue
+            fresh.append(track)
+            if track.video_id:
+                existing.add(track.video_id)
+        if not fresh:
+            return 0
+        where = max(0, min(int(position), len(self._tracks)))
+        self._tracks[where:where] = fresh
+        if self._index >= where:
+            # The running track moved down the list; keep pointing at it.
+            self._index += len(fresh)
+        elif self._index < 0:
+            self._index = 0
+        return len(fresh)
 
     def clear_stream_cache(self) -> None:
         """Drop every prefetched stream URL."""
