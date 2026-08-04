@@ -26,7 +26,31 @@ const elements = {
     refresh: document.getElementById("refresh"),
     connection: document.getElementById("connection"),
     player: document.getElementById("player"),
+    tabDownloads: document.getElementById("tab-downloads"),
+    tabStreaming: document.getElementById("tab-streaming"),
+    viewDownloads: document.getElementById("view-downloads"),
+    viewStreaming: document.getElementById("view-streaming"),
+    streamTitle: document.getElementById("stream-title"),
+    streamUploader: document.getElementById("stream-uploader"),
+    streamTrack: document.getElementById("stream-track"),
+    streamFill: document.getElementById("stream-fill"),
+    streamTime: document.getElementById("stream-time"),
+    streamLevel: document.getElementById("stream-level"),
+    streamToggle: document.getElementById("stream-toggle"),
+    streamMessage: document.getElementById("stream-message"),
+    streamRefresh: document.getElementById("stream-refresh"),
+    queue: document.getElementById("queue"),
+    queueEmpty: document.getElementById("queue-empty"),
 };
+
+/** Which view is on screen: "downloads" or "streaming". */
+let view = "downloads";
+
+/** Signature of the queue as last rendered, so a poll does not rebuild it. */
+let lastQueue = "";
+
+/** Length of the track being played, needed to turn a tap into a position. */
+let streamDuration = 0;
 
 let pollTimer = null;
 let lastSignature = "";
@@ -53,7 +77,7 @@ function hideToken() {
     if (!window.location.search) {
         return;
     }
-    window.history.replaceState({}, "", window.location.pathname);
+    window.history.replaceState({}, "", window.location.pathname + window.location.hash);
 }
 
 /**
@@ -451,10 +475,209 @@ function syncPolling() {
         return;
     }
     if (pollTimer === null) {
-        pollTimer = window.setInterval(poll, POLL_INTERVAL);
+        pollTimer = window.setInterval(tick, POLL_INTERVAL);
+    }
+    tick();
+}
+
+/**
+ * One poll of whichever view is on screen.
+ *
+ * Only the visible one is asked: the other would cost the phone's battery and
+ * the PC's event loop for nothing.
+ *
+ * @returns {void}
+ */
+function tick() {
+    if (view === "streaming") {
+        pollStream();
+        return;
     }
     poll();
     loadDownloads();
+}
+
+// -------------------------------------------------------------- streaming
+/**
+ * Show one of the two views.
+ *
+ * @param {string} name "downloads" or "streaming".
+ * @returns {void}
+ */
+function showView(name) {
+    view = name;
+    // In the address, so a reload keeps the tab the user was on - and so the
+    // view can be opened directly from a bookmark.
+    if (window.location.hash !== "#" + name) {
+        window.history.replaceState({}, "", window.location.pathname + "#" + name);
+    }
+    const streaming = name === "streaming";
+    elements.viewDownloads.hidden = streaming;
+    elements.viewStreaming.hidden = !streaming;
+    elements.tabDownloads.classList.toggle("selected", !streaming);
+    elements.tabStreaming.classList.toggle("selected", streaming);
+    syncPolling();
+}
+
+/**
+ * Say something in the Streaming view.
+ *
+ * @param {string} text What to say; empty hides the line.
+ * @param {string} [kind] "good", "bad", or nothing.
+ * @returns {void}
+ */
+function sayStream(text, kind) {
+    elements.streamMessage.textContent = text;
+    elements.streamMessage.className = kind ? "message " + kind : "message";
+    elements.streamMessage.hidden = !text;
+}
+
+/**
+ * Send one Streaming command to the PC.
+ *
+ * @param {string} command The command name.
+ * @param {object} [extra] Additional fields, e.g. {index} or {seconds}.
+ * @returns {Promise<void>}
+ */
+async function stream(command, extra) {
+    try {
+        const answer = await api("/api/discover", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(Object.assign({command: command}, extra || {})),
+        });
+        if (answer.status === 403 && answer.body.error === "terms_required") {
+            sayStream("Accept the Streaming terms once on the PC, then try again.", "bad");
+            return;
+        }
+        if (!answer.body.ok) {
+            sayStream("The PC could not do that (" + (answer.body.error || answer.status) + ").", "bad");
+            return;
+        }
+        sayStream("");
+        if (answer.body.state) {
+            renderStream(answer.body.state);
+        }
+    } catch (error) {
+        setConnection(false);
+        sayStream("The PC cannot be reached.", "bad");
+    }
+}
+
+/**
+ * Build one row of the queue.
+ *
+ * @param {object} track One entry of the Streaming queue.
+ * @param {boolean} current Whether this is the track being played.
+ * @returns {HTMLLIElement} The row.
+ */
+function queueRow(track, current) {
+    const row = document.createElement("li");
+    row.className = current ? "queue-row current" : "queue-row";
+
+    const badge = document.createElement("span");
+    badge.className = "badge" + (current ? " ok" : "");
+    badge.textContent = current ? "▶" : String(track.index + 1);
+    row.appendChild(badge);
+
+    const body = document.createElement("div");
+    body.className = "body";
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = track.title;
+    body.appendChild(name);
+    const facts = [track.uploader, formatDuration(track.duration)].filter(
+        (fact) => fact && fact !== "-");
+    if (facts.length > 0) {
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = facts.join(" · ");
+        body.appendChild(meta);
+    }
+    body.addEventListener("click", () => stream("play", {index: track.index}));
+    row.appendChild(body);
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    actions.appendChild(button("▶", "Play", () => stream("play", {index: track.index})));
+    row.appendChild(actions);
+    return row;
+}
+
+/**
+ * Show one Streaming state.
+ *
+ * @param {object} state The answer of /api/discover.
+ * @returns {void}
+ */
+function renderStream(state) {
+    if (!state.available) {
+        elements.streamTitle.textContent = "Streaming is not available on the PC.";
+        return;
+    }
+    if (!state.terms_accepted) {
+        sayStream("Streaming needs its terms of use accepted once on the PC.", "bad");
+    }
+
+    const current = state.current;
+    elements.streamTitle.textContent = current ? current.title : "Nothing yet.";
+    elements.streamUploader.textContent = current ? (current.uploader || "") : "";
+    elements.streamToggle.textContent = state.playing ? "⏸" : "▶";
+
+    const duration = state.duration || (current ? current.duration : 0) || 0;
+    const position = state.position || 0;
+    const percent = duration > 0 ? Math.max(0, Math.min(100, (position / duration) * 100)) : 0;
+    elements.streamFill.style.width = percent + "%";
+    elements.streamTime.textContent = formatDuration(position) + " / " + formatDuration(duration);
+    streamDuration = duration;
+    elements.streamTrack.style.cursor = state.can_seek ? "pointer" : "default";
+    elements.streamLevel.style.width = Math.max(0, Math.min(100, (state.level || 0) * 100)) + "%";
+
+    const tracks = state.tracks || [];
+    const signature = JSON.stringify([tracks.map((t) => t.video_id), state.index]);
+    if (signature !== lastQueue) {
+        lastQueue = signature;
+        elements.queue.textContent = "";
+        tracks.forEach((track) => elements.queue.appendChild(
+            queueRow(track, track.index === state.index)));
+        elements.queueEmpty.hidden = tracks.length > 0;
+    }
+    elements.streamRefresh.textContent = state.busy ? "Searching..." : "Find similar";
+    elements.streamRefresh.disabled = Boolean(state.busy);
+}
+
+/**
+ * Ask the PC what Streaming is doing.
+ *
+ * @returns {Promise<void>}
+ */
+async function pollStream() {
+    try {
+        const answer = await api("/api/discover");
+        if (answer.status === 200) {
+            renderStream(answer.body);
+        }
+    } catch (error) {
+        setConnection(false);
+    }
+}
+
+/**
+ * Seek by tapping the progress bar.
+ *
+ * @param {MouseEvent} event The click on the bar.
+ * @returns {void}
+ */
+function seekFromClick(event) {
+    if (streamDuration <= 0) {
+        return;
+    }
+    const box = elements.streamTrack.getBoundingClientRect();
+    if (box.width <= 0) {
+        return;
+    }
+    const share = Math.max(0, Math.min(1, (event.clientX - box.left) / box.width));
+    stream("seek", {seconds: share * streamDuration});
 }
 
 // ---------------------------------------------------------------------- start
@@ -475,14 +698,34 @@ function acceptShare() {
 
 document.addEventListener("DOMContentLoaded", () => {
     const shared = acceptShare();
+    const wanted = window.location.hash === "#streaming" ? "streaming" : "downloads";
     hideToken();
     elements.form.addEventListener("submit", submit);
     elements.refresh.addEventListener("click", () => {
         lastSignature = "";
         loadDownloads();
     });
+
+    elements.tabDownloads.addEventListener("click", () => showView("downloads"));
+    elements.tabStreaming.addEventListener("click", () => showView("streaming"));
+    const transport = [
+        ["stream-previous", "previous"],
+        ["stream-next", "next"],
+        ["stream-like", "like"],
+        ["stream-dislike", "dislike"],
+        ["stream-download", "download"],
+    ];
+    transport.forEach(([id, command]) => {
+        document.getElementById(id).addEventListener("click", () => stream(command));
+    });
+    elements.streamToggle.addEventListener("click", () => stream("toggle"));
+    elements.streamRefresh.addEventListener("click", () => {
+        sayStream("Looking for similar songs...");
+        stream("refresh");
+    });
+    elements.streamTrack.addEventListener("click", seekFromClick);
     document.addEventListener("visibilitychange", syncPolling);
-    syncPolling();
+    showView(wanted);
     if (shared) {
         elements.form.requestSubmit();
     }

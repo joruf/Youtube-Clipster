@@ -87,6 +87,33 @@ _CHUNK = 64 * 1024
 LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")
 
 
+def _as_int(value: Any, fallback: int) -> int:
+    """Read an integer out of a JSON body without trusting it.
+
+    :param value: Whatever arrived.
+    :param fallback: Used when it is not a number.
+    :return: The integer.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _as_float(value: Any, fallback: float) -> float:
+    """Read a float out of a JSON body without trusting it.
+
+    :param value: Whatever arrived.
+    :param fallback: Used when it is not a number.
+    :return: The float.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return number if number == number else fallback          # reject NaN
+
+
 def valid_port(port: int) -> bool:
     """Return whether ``port`` can be bound at all.
 
@@ -452,6 +479,8 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
                 self._answer(*api.downloads())
             elif path == "/api/status":
                 self._answer(*api.status())
+            elif path == "/api/discover":
+                self._answer(*api.discover())
             elif path.startswith("/media/"):
                 self._serve_media(path[len("/media/"):])
             elif path in static:
@@ -468,12 +497,20 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
             if not self._authorised():
                 self._deny()
                 return
-            if urlparse(self.path).path != "/api/submit":
+            route = urlparse(self.path).path
+            if route not in ("/api/submit", "/api/discover"):
                 self._not_found()
                 return
             payload = self._read_json()
             if payload is None:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "expected a JSON object"})
+                return
+            if route == "/api/discover":
+                self._answer(*api.discover_command(
+                    str(payload.get("command") or ""),
+                    _as_int(payload.get("index"), -1),
+                    _as_float(payload.get("seconds"), 0.0),
+                ))
                 return
             self._answer(*api.submit(
                 str(payload.get("url") or ""),

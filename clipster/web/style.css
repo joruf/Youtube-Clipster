@@ -24,6 +24,15 @@
     box-sizing: border-box;
 }
 
+/*
+ * The browser's own "[hidden] { display: none }" loses against any author
+ * display rule - and "main" below sets display:flex, which kept a hidden view
+ * on screen. This has to win.
+ */
+[hidden] {
+    display: none !important;
+}
+
 body {
     margin: 0;
     padding: 0 0 max(env(safe-area-inset-bottom), 16px);
@@ -358,4 +367,83 @@ button {
     width: 100%;
     background: var(--panel);
     border-top: 1px solid var(--border);
+}
+
+/* ------------------------------------------------------------------ tabs */
+.tabs {
+    display: flex;
+    gap: 0;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.tab {
+    flex: 1;
+    padding: 13px 8px;
+    background: transparent;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    font-size: 0.92rem;
+    font-weight: 600;
+}
+
+.tab.selected {
+    color: var(--text);
+    border-bottom-color: var(--accent);
+}
+
+/* -------------------------------------------------------------- streaming */
+.stream-title {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+#stream-time {
+    display: flex;
+    justify-content: space-between;
+}
+
+.level {
+    height: 4px;
+    margin-top: 8px;
+    background: var(--elevated);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.level-fill {
+    height: 100%;
+    width: 0;
+    background: var(--success);
+    transition: width 120ms linear;
+}
+
+.transport {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 14px;
+}
+
+.transport .primary {
+    width: 52px;
+    height: 44px;
+    padding: 0;
+    font-size: 1.1rem;
+}
+
+.queue-row.current .name {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+#stream-track {
+    margin-top: 10px;
+    cursor: pointer;
 }

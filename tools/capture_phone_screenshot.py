@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 OUT_FILE = ROOT / "docs" / "images" / "phone.png"
+STREAM_FILE = ROOT / "docs" / "images" / "phone-streaming.png"
 
 #: Browsers that can take a screenshot from the command line.
 _BROWSERS = ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable")
@@ -94,6 +95,28 @@ class _FixtureApp:
         """Look one entry up by its id."""
         return next((e for e in self._entries if e.identifier() == identifier), None)
 
+    def discover_remote_state(self) -> Dict[str, Any]:
+        """Return a Streaming queue with something playing."""
+        titles = [("Fifth Artist - New Single", "Fifth Artist", 214),
+                  ("Sixth Artist - B Side", "Sixth Artist", 187),
+                  ("Seventh Artist - Live Take", "Seventh Artist", 305),
+                  ("Eighth Artist - Remix", "Eighth Artist", 268)]
+        return {
+            "available": True, "terms_accepted": True, "index": 0, "playing": True,
+            "position": 78.0, "duration": 214.0, "can_seek": True, "busy": False,
+            "extending": False, "mode": "related", "level": 0.55,
+            "current": {"video_id": "v0", "title": titles[0][0], "uploader": titles[0][1],
+                        "duration": titles[0][2], "url": "https://youtu.be/aaaaaaaaaaa"},
+            "tracks": [{"index": index, "video_id": "v{0}".format(index), "title": title,
+                        "uploader": uploader, "duration": duration, "seed_title": ""}
+                       for index, (title, uploader, duration) in enumerate(titles)],
+        }
+
+    def discover_remote_command(self, command: str, index: int = -1,
+                                seconds: float = 0.0) -> Dict[str, Any]:
+        """Answer a command without changing anything."""
+        return {"ok": True, "error": "", "state": self.discover_remote_state()}
+
     def remote_status(self) -> Dict[str, Any]:
         """Return one download in progress, so the bar is visible."""
         return {
@@ -126,19 +149,21 @@ def main() -> int:
         print("The server did not start.")
         return 1
 
-    address = "http://127.0.0.1:{0}/?token={1}".format(server.port, token)
+    base = "http://127.0.0.1:{0}/?token={1}".format(server.port, token)
     OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    print("capturing", address, flush=True)
+    shots = ((OUT_FILE, base), (STREAM_FILE, base + "#streaming"))
     try:
-        subprocess.run(
-            [browser, "--headless", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
-             "--force-device-scale-factor=2",
-             "--window-size={0},{1}".format(_WIDTH, _HEIGHT),
-             # Long enough for the page to fetch the list and the status once.
-             "--virtual-time-budget=4000",
-             "--screenshot={0}".format(OUT_FILE), address],
-            check=False, capture_output=True, timeout=120,
-        )
+        for target, address in shots:
+            print("capturing", address, flush=True)
+            subprocess.run(
+                [browser, "--headless", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
+                 "--force-device-scale-factor=2",
+                 "--window-size={0},{1}".format(_WIDTH, _HEIGHT),
+                 # Long enough for the page to fetch the list and the status once.
+                 "--virtual-time-budget=4000",
+                 "--screenshot={0}".format(target), address],
+                check=False, capture_output=True, timeout=120,
+            )
     except subprocess.TimeoutExpired:
         print("The browser did not finish in time.")
         return 1
@@ -146,10 +171,11 @@ def main() -> int:
         server.stop()
         shutil.rmtree(workspace, ignore_errors=True)
 
-    if not OUT_FILE.is_file():
-        print("No screenshot was written.")
-        return 1
-    print("wrote {0} ({1} bytes)".format(OUT_FILE, OUT_FILE.stat().st_size))
+    for target, _ in shots:
+        if not target.is_file():
+            print("No screenshot was written to {0}.".format(target))
+            return 1
+        print("wrote {0} ({1} bytes)".format(target, target.stat().st_size))
     return 0
 
 

@@ -31,6 +31,16 @@ from .logging_setup import get_logger
 
 log = get_logger(__name__)
 
+#: HTTP status for a refused Streaming command.
+_DISCOVER_STATUS = {
+    "unknown_command": 400,
+    # The terms question is a dialog on the PC, so this is not something the
+    # phone can resolve by retrying - it needs a person at the machine.
+    "terms_required": 403,
+    "unavailable": 503,
+    "closing": 503,
+}
+
 #: HTTP status for every submission outcome.  Anything not listed was accepted.
 _SUBMIT_STATUS = {
     SUBMIT_INVALID: 400,
@@ -121,6 +131,37 @@ class RemoteApi:
         """
         self._record_contact()
         return 200, self._app.remote_status()
+
+    def discover(self) -> Tuple[int, Dict[str, Any]]:
+        """Return the Streaming queue and what is playing.
+
+        :return: ``(200, state)``, or ``(503, ...)`` while the program shuts down.
+        """
+        self._record_contact()
+        try:
+            return 200, self._app.discover_remote_state()
+        except RuntimeError as exc:
+            log.debug("Streaming state refused: %s", exc)
+            return 503, {"available": False, "error": "closing"}
+
+    def discover_command(self, command: str, index: int = -1,
+                         seconds: float = 0.0) -> Tuple[int, Dict[str, Any]]:
+        """Run one Streaming command for the phone.
+
+        :param command: The command name.
+        :param index: Queue position, for ``play``.
+        :param seconds: Target position, for ``seek``.
+        :return: The HTTP status and the result including the new state.
+        """
+        self._record_contact()
+        try:
+            result = self._app.discover_remote_command(command, index, seconds)
+        except RuntimeError as exc:
+            log.debug("Streaming command refused: %s", exc)
+            return 503, {"ok": False, "error": "closing"}
+        if result.get("ok"):
+            return 200, result
+        return _DISCOVER_STATUS.get(str(result.get("error")), 400), result
 
     def media(self, entry_id: str) -> Optional[Path]:
         """Resolve a download id to the file on disk.

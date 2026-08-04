@@ -81,6 +81,15 @@ SUBMIT_CLOSING = "closing"
 #: The formats a submission may ask for.
 MEDIA_FORMATS = ("mp3", "mp4")
 
+#: Streaming commands a remote client may send.
+DISCOVER_COMMANDS = (
+    "refresh", "extend", "play", "toggle", "stop", "next", "previous",
+    "like", "dislike", "download", "seek",
+)
+
+#: Of those, the ones that reach YouTube and therefore need the Streaming terms.
+DISCOVER_TERMS_COMMANDS = ("refresh", "extend", "play", "toggle", "next", "previous", "download")
+
 
 @dataclass(frozen=True)
 class SubmitResult:
@@ -321,6 +330,141 @@ class ClipsterApp:
         self._remote.stop()
         self._remote = None
         log.info("The phone interface was stopped.")
+
+    # ------------------------------------------------------------------
+    # Streaming, operated from the phone
+    # ------------------------------------------------------------------
+    def discover_remote_state(self) -> Dict[str, Any]:
+        """Describe the Streaming page for a remote client.
+
+        Read on the GUI thread because it touches the page and the player, but
+        it changes nothing - the phone polls this while it is open.
+
+        :return: Queue, playback position and status, ready to serialise.
+        """
+        if not self.bridge.on_gui_thread():
+            return dict(self.bridge.call(self.discover_remote_state))
+        page = self.gui.view.discover if self.gui.view is not None else None
+        state: Dict[str, Any] = {
+            "available": page is not None,
+            "terms_accepted": streaming_terms_accepted(self.config),
+            "tracks": [],
+            "index": -1,
+            "playing": False,
+            "position": 0.0,
+            "duration": 0.0,
+            "can_seek": False,
+            "busy": self._discover_busy,
+            "extending": self._discover_extending,
+            "mode": self.config.discover_mode,
+            "level": 0.0,
+        }
+        if page is None:
+            return state
+
+        # Mind the shapes: tracks / index / playing / current are properties,
+        # position / duration / can_seek / energy_level are methods.
+        player = page.player
+        state["tracks"] = [
+            {
+                "index": index,
+                "video_id": track.video_id,
+                "title": track.title,
+                "uploader": track.uploader,
+                "duration": track.duration,
+                "seed_title": track.seed_title,
+            }
+            for index, track in enumerate(player.tracks)
+        ]
+        state["index"] = player.index
+        state["playing"] = player.playing
+        try:
+            state["position"] = float(player.position())
+            state["duration"] = float(player.duration())
+            state["can_seek"] = bool(player.can_seek())
+            state["level"] = float(player.energy_level())
+        except Exception:  # pragma: no cover - a player without a live process
+            log.debug("The player state could not be read", exc_info=True)
+        current = player.current
+        if current is not None:
+            state["current"] = {
+                "video_id": current.video_id,
+                "title": current.title,
+                "uploader": current.uploader,
+                "duration": current.duration,
+                "url": current.url,
+            }
+        return state
+
+    def discover_remote_command(self, command: str, index: int = -1,
+                               seconds: float = 0.0) -> Dict[str, Any]:
+        """Run one Streaming command asked for by a remote client.
+
+        Marshals itself onto the GUI thread like :meth:`submit_remote`.
+
+        The Streaming terms are only *checked*, never asked for: the question is
+        a modal dialog on the PC, so asking would block the phone's request until
+        somebody walks over - and terms are not something to accept by remote
+        control anyway.
+
+        :param command: One of the commands in :data:`DISCOVER_COMMANDS`.
+        :param index: Queue position, for ``play``.
+        :param seconds: Target position, for ``seek``.
+        :return: ``{"ok": bool, "error": str, "state": {...}}``.
+        :raises RuntimeError: When the GUI bridge is no longer running.
+        """
+        if not self.bridge.on_gui_thread():
+            return dict(self.bridge.call(self.discover_remote_command, command, index, seconds))
+        if command not in DISCOVER_COMMANDS:
+            return {"ok": False, "error": "unknown_command", "state": self.discover_remote_state()}
+        page = self.gui.view.discover if self.gui.view is not None else None
+        if page is None:
+            return {"ok": False, "error": "unavailable", "state": self.discover_remote_state()}
+        if command in DISCOVER_TERMS_COMMANDS and not streaming_terms_accepted(self.config):
+            return {"ok": False, "error": "terms_required", "state": self.discover_remote_state()}
+
+        log.info("Streaming command from a remote client: %s", command)
+        try:
+            self._run_discover_command(page, command, index, seconds)
+        except Exception as exc:  # pragma: no cover - a page error must not kill the request
+            log.exception("Streaming command %s failed", command)
+            return {"ok": False, "error": str(exc), "state": self.discover_remote_state()}
+        return {"ok": True, "error": "", "state": self.discover_remote_state()}
+
+    def _run_discover_command(self, page: Any, command: str, index: int, seconds: float) -> None:
+        """Carry out one Streaming command on the page.
+
+        :param page: The Streaming page.
+        :param command: The validated command name.
+        :param index: Queue position, for ``play``.
+        :param seconds: Target position, for ``seek``.
+        :return: None
+        """
+        if command == "refresh":
+            self._discover_refresh(require_terms=False)
+        elif command == "extend":
+            page.maybe_extend(reason="remote")
+        elif command == "play":
+            if 0 <= index < len(page.player.tracks):
+                page.play_at(index)
+            else:
+                page.toggle_play()
+        elif command == "toggle":
+            page.toggle_play()
+        elif command == "stop":
+            page.stop_playback()
+        elif command == "next":
+            page.play_next()
+        elif command == "previous":
+            page.play_previous()
+        elif command == "like":
+            page.like_current()
+        elif command == "dislike":
+            page.dislike_current()
+        elif command == "download":
+            page.download_current()
+        elif command == "seek":
+            page.player.seek(max(0.0, float(seconds)))
 
     def remote_state(self) -> Dict[str, Any]:
         """Describe the phone interface for the Phone page.

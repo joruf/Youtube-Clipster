@@ -112,6 +112,13 @@ gives the phone a handle that survives a restart without adding a field to `hist
 `tools/phone_link.py`, so the program and the QR code can never disagree. See
 [README - Your phone](../README.md#your-phone-android-and-iphone).
 
+Streaming is operated remotely through `discover_remote_state` / `discover_remote_command`, which marshal
+onto the Tk thread and drive the existing `DiscoverPage` - the PC keeps playing, the phone only steers.
+The Streaming terms are *checked*, never asked for: the question is a modal dialog on the PC, so asking
+would block the phone's request until somebody walks over. Mind the player's mixed API: `tracks`, `index`,
+`playing` and `current` are properties, `position()`, `duration()`, `can_seek()` and `energy_level()` are
+methods.
+
 Content types come from the fixed `webserver.CONTENT_TYPES` table, never from
 `mimetypes.guess_type`: that builds its table lazily and is not thread safe, and a browser fetching
 page, style, script and icon at once puts four server threads into it simultaneously - which can abort

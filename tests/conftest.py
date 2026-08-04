@@ -11,6 +11,7 @@ Two rules hold for the whole suite:
 
 from __future__ import annotations
 
+import gc
 import os
 import sys
 from pathlib import Path
@@ -63,6 +64,22 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
             item.add_marker(skip_gui)
         if "network" in item.keywords and not run_network:
             item.add_marker(skip_network)
+
+
+@pytest.fixture(autouse=True)
+def collect_tk_garbage(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Finalise leftover Tk objects on the main thread after a GUI test.
+
+    The suite builds and destroys many Tk roots, which the running program never
+    does.  Widgets and variables left behind are freed whenever the garbage
+    collector next runs - and when that happens on one of the web server's
+    threads, ``Variable.__del__`` calls into Tk from the wrong thread and CPython
+    aborts the whole process.  Collecting here keeps those finalisers on the main
+    thread, where Tk is still valid.
+    """
+    yield
+    if "gui" in request.keywords:
+        gc.collect()
 
 
 @pytest.fixture(autouse=True)

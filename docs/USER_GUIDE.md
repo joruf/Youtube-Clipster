@@ -54,6 +54,12 @@ you can see it working; it also shows the firewall command if one is needed.
 
 ![The Phone page](images/phone-page.png)
 
+The phone has two tabs: **Downloads** for links and the download list, and **Streaming** as a remote
+control for the Streaming page - queue, transport, likes and *Find similar*. The sound stays on the PC;
+the phone steers. Streaming needs its terms accepted once on the PC before the phone may use it.
+
+![Streaming from the phone](images/phone-streaming.png)
+
 Without a window there is `python3 run.py --phone-setup`, which walks through the same steps in the
 terminal. The full walkthrough, including the Android share sheet and the iPhone shortcut, is in
 [README - Your phone](../README.md#your-phone-android-and-iphone).

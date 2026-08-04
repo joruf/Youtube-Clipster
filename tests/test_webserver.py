@@ -32,6 +32,8 @@ class FakeApp:
         self.result: Any = None
         self.raise_on_submit = False
         self.delete_result = True
+        self.commands: List[Tuple[str, int, float]] = []
+        self.terms_missing = False
         self.history = self  # the API reaches the history through the app
 
     # -- history -------------------------------------------------------
@@ -54,6 +56,25 @@ class FakeApp:
 
     def remote_status(self) -> Dict[str, Any]:
         return {"active": [{"url": "u", "percent": 42.0}], "queued": 1, "parallel": 1}
+
+    # -- streaming -----------------------------------------------------
+    def discover_remote_state(self) -> Dict[str, Any]:
+        return {"available": True, "terms_accepted": True, "tracks": [
+            {"index": 0, "video_id": "v1", "title": "Song One", "uploader": "Artist",
+             "duration": 214, "seed_title": ""}],
+            "index": 0, "playing": True, "position": 12.0, "duration": 214.0,
+            "can_seek": True, "busy": False, "extending": False, "mode": "related", "level": 0.4}
+
+    def discover_remote_command(self, command: str, index: int = -1,
+                                seconds: float = 0.0) -> Dict[str, Any]:
+        if self.raise_on_submit:
+            raise RuntimeError("GUI bridge is not running")
+        self.commands.append((command, index, seconds))
+        if command == "nope":
+            return {"ok": False, "error": "unknown_command", "state": {}}
+        if command == "refresh" and self.terms_missing:
+            return {"ok": False, "error": "terms_required", "state": {}}
+        return {"ok": True, "error": "", "state": self.discover_remote_state()}
 
 
 @pytest.fixture()
@@ -816,3 +837,113 @@ def test_a_token_with_special_characters_still_authenticates(web_dir: Path) -> N
         assert status == 200
     finally:
         server.stop()
+
+
+# ----------------------------------------------------------------------
+# Streaming over HTTP
+# ----------------------------------------------------------------------
+def test_the_streaming_state_is_served(served) -> None:
+    _, base, _ = served
+    status, headers, raw = _request(base + "/api/discover")
+    assert status == 200
+    payload = json.loads(raw)
+    assert payload["tracks"][0]["title"] == "Song One"
+    assert payload["playing"] is True
+    assert payload["can_seek"] is True
+
+
+def test_the_streaming_state_needs_the_token(served) -> None:
+    _, base, _ = served
+    assert _request(base + "/api/discover", token=None)[0] == 401
+
+
+@pytest.mark.parametrize("command", ["toggle", "next", "previous", "like", "dislike",
+                                     "download", "stop", "refresh", "extend"])
+def test_a_command_is_passed_on(served, command: str) -> None:
+    app, base, _ = served
+    status, _, raw = _request(base + "/api/discover", method="POST",
+                              body={"command": command})
+    assert status == 200
+    assert app.commands[-1][0] == command
+    assert json.loads(raw)["ok"] is True
+
+
+def test_a_queue_position_and_a_seek_are_passed_on(served) -> None:
+    app, base, _ = served
+    _request(base + "/api/discover", method="POST", body={"command": "play", "index": 2})
+    assert app.commands[-1] == ("play", 2, 0.0)
+    _request(base + "/api/discover", method="POST", body={"command": "seek", "seconds": 30.5})
+    assert app.commands[-1] == ("seek", -1, 30.5)
+
+
+@pytest.mark.parametrize("index,seconds", [("abc", "x"), (None, None), ([], {}), ("NaN", "NaN")])
+def test_unusable_numbers_fall_back_instead_of_crashing(served, index, seconds) -> None:
+    app, base, _ = served
+    status, _, _ = _request(base + "/api/discover", method="POST",
+                            body={"command": "play", "index": index, "seconds": seconds})
+    assert status == 200
+    assert app.commands[-1] == ("play", -1, 0.0)
+
+
+def test_an_unknown_command_is_a_400(served) -> None:
+    _, base, _ = served
+    status, _, raw = _request(base + "/api/discover", method="POST", body={"command": "nope"})
+    assert status == 400
+    assert json.loads(raw)["ok"] is False
+
+
+def test_missing_streaming_terms_answer_403(served) -> None:
+    """403, not 400: the phone cannot fix this by retrying - a person has to."""
+    app, base, _ = served
+    app.terms_missing = True
+    status, _, raw = _request(base + "/api/discover", method="POST", body={"command": "refresh"})
+    assert status == 403
+    assert json.loads(raw)["error"] == "terms_required"
+
+
+def test_a_shutting_down_program_answers_503_for_streaming(served) -> None:
+    app, base, _ = served
+    app.raise_on_submit = True
+    status, _, _ = _request(base + "/api/discover", method="POST", body={"command": "toggle"})
+    assert status == 503
+
+
+def test_the_interface_offers_both_views(real_web) -> None:
+    _, base = real_web
+    page = _request(base + "/")[2].decode("utf-8")
+    assert 'id="tab-downloads"' in page
+    assert 'id="tab-streaming"' in page
+    assert 'id="view-streaming"' in page
+
+
+def test_the_streaming_view_has_transport_controls(real_web) -> None:
+    _, base = real_web
+    page = _request(base + "/")[2].decode("utf-8")
+    for control in ("stream-toggle", "stream-next", "stream-previous", "stream-like",
+                    "stream-dislike", "stream-download", "stream-refresh", "queue"):
+        assert 'id="{0}"'.format(control) in page, control
+
+
+def test_the_script_talks_to_the_streaming_endpoint(real_web) -> None:
+    _, base = real_web
+    script = _request(base + "/app.js")[2].decode("utf-8")
+    assert "/api/discover" in script
+    assert "terms_required" in script, "the terms refusal has to be explained to the user"
+
+
+def test_hiding_a_view_really_hides_it(real_web) -> None:
+    """The browser's own [hidden] rule loses against any author display rule.
+
+    "main { display: flex }" kept the hidden view on screen, so both views were
+    stacked on top of each other - visible only in a screenshot.
+    """
+    import re
+
+    _, base = real_web
+    css = _request(base + "/style.css")[2].decode("utf-8")
+    # Comments first: the one explaining this rule mentions "[hidden]" too.
+    without_comments = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    match = re.search(r"\[hidden\]\s*\{([^}]*)\}", without_comments)
+    assert match is not None, "no [hidden] rule at all"
+    assert "display: none" in match.group(1)
+    assert "!important" in match.group(1), "an author display rule would win otherwise"

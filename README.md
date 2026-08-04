@@ -26,8 +26,8 @@ edition (`windows/*.bat`) have been replaced by the `clipster/` package.
 - **Declared dependencies** – everything the program needs is data in `clipster/dependencies.py`;
   the installer reads that table, works out what is missing, installs it and starts the program
 - **Self-updating** – `yt-dlp` is kept up to date automatically
-- **Phone interface** – send links from your Android phone or iPhone, the PC downloads them;
-  no app to install, see [Your phone](#your-phone-android-and-iphone)
+- **Phone interface** – send links from your Android phone or iPhone, the PC downloads them, and
+  **operate Streaming** from the phone; no app to install, see [Your phone](#your-phone-android-and-iphone)
 - **Multi-language** – English and German (`clipster/locales/*.json`)
 - **Single instance** – a second start is refused with a clear message
 - **Desktop integration** – optional desktop shortcut and login autostart
@@ -48,9 +48,12 @@ Anonymized captures of the real Tk UI (fixture data only):
 
 ![Phone — the whole setup on one page](docs/images/phone-page.png)
 
-The phone interface itself, served by the running program to your Android phone or iPhone:
+The phone interface itself, served by the running program to your Android phone or iPhone —
+downloads and Streaming:
 
 ![Phone interface](docs/images/phone.png)
+
+![Streaming from the phone](docs/images/phone-streaming.png)
 
 More detail: [User guide](docs/USER_GUIDE.md) · [Technical documentation](docs/TECHNICAL.md)
 
@@ -550,9 +553,30 @@ prints the address.
 Use Chrome on Android and Safari on the iPhone. The address has to be opened only once: afterwards the
 phone keeps the token in a cookie and the address bar shows just `http://192.168.1.42:8733/`.
 
-You can now paste a link, choose MP3 or MP4 and tap **Download**. The list below shows every
+The phone has the same two jobs the PC has, on two tabs:
+
+**Downloads** — paste a link, choose MP3 or MP4 and tap **Download**. The list below shows every
 download with its length, size, date and status; ▶ plays it, ⤓ saves it to the phone, ✕ deletes the
 file on the PC.
+
+**Streaming** — the phone becomes the remote control for the Streaming page on the PC:
+
+![Streaming from the phone](docs/images/phone-streaming.png)
+
+- the track playing right now, with position, length and a live level meter
+- previous / play-pause / next, plus 👍 👎 and ⤓ for the current track
+- the whole queue — tap any song to play it
+- *Find similar* starts the same search as the button on the PC
+
+**The PC plays the sound**, not the phone: this is a remote control for the stereo, not a second
+player. What you hear comes out of the PC's speakers, exactly as if you had clicked there.
+
+Streaming needs its terms of use accepted **once on the PC**. Until then the phone answers "Accept the
+Streaming terms once on the PC" and does nothing — a legal confirmation is not something to click by
+remote control, and the question is a dialog on the PC that nobody would be there to answer.
+
+Each tab keeps its place in the address (`#downloads`, `#streaming`), so a reload — or a bookmark —
+comes back to the tab you were on.
 
 ### 4. Put it on the home screen
 

@@ -832,3 +832,149 @@ def test_a_local_only_interface_does_not_advertise_a_network_address(app) -> Non
         assert app.remote_url().startswith("http://127.0.0.1:")
     finally:
         app.stop_remote()
+
+
+# ----------------------------------------------------------------------
+# Streaming, operated from the phone
+# ----------------------------------------------------------------------
+@pytest.fixture()
+def streaming(app):
+    """Return the Streaming page with its playback calls recorded."""
+    page = app.gui.view.discover
+    assert page is not None
+    calls: list = []
+    for name in ("play_at", "toggle_play", "stop_playback", "play_next", "play_previous",
+                 "like_current", "dislike_current", "download_current", "maybe_extend"):
+        setattr(page, name, (lambda n: (lambda *a, **k: calls.append(n)))(name))
+    seeks: list = []
+    page.player.seek = lambda seconds: seeks.append(seconds) or True
+    return page, calls, seeks
+
+
+def _tracks(count: int = 3):
+    """Return believable Streaming results."""
+    from clipster.discover import DiscoverTrack
+
+    return [DiscoverTrack(url="https://youtu.be/a{0:010d}".format(index),
+                          video_id="vid{0}".format(index), title="Song {0}".format(index),
+                          uploader="Artist {0}".format(index), duration=180 + index)
+            for index in range(count)]
+
+
+def test_the_streaming_state_is_readable(app, streaming) -> None:
+    state = app.discover_remote_state()
+    assert state["available"] is True
+    assert state["tracks"] == []
+    assert state["index"] == -1
+
+
+def test_the_queue_reaches_the_phone(app, streaming) -> None:
+    page, _, _ = streaming
+    page.player.set_playlist(_tracks(3))
+    state = app.discover_remote_state()
+    assert [item["title"] for item in state["tracks"]] == ["Song 0", "Song 1", "Song 2"]
+    assert state["tracks"][0]["uploader"] == "Artist 0"
+    assert state["tracks"][0]["duration"] == 180
+
+
+def test_the_player_shape_is_read_correctly(app, streaming) -> None:
+    """tracks/index/playing are properties, position/duration are methods.
+
+    Calling a property (or reading a method) silently produced a broken state
+    until an integration test hit it.
+    """
+    page, _, _ = streaming
+    page.player.set_playlist(_tracks(2))
+    state = app.discover_remote_state()
+    assert isinstance(state["tracks"], list)
+    assert isinstance(state["index"], int)
+    assert isinstance(state["playing"], bool)
+    assert isinstance(state["position"], float)
+    assert isinstance(state["duration"], float)
+    assert isinstance(state["can_seek"], bool)
+
+
+@pytest.mark.parametrize("command,method", [
+    ("toggle", "toggle_play"),
+    ("stop", "stop_playback"),
+    ("next", "play_next"),
+    ("previous", "play_previous"),
+    ("like", "like_current"),
+    ("dislike", "dislike_current"),
+    ("download", "download_current"),
+    ("extend", "maybe_extend"),
+])
+def test_every_command_reaches_the_page(app, streaming, command: str, method: str) -> None:
+    from clipster.terms import accept_streaming_terms
+
+    page, calls, _ = streaming
+    accept_streaming_terms(app.config)
+    result = app.discover_remote_command(command)
+    assert result["ok"] is True, result
+    assert calls == [method], calls
+
+
+def test_playing_a_queue_position(app, streaming) -> None:
+    from clipster.terms import accept_streaming_terms
+
+    page, calls, _ = streaming
+    accept_streaming_terms(app.config)
+    page.player.set_playlist(_tracks(3))
+    assert app.discover_remote_command("play", index=1)["ok"] is True
+    assert calls == ["play_at"]
+
+
+def test_an_impossible_position_toggles_instead(app, streaming) -> None:
+    """Better than an error: the phone's queue may be one poll out of date."""
+    from clipster.terms import accept_streaming_terms
+
+    page, calls, _ = streaming
+    accept_streaming_terms(app.config)
+    page.player.set_playlist(_tracks(2))
+    app.discover_remote_command("play", index=99)
+    assert calls == ["toggle_play"]
+
+
+def test_seeking_reaches_the_player(app, streaming) -> None:
+    from clipster.terms import accept_streaming_terms
+
+    _, _, seeks = streaming
+    accept_streaming_terms(app.config)
+    assert app.discover_remote_command("seek", seconds=42.5)["ok"] is True
+    assert seeks == [42.5]
+
+
+def test_an_unknown_command_is_refused(app, streaming) -> None:
+    _, calls, _ = streaming
+    result = app.discover_remote_command("rm -rf /")
+    assert result["ok"] is False
+    assert result["error"] == "unknown_command"
+    assert calls == []
+
+
+def test_streaming_needs_its_terms_and_never_asks_by_remote(app, streaming, monkeypatch) -> None:
+    """The question is a modal on the PC: asking would hang the phone's request."""
+    _, calls, _ = streaming
+    monkeypatch.setattr(app.gui, "ask_terms_acceptance",
+                        lambda **kwargs: pytest.fail("a dialog was opened for a remote request"))
+    for command in ("refresh", "play", "toggle", "next", "download", "extend"):
+        result = app.discover_remote_command(command)
+        assert result["ok"] is False, command
+        assert result["error"] == "terms_required", (command, result)
+    assert calls == [], calls
+
+
+def test_stopping_works_without_the_terms(app, streaming) -> None:
+    """Stopping something already playing takes nothing new from YouTube."""
+    _, calls, _ = streaming
+    assert app.discover_remote_command("stop")["ok"] is True
+    assert calls == ["stop_playback"]
+
+
+def test_the_answer_carries_the_new_state(app, streaming) -> None:
+    from clipster.terms import accept_streaming_terms
+
+    accept_streaming_terms(app.config)
+    result = app.discover_remote_command("stop")
+    assert isinstance(result["state"], dict)
+    assert "tracks" in result["state"]

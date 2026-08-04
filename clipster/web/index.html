@@ -25,7 +25,12 @@
     <span id="connection" class="dot" title="Connection"></span>
 </header>
 
-<main>
+<nav class="tabs" role="tablist">
+    <button id="tab-downloads" class="tab selected" type="button" role="tab">Downloads</button>
+    <button id="tab-streaming" class="tab" type="button" role="tab">Streaming</button>
+</nav>
+
+<main id="view-downloads">
     <form id="submit-form" class="card">
         <label class="label" for="url">YouTube link</label>
         <input id="url" name="url" type="url" inputmode="url" autocomplete="off"
@@ -58,6 +63,37 @@
         </div>
         <ul id="downloads" class="downloads"></ul>
         <p id="empty" class="message" hidden>Nothing here yet.</p>
+    </section>
+</main>
+
+<main id="view-streaming" hidden>
+    <section class="card" id="now-playing">
+        <h2>Now playing</h2>
+        <p id="stream-title" class="stream-title">Nothing yet.</p>
+        <p id="stream-uploader" class="meta"></p>
+        <div class="track" id="stream-track">
+            <div class="fill" id="stream-fill"></div>
+        </div>
+        <p class="meta" id="stream-time">–:– / –:–</p>
+        <div class="level" aria-hidden="true"><div class="level-fill" id="stream-level"></div></div>
+        <div class="transport">
+            <button id="stream-previous" class="icon" type="button" aria-label="Previous">⏮</button>
+            <button id="stream-toggle" class="primary" type="button" aria-label="Play or pause">▶</button>
+            <button id="stream-next" class="icon" type="button" aria-label="Next">⏭</button>
+            <button id="stream-like" class="icon" type="button" aria-label="Like">👍</button>
+            <button id="stream-dislike" class="icon" type="button" aria-label="Dislike">👎</button>
+            <button id="stream-download" class="icon" type="button" aria-label="Download">⤓</button>
+        </div>
+        <p id="stream-message" class="message" hidden></p>
+    </section>
+
+    <section class="card">
+        <div class="row between">
+            <h2>Queue</h2>
+            <button id="stream-refresh" type="button" class="quiet">Find similar</button>
+        </div>
+        <ul id="queue" class="downloads"></ul>
+        <p id="queue-empty" class="message" hidden>No songs yet — tap Find similar.</p>
     </section>
 </main>
 
