@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import hmac
 import json
-import mimetypes
 import secrets
 import socket
 import threading
@@ -43,6 +42,42 @@ TOKEN_HEADER = "X-Clipster-Token"
 #: Query parameter used by the first request, which comes from a QR code.
 TOKEN_QUERY = "token"
 
+#: Content type per file extension, for everything this program serves.
+#:
+#: Deliberately not ``mimetypes.guess_type``: that builds its table lazily on the
+#: first call and is not thread safe.  A browser fetches the page, the style, the
+#: script and the icon at once, each on its own server thread, and racing inside
+#: ``mimetypes.init()`` can abort the whole process - taking the downloader with
+#: it.  The set of types here is closed: these are the files this program ships
+#: and the formats it produces.
+CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".webmanifest": "application/manifest+json; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".ico": "image/vnd.microsoft.icon",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".opus": "audio/opus",
+    ".ogg": "audio/ogg",
+    ".wav": "audio/wav",
+    ".flac": "audio/flac",
+    ".aac": "audio/aac",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime",
+}
+
+#: Sent for anything not in :data:`CONTENT_TYPES`; a browser then offers to save.
+DEFAULT_CONTENT_TYPE = "application/octet-stream"
+
 #: Largest request body accepted; a submission carries a URL, nothing more.
 MAX_BODY = 8 * 1024
 #: Chunk size while streaming a file to the phone.
@@ -50,6 +85,34 @@ _CHUNK = 64 * 1024
 
 #: Bind addresses that keep the phone interface on this machine.
 LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")
+
+
+def valid_port(port: int) -> bool:
+    """Return whether ``port`` can be bound at all.
+
+    ``socket.bind`` raises :class:`OverflowError` outside this range - which is
+    *not* an ``OSError`` - so an out-of-range value from a hand-edited
+    configuration would escape the usual error handling and take the whole
+    program down on startup.
+
+    :param port: The port from the configuration.
+    :return: ``True`` for 0 (pick a free one) and for every real port.
+    """
+    try:
+        number = int(port)
+    except (TypeError, ValueError):
+        return False
+    return 0 <= number <= 65535
+
+
+def content_type(name: str) -> str:
+    """Return the content type for a file name.
+
+    :param name: The file name, with or without a path.
+    :return: The type from :data:`CONTENT_TYPES`, or the default.
+    """
+    suffix = Path(name).suffix.lower()
+    return CONTENT_TYPES.get(suffix, DEFAULT_CONTENT_TYPE)
 
 
 def new_token() -> str:
@@ -136,7 +199,10 @@ def phone_url(bind: str, port: int, token: str) -> str:
         base = local_address(port)
     if not base or not token:
         return ""
-    return "{0}?token={1}".format(base, token)
+    # Encoded, not interpolated: a hand-edited token containing "&" or "#" would
+    # otherwise cut the address short, and the phone would be refused with no
+    # visible reason.
+    return "{0}?token={1}".format(base, quote(str(token), safe=""))
 
 
 def local_host() -> str:
@@ -211,10 +277,16 @@ class RemoteServer:
         if not self._token:
             log.error("The phone interface needs a token and was not started.")
             return False
+        if not valid_port(self._port):
+            log.error("The phone interface port %r is not between 0 and 65535 - "
+                      "check \"remote_port\" in the configuration.", self._port)
+            return False
         handler = _make_handler(self._api, self._token, self._static)
         try:
             self._server = ThreadingHTTPServer((self._bind, self._port), handler)
-        except OSError as exc:
+        except (OSError, OverflowError, ValueError) as exc:
+            # OverflowError and ValueError are not OSError, and an uncaught one
+            # here would end the program instead of only the phone interface.
             log.error("The phone interface cannot listen on %s:%s (%s).", self._bind, self._port, exc)
             self._server = None
             return False
@@ -436,15 +508,10 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
                 log.error("Could not read %s: %s", target, exc)
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "unreadable"})
                 return
-            guessed = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-            if guessed.startswith("text/") or guessed in ("application/javascript",
-                                                          "application/json",
-                                                          "application/manifest+json"):
-                guessed = "{0}; charset=utf-8".format(guessed)
             extra = self._cookie_header()
             if key == "/index.html":
                 extra["Cache-Control"] = "no-store"
-            self._send(HTTPStatus.OK, body, guessed, extra)
+            self._send(HTTPStatus.OK, body, content_type(target.name), extra)
 
         def _serve_media(self, entry_id: str) -> None:
             """Stream a downloaded file, honouring a ``Range`` request."""
@@ -464,8 +531,7 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
             length = (end - start + 1) if size else 0
 
             self.send_response(HTTPStatus.PARTIAL_CONTENT if window else HTTPStatus.OK)
-            self.send_header("Content-Type", mimetypes.guess_type(target.name)[0]
-                             or "application/octet-stream")
+            self.send_header("Content-Type", content_type(target.name))
             self.send_header("Content-Length", str(length))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("X-Content-Type-Options", "nosniff")

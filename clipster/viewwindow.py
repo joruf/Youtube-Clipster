@@ -21,6 +21,8 @@ from . import APP_AUTHOR, APP_SHORT_NAME, APP_URL, APP_VERSION, APP_WEBSITE, dep
 from .config import Config
 from .discover import DiscoverTrack
 from .discover_page import DiscoverPage
+from .phone_page import PhonePage
+from .scroller import Scroller as _Scroller
 from .history import (
     STATUS_CANCELED,
     STATUS_FAILED,
@@ -63,78 +65,6 @@ def _shorten(text: str, limit: int = 120) -> str:
     return clean if len(clean) <= limit else clean[: limit - 1] + "…"
 
 
-class _Scroller(ttk.Frame):
-    """A vertically scrollable container for the table rows."""
-
-    def __init__(self, master: tk.Misc, palette: theme.Palette) -> None:
-        """
-        :param master: The parent widget.
-        :param palette: The colour scheme.
-        """
-        super().__init__(master, style="Panel.TFrame")
-        # The scrollbar sits beside the whole column, so anything packed into
-        # `stack` - the heading strip included - is exactly as wide as the rows.
-        self._scrollbar = ttk.Scrollbar(self, orient="vertical")
-        self._scrollbar.pack(side="right", fill="y")
-        #: Pack the heading strip in here; the canvas fills what is left.
-        self.stack = ttk.Frame(self, style="Panel.TFrame")
-        self.stack.pack(side="left", fill="both", expand=True)
-        # A real child of `stack`, not merely packed into it: with `in_` the
-        # canvas stays a child of the scroller and `stack` covers it.
-        self._canvas = tk.Canvas(
-            self.stack, background=palette.panel, highlightthickness=0, borderwidth=0, takefocus=0
-        )
-        self._canvas.pack(side="bottom", fill="both", expand=True)
-        self._scrollbar.configure(command=self._canvas.yview)
-        self._canvas.configure(yscrollcommand=self._scrollbar.set)
-
-        #: Rows are added to this frame.
-        self.body = ttk.Frame(self._canvas, style="Panel.TFrame")
-        self._window = self._canvas.create_window((0, 0), window=self.body, anchor="nw")
-        self.body.bind("<Configure>", lambda _e: self._canvas.configure(scrollregion=self._canvas.bbox("all")))
-        self._canvas.bind("<Configure>", lambda e: self._canvas.itemconfigure(self._window, width=e.width))
-        self.bind_wheel(self)
-        self.bind_wheel(self.body)
-        self.bind_wheel(self._canvas)
-
-    def bind_wheel(self, widget: tk.Misc) -> None:
-        """Attach mouse wheel scrolling for every platform.
-
-        :param widget: The widget to bind.
-        :return: None
-        """
-        widget.bind("<MouseWheel>", lambda e: self._scroll(-1 if getattr(e, "delta", 0) > 0 else 1), add="+")
-        widget.bind("<Button-4>", lambda _e: self._scroll(-1), add="+")
-        widget.bind("<Button-5>", lambda _e: self._scroll(1), add="+")
-
-    def bind_wheel_tree(self, widget: tk.Misc) -> None:
-        """Bind the wheel on a widget and every descendant.
-
-        :param widget: The root of the subtree.
-        :return: None
-        """
-        self.bind_wheel(widget)
-        for child in widget.winfo_children():
-            self.bind_wheel_tree(child)
-
-    def _scroll(self, direction: int) -> None:
-        """Scroll by three rows.
-
-        :param direction: ``-1`` up, ``1`` down.
-        :return: None
-        """
-        self._canvas.yview_scroll(direction * 3, "units")
-
-    def clear(self) -> None:
-        """Remove every row."""
-        for child in self.body.winfo_children():
-            child.destroy()
-
-    def to_top(self) -> None:
-        """Scroll back to the first row."""
-        self._canvas.yview_moveto(0.0)
-
-
 class ViewWindow:
     """The download list, the settings editor and the about page."""
 
@@ -163,6 +93,9 @@ class ViewWindow:
         on_discover_like: Callable[[DiscoverTrack], None],
         on_discover_dislike: Callable[[DiscoverTrack], None],
         on_show_terms: Callable[[], None],
+        on_phone_apply: Callable[[bool, str, int], dict],
+        on_phone_new_token: Callable[[], dict],
+        on_phone_state: Callable[[], dict],
     ) -> None:
         """
         :param master: The hidden Tk root.
@@ -187,6 +120,9 @@ class ViewWindow:
         :param on_discover_extend: Top up the Discover list from the current track.
         :param on_discover_like: Thumbs-up a Streaming track.
         :param on_discover_dislike: Thumbs-down a Streaming track.
+        :param on_phone_apply: Save the phone interface settings and restart it.
+        :param on_phone_new_token: Replace the phone interface token.
+        :param on_phone_state: Read the state of the phone interface.
         :param on_show_terms: Open the terms-of-use documents from About.
         """
         self.messages = messages
@@ -212,6 +148,9 @@ class ViewWindow:
         self._on_discover_like = on_discover_like
         self._on_discover_dislike = on_discover_dislike
         self._on_show_terms = on_show_terms
+        self._on_phone_apply = on_phone_apply
+        self._on_phone_new_token = on_phone_new_token
+        self._on_phone_state = on_phone_state
         #: Width the row action buttons need; measured, because labels differ
         #: by language and a fixed number would clip or waste space.
         self._actions_width = 0
@@ -226,6 +165,7 @@ class ViewWindow:
         #: Visible table rows as ``(leading separator or None, row frame, entry)``.
         self._row_items: List[Tuple[Optional[ttk.Separator], ttk.Frame, HistoryEntry]] = []
         self.discover: Optional[DiscoverPage] = None
+        self.phone: Optional[PhonePage] = None
 
         self.window = tk.Toplevel(master)
         self.window.withdraw()
@@ -256,6 +196,7 @@ class ViewWindow:
         for key, label in (
             ("discover", "page_discover"),
             ("downloads", "page_downloads"),
+            ("phone", "page_phone"),
             ("settings", "page_settings"),
             ("about", "page_about"),
         ):
@@ -284,8 +225,46 @@ class ViewWindow:
             on_mode_changed=self._discover_mode_changed,
         )
         self._pages["discover"] = self.discover
+        self.phone = PhonePage(
+            self._container,
+            messages=self.messages,
+            palette=self.palette,
+            config=self.config,
+            fonts=self.fonts,
+            on_apply=self._on_phone_apply,
+            on_new_token=self._on_phone_new_token,
+            on_state=self._on_phone_state,
+            on_copy=self._copy_to_clipboard,
+            on_firewall_hint=self._on_phone_firewall_hint,
+        )
+        self._pages["phone"] = self.phone
         self._pages["settings"] = self._build_settings(self._container)
         self._pages["about"] = self._build_about(self._container)
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        """Put ``text`` on the clipboard.
+
+        :param text: The address or command to copy.
+        :return: None
+        """
+        try:
+            self.window.clipboard_clear()
+            self.window.clipboard_append(text)
+        except tk.TclError:  # pragma: no cover - no clipboard on this display
+            log.debug("The clipboard could not be written")
+
+    def _on_phone_firewall_hint(self, port: int):
+        """Return the firewall description and command for ``port``.
+
+        Imported here so the Phone page and the console wizard share one
+        implementation instead of describing firewalls twice.
+
+        :param port: The port that has to be reachable.
+        :return: ``(description, command)``.
+        """
+        from .phonesetup import firewall_hint
+
+        return firewall_hint(port)
 
     def select_page(self, key: str) -> None:
         """Show one of the pages.
@@ -305,6 +284,12 @@ class ViewWindow:
             self._load_settings()
         if key == "discover" and self.discover is not None:
             self.discover.reload_from_config()
+        if self.phone is not None:
+            # Polling costs nothing while nobody is looking at the page.
+            if key == "phone":
+                self.phone.start_polling()
+            else:
+                self.phone.stop_polling()
 
     @property
     def current_page(self) -> str:
@@ -1374,6 +1359,10 @@ class ViewWindow:
         """
         if page:
             self.select_page(page)
+        elif self._page == "phone" and self.phone is not None:
+            # Reopened on the Phone page: hide() stopped the refresh, so it has
+            # to be picked up again or the status would be frozen.
+            self.phone.start_polling()
         try:
             first = self.window.state() == "withdrawn"
             self.window.deiconify()
@@ -1390,6 +1379,9 @@ class ViewWindow:
 
     def hide(self) -> None:
         """Hide the window."""
+        if self.phone is not None:
+            # Nobody is looking, and a pending refresh would keep firing.
+            self.phone.stop_polling()
         try:
             self.window.withdraw()
         except tk.TclError:  # pragma: no cover
@@ -1404,6 +1396,10 @@ class ViewWindow:
 
     def destroy(self) -> None:
         """Tear the window down."""
+        if self.phone is not None:
+            # Before the widgets go: a queued refresh would fire into a
+            # destroyed interpreter, which Tk does not survive gracefully.
+            self.phone.stop_polling()
         if self.discover is not None:
             self.discover.destroy_player()
         try:

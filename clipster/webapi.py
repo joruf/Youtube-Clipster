@@ -12,6 +12,8 @@ snapshot needs no marshalling and must not use it, because the phone polls.
 
 from __future__ import annotations
 
+import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -75,6 +77,30 @@ class RemoteApi:
         :param app: The running :class:`clipster.app.ClipsterApp`.
         """
         self._app = app
+        self._lock = threading.Lock()
+        self._contacts = 0
+        self._last_contact = ""
+
+    # ------------------------------------------------------------------
+    # Contact tracking - so the phone page can say "a phone is talking to us"
+    # ------------------------------------------------------------------
+    def _record_contact(self) -> None:
+        """Remember that a device just asked for something.
+
+        Called from the server's request threads, hence the lock.
+        """
+        stamp = datetime.now().isoformat(timespec="seconds")
+        with self._lock:
+            self._contacts += 1
+            self._last_contact = stamp
+
+    def contact_info(self) -> Dict[str, Any]:
+        """Return how often and when a device last got through.
+
+        :return: ``{"contacts": int, "last_contact": str}``
+        """
+        with self._lock:
+            return {"contacts": self._contacts, "last_contact": self._last_contact}
 
     # ------------------------------------------------------------------
     # Reading
@@ -84,6 +110,7 @@ class RemoteApi:
 
         :return: ``(200, {"downloads": [...]})``
         """
+        self._record_contact()
         entries: List[HistoryEntry] = self._app.history.entries
         return 200, {"downloads": [entry_to_dict(entry) for entry in entries]}
 
@@ -92,6 +119,7 @@ class RemoteApi:
 
         :return: ``(200, {"active": [...], "queued": int, "parallel": int})``
         """
+        self._record_contact()
         return 200, self._app.remote_status()
 
     def media(self, entry_id: str) -> Optional[Path]:
@@ -104,6 +132,7 @@ class RemoteApi:
         :param entry_id: The id from :meth:`HistoryEntry.identifier`.
         :return: The existing file, or ``None``.
         """
+        self._record_contact()
         entry = self._app.history.find_by_id(entry_id)
         if entry is None:
             return None
@@ -120,6 +149,7 @@ class RemoteApi:
         :param force: Download again even when the file is already there.
         :return: The HTTP status and a body describing the outcome.
         """
+        self._record_contact()
         try:
             result = self._app.submit_remote(url, media_format, force)
         except RuntimeError as exc:
@@ -146,6 +176,7 @@ class RemoteApi:
         :param entry_id: The id from :meth:`HistoryEntry.identifier`.
         :return: The HTTP status and a short body.
         """
+        self._record_contact()
         entry = self._app.history.find_by_id(entry_id)
         if entry is None:
             return 404, {"deleted": False}

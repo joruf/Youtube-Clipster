@@ -68,6 +68,9 @@ class Gui:
         self.on_discover_extend: Optional[Callable[[DiscoverTrack], None]] = None
         self.on_discover_like: Optional[Callable[[DiscoverTrack], None]] = None
         self.on_discover_dislike: Optional[Callable[[DiscoverTrack], None]] = None
+        self.on_phone_apply: Optional[Callable[[bool, str, int], dict]] = None
+        self.on_phone_new_token: Optional[Callable[[], dict]] = None
+        self.on_phone_state: Optional[Callable[[], dict]] = None
         self.on_show_terms: Optional[Callable[[], None]] = None
 
         self.root = tk.Tk()
@@ -141,6 +144,9 @@ class Gui:
             on_discover_like=self._discover_like,
             on_discover_dislike=self._discover_dislike,
             on_show_terms=self._show_terms,
+            on_phone_apply=self._phone_apply,
+            on_phone_new_token=self._phone_new_token,
+            on_phone_state=self._phone_state,
         )
 
     # ------------------------------------------------------------------
@@ -242,6 +248,36 @@ class Gui:
         """Forward a Discover auto-download request."""
         if self.on_discover_download is not None:
             self.on_discover_download(track)
+
+    def _phone_apply(self, enabled: bool, bind: str, port: int) -> dict:
+        """Forward the phone interface settings to the application.
+
+        :param enabled: Whether the interface should serve.
+        :param bind: The interface to listen on.
+        :param port: The TCP port to listen on.
+        :return: The new state, or an empty dictionary without a handler.
+        """
+        if self.on_phone_apply is None:
+            return {}
+        return self.on_phone_apply(enabled, bind, port)
+
+    def _phone_new_token(self) -> dict:
+        """Ask the application for a new phone interface token.
+
+        :return: The new state, or an empty dictionary without a handler.
+        """
+        if self.on_phone_new_token is None:
+            return {}
+        return self.on_phone_new_token()
+
+    def _phone_state(self) -> dict:
+        """Read the state of the phone interface.
+
+        :return: The state, or an empty dictionary without a handler.
+        """
+        if self.on_phone_state is None:
+            return {}
+        return self.on_phone_state()
 
     def _show_terms(self) -> None:
         """Forward the About-page request to show the terms documents."""

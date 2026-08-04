@@ -202,6 +202,9 @@ class ClipsterApp:
         self.gui.on_discover_like = self._discover_like
         self.gui.on_discover_dislike = self._discover_dislike
         self.gui.on_show_terms = self._show_terms
+        self.gui.on_phone_apply = self.apply_remote_settings
+        self.gui.on_phone_new_token = self.regenerate_remote_token
+        self.gui.on_phone_state = self.remote_state
         self.gui.build_windows()
         if self.gui.view is not None and self.gui.view.discover is not None:
             self.gui.view.discover.player.set_options_provider(self.downloader._base_options)
@@ -318,6 +321,71 @@ class ClipsterApp:
         self._remote.stop()
         self._remote = None
         log.info("The phone interface was stopped.")
+
+    def remote_state(self) -> Dict[str, Any]:
+        """Describe the phone interface for the Phone page.
+
+        Everything the page needs in one call, so it can be polled cheaply
+        without reaching into the server.
+
+        :return: Settings, whether it listens, the address and the last contact.
+        """
+        state: Dict[str, Any] = {
+            "enabled": self.config.remote_enabled,
+            "bind": self.config.remote_bind,
+            "port": self.config.remote_port,
+            "token": self.config.remote_token,
+            "running": self._remote is not None and self._remote.running,
+            "url": self.remote_url(),
+            "contacts": 0,
+            "last_contact": "",
+        }
+        if self._remote is not None:
+            state["port"] = self._remote.port
+            api = getattr(self._remote, "_api", None)
+            if api is not None and hasattr(api, "contact_info"):
+                state.update(api.contact_info())
+        return state
+
+    def apply_remote_settings(self, enabled: bool, bind: str, port: int) -> Dict[str, Any]:
+        """Save the phone interface settings and restart it accordingly.
+
+        :param enabled: Whether the interface should serve.
+        :param bind: The interface to listen on.
+        :param port: The TCP port to listen on.
+        :return: The new :meth:`remote_state`.
+        """
+        from .webserver import new_token
+
+        self.config.remote_enabled = bool(enabled)
+        self.config.remote_bind = bind
+        self.config.remote_port = int(port)
+        if enabled and not self.config.remote_token:
+            self.config.remote_token = new_token()
+        self.config.save()
+
+        # Always stop first: bind address and port may both have changed, and a
+        # running server cannot be reconfigured in place.
+        self.stop_remote()
+        if self.config.remote_enabled:
+            self.start_remote()
+        return self.remote_state()
+
+    def regenerate_remote_token(self) -> Dict[str, Any]:
+        """Replace the token, which locks out every phone paired so far.
+
+        :return: The new :meth:`remote_state`.
+        """
+        from .webserver import new_token
+
+        self.config.remote_token = new_token()
+        self.config.save()
+        log.info("A new token for the phone interface was generated.")
+        was_running = self._remote is not None
+        self.stop_remote()
+        if was_running or self.config.remote_enabled:
+            self.start_remote()
+        return self.remote_state()
 
     def remote_url(self) -> str:
         """Return the address a phone can open, token included.

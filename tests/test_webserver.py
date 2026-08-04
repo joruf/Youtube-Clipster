@@ -694,3 +694,125 @@ def test_a_wide_bind_yields_the_network_url() -> None:
 def test_without_a_token_there_is_no_url() -> None:
     """Handing out an address that cannot authenticate only causes confusion."""
     assert webserver.phone_url("0.0.0.0", 8733, "") == ""
+
+
+# ----------------------------------------------------------------------
+# Content types, and why they are not guessed
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize("name,expected", [
+    ("index.html", "text/html; charset=utf-8"),
+    ("style.css", "text/css; charset=utf-8"),
+    ("app.js", "application/javascript; charset=utf-8"),
+    ("manifest.webmanifest", "application/manifest+json; charset=utf-8"),
+    ("icon.png", "image/png"),
+    ("song.mp3", "audio/mpeg"),
+    ("clip.MP4", "video/mp4"),
+    ("something.bin", "application/octet-stream"),
+    ("noextension", "application/octet-stream"),
+])
+def test_the_content_type_comes_from_a_fixed_table(name: str, expected: str) -> None:
+    assert webserver.content_type(name) == expected
+
+
+def test_every_format_the_program_produces_has_a_type() -> None:
+    for suffix in (".mp3", ".mp4", ".m4a", ".webm"):
+        assert webserver.content_type("x" + suffix) != webserver.DEFAULT_CONTENT_TYPE, suffix
+
+
+def test_the_types_are_never_guessed_at_request_time() -> None:
+    """mimetypes builds its table lazily and is not thread safe.
+
+    Several threads racing inside ``mimetypes.init()`` can abort the process,
+    which would take the downloader down with the web server.
+    """
+    # The call, not the comment that explains why it is not used.
+    source = Path(webserver.__file__).read_text(encoding="utf-8")
+    assert "mimetypes.guess_type(" not in source
+    assert "import mimetypes" not in source
+
+
+def test_many_parallel_requests_are_served(real_web) -> None:
+    """What a browser does: page, style, script, manifest and icon at once."""
+    import threading
+
+    _, base = real_web
+    paths = ["/", "/style.css", "/app.js", "/manifest.webmanifest", "/icon.png",
+             "/sw.js", "/api/status", "/api/downloads"] * 4
+    results: List[int] = []
+    lock = threading.Lock()
+
+    def fetch(path: str) -> None:
+        status, _, _ = _request(base + path)
+        with lock:
+            results.append(status)
+
+    threads = [threading.Thread(target=fetch, args=(path,)) for path in paths]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert len(results) == len(paths), "a request was lost"
+    assert set(results) == {200}, sorted(set(results))
+
+
+# ----------------------------------------------------------------------
+# Values a user can put into config.json by hand
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize("port,usable", [
+    (0, True), (1, True), (8733, True), (65535, True),
+    (65536, False), (99999, False), (-1, False), ("abc", False), (None, False),
+])
+def test_only_a_real_port_is_accepted(port, usable: bool) -> None:
+    assert webserver.valid_port(port) is usable
+
+
+def test_an_out_of_range_port_does_not_take_the_program_down(web_dir: Path) -> None:
+    """socket.bind raises OverflowError there, which is not an OSError.
+
+    An uncaught one escapes start_remote and ends the whole program at startup -
+    from a single typo in a hand-edited configuration.
+    """
+    for port in (99999, -1, 70000):
+        server = webserver.RemoteServer(RemoteApi(FakeApp()), token=TOKEN,
+                                       bind="127.0.0.1", port=port, web_root=web_dir)
+        assert server.start() is False, port
+        assert not server.running
+
+
+@pytest.mark.parametrize("bind", ["not-an-ip", "999.999.999.999", ""])
+def test_an_unusable_bind_address_is_survived(web_dir: Path, bind: str) -> None:
+    server = webserver.RemoteServer(RemoteApi(FakeApp()), token=TOKEN, bind=bind,
+                                    port=0, web_root=web_dir)
+    started = server.start()
+    if started:  # an empty bind is legal and means "every interface"
+        server.stop()
+
+
+@pytest.mark.parametrize("token", ["a&b=c", "a/b?c#d", "a b c", "ümlaut", "plus+sign", "%41"])
+def test_a_hand_edited_token_survives_the_address(token: str) -> None:
+    """Unencoded, "&" would cut the address short and the phone would get a 401."""
+    from urllib.parse import parse_qs, urlparse
+
+    url = webserver.phone_url("0.0.0.0", 8733, token)
+    if not url:
+        pytest.skip("this machine has no route to a network")
+    assert parse_qs(urlparse(url).query)["token"] == [token]
+
+
+def test_a_token_with_special_characters_still_authenticates(web_dir: Path) -> None:
+    """The whole point of encoding it: the server has to accept it back."""
+    from urllib.parse import quote
+
+    token = "a&b=c/d#e f"
+    server = webserver.RemoteServer(RemoteApi(FakeApp()), token=token, bind="127.0.0.1",
+                                    port=0, web_root=web_dir)
+    assert server.start()
+    try:
+        base = "http://127.0.0.1:{0}".format(server.port)
+        status, _, _ = _request("{0}/?token={1}".format(base, quote(token, safe="")), token=None)
+        assert status == 200
+        status, _, _ = _request(base + "/api/downloads", token=token)
+        assert status == 200
+    finally:
+        server.stop()

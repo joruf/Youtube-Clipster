@@ -46,7 +46,9 @@ Anonymized captures of the real Tk UI (fixture data only):
 
 ![Terms of use](docs/images/terms.png)
 
-The phone interface, served by the running program to your Android phone or iPhone:
+![Phone — the whole setup on one page](docs/images/phone-page.png)
+
+The phone interface itself, served by the running program to your Android phone or iPhone:
 
 ![Phone interface](docs/images/phone.png)
 
@@ -349,8 +351,8 @@ For a **portable setup** copy `config.example.json` to `config.json` **next to
 | `autostart` | `false` | Start automatically at login |
 | `remote_enabled` | `false` | Serve the phone interface (see [Your phone](#your-phone-android-and-iphone)) |
 | `remote_bind` | `"127.0.0.1"` | `0.0.0.0` lets other devices in; the default keeps it on this PC |
-| `remote_port` | `8733` | TCP port of the phone interface |
-| `remote_token` | `""` | Shared secret; generated on first start and written back here |
+| `remote_port` | `8733` | TCP port of the phone interface; `0` … `65535`, where `0` picks a free one. Anything outside that range is refused with a message in the log instead of stopping the program |
+| `remote_token` | `""` | Shared secret; generated on first start and written back here. Any characters are allowed — it is percent-encoded into the address |
 | `update_check_hours` | `24` | Hours between two yt-dlp update checks (`0` = every start) |
 | `log_level` | `"INFO"` | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
 | `discover_search_suffix` | `"lyrics"` | Word appended to Streaming searches; empty disables it |
@@ -434,22 +436,37 @@ so the "copy a link and it downloads" trick cannot exist there. And an app that 
 content is not allowed into Google Play or the App Store. A page served by your own PC has neither
 problem — and needs no store at all.
 
-### The guided way (recommended)
+### In the program (recommended)
 
-One command does all of it — settings, token, firewall, QR code — and then **waits until your phone
-has actually connected**, so you know it works before you start using it:
+Open the view window and pick **Phone**. Everything is on that one page:
+
+![The Phone page](docs/images/phone-page.png)
+
+- a switch that starts serving, and a choice of **who** may reach it — *This PC only* or *Every device
+  on my network*
+- the port, and whether it could actually be bound
+- the **QR code** to scan, plus the address to copy
+- the firewall command for your system, with a Copy button — shown only when it is actually needed
+- the token, hidden by default, with *New token* to disconnect every paired phone
+- **live status**: it says when a phone last reached this PC, so you can see it working
+- the two steps left on the phone itself
+
+That is the whole setup; you do not have to touch a configuration file.
+
+### From the terminal
+
+The same thing without a window — useful over SSH, or when the program will not start:
 
 ```bash
 python3 run.py --phone-setup     # Linux/macOS
 run.bat --phone-setup            # Windows
 ```
 
-It walks through six steps, asks before it changes anything, and shows you the exact firewall command
-before running it. If the phone does not get through, it names the usual reasons instead of leaving you
-guessing.
+It walks through six steps, asks before it changes anything, shows the exact firewall command before
+running it, and **waits until your phone has actually connected**. If the phone does not get through,
+it names the usual reasons instead of leaving you guessing.
 
-Everything below describes the same thing done by hand — useful to understand what the wizard did, or
-when you would rather do it yourself.
+Everything below describes the same thing done by hand — useful to understand what the two above did.
 
 ### 1. Switch it on
 
@@ -495,8 +512,8 @@ You do not have to read this out of the log at all — step 3 hands you the same
 
 ### 3. Get it onto the phone
 
-Phone and PC have to be on the **same Wi-Fi**. Nobody wants to type a 32 character token, so run this
-on the PC:
+Phone and PC have to be on the **same Wi-Fi**. Nobody wants to type a 32 character token, so either
+read the QR code off the **Phone** page in the program, or run this on the PC:
 
 ```bash
 python3 tools/phone_link.py
@@ -578,10 +595,10 @@ send.
   read every file you have already downloaded. Treat it like a password.
 - **Do not forward the port in your router.** To reach the PC from outside your home, use a VPN such
   as [Tailscale](https://tailscale.com/) or WireGuard, which does not expose anything to the internet.
-- **Revoking a phone**: empty `"remote_token"` in `config.json` and restart. A new token is generated
-  and every old link stops working.
-- **Switching it off entirely**: `"remote_enabled": false` and restart, or set `"remote_bind"` back to
-  `"127.0.0.1"`.
+- **Revoking a phone**: press *New token* on the **Phone** page — every phone paired so far is
+  disconnected and has to scan again. By hand: empty `"remote_token"` in `config.json` and restart.
+- **Switching it off entirely**: untick *Serve the phone interface* on the **Phone** page — it takes
+  effect at once and releases the port. By hand: `"remote_enabled": false` and restart.
 - The PC has to be **running and awake** — it does all the work. The phone is only the remote control.
 - The phone interface is currently **English only**, unlike the desktop windows.
 
@@ -593,7 +610,9 @@ send.
 | "This device is not registered any more" | The cookie is gone. Open the full address with `?token=…` from step 2 again |
 | The address from the log is `0.0.0.0` | That is the bind address, not a destination. Use the "Open this on your phone" line below it, or run `python3 tools/phone_link.py` |
 | Nothing happens after *Download* | Look at the PC: the navigation window shows the same download, and the log gives the reason |
-| The port is already in use | Set another `"remote_port"` and restart; the log says so plainly |
+| The port is already in use | Set another `"remote_port"` and restart; the log says so plainly. The **Phone** page shows it as "Could not listen on this port" |
+| The interface never starts and the log names a port range | `"remote_port"` is outside `0` … `65535`. The rest of the program keeps running; fix the value and restart |
+| The phone is refused although the token looks right | Only when `"remote_token"` was edited by hand: check for stray whitespace. Special characters themselves are fine |
 | No *Install* entry on Android | Chrome needs the app manifest, which is only served once the token was accepted. Open the address including `?token=…` and reload the page once |
 
 ---
@@ -672,6 +691,9 @@ youtube-clipster/
     ├── webserver.py         # the phone interface: HTTP, token, Range requests
     ├── webapi.py            # what the phone may ask for, as plain data
     ├── phonesetup.py        # the guided --phone-setup wizard
+    ├── phone_page.py        # the Phone page of the view window
+    ├── qrview.py            # draws a QR code onto a Tk canvas
+    ├── scroller.py          # the scrollable container both pages use
     ├── web/                 # the page the phone loads (HTML, CSS, JS, manifest)
     ├── clipboard.py         # Win32 / wl-clipboard / xclip / xsel / pbpaste / Tk
     ├── singleinstance.py    # flock (POSIX) and named mutex (Windows)

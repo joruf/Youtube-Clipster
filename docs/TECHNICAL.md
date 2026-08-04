@@ -112,6 +112,11 @@ gives the phone a handle that survives a restart without adding a field to `hist
 `tools/phone_link.py`, so the program and the QR code can never disagree. See
 [README - Your phone](../README.md#your-phone-android-and-iphone).
 
+Content types come from the fixed `webserver.CONTENT_TYPES` table, never from
+`mimetypes.guess_type`: that builds its table lazily and is not thread safe, and a browser fetching
+page, style, script and icon at once puts four server threads into it simultaneously - which can abort
+the process and take the downloader with it.
+
 ### Bootstrap / installer
 
 `cli.py` + `installer.py` + `dependencies.py`: ensure Python, tkinter, venv, yt-dlp, ffmpeg, clipboard helpers, optional tray stack. `setup_ui.py` shows the setup window while deps install - naming the component in progress, and reporting an unfinished setup in a dialog, because `run.bat` starts `pythonw.exe` and there is no console to print to.
@@ -151,6 +156,10 @@ gives the phone a handle that survives a restart without adding a field to `hist
 | `updater.py` | GitHub update check / apply / restart |
 | `webserver.py` | Phone interface transport: HTTP, token, Range requests, static table |
 | `webapi.py` | Phone interface endpoints as plain data, no HTTP |
+| `phone_page.py` | The Phone page: switch, QR code, live status, firewall hint |
+| `phonesetup.py` | The same setup as a console wizard (`--phone-setup`) |
+| `qrview.py` | Draws a QR code onto a Tk canvas (no Pillow needed) |
+| `scroller.py` | Scrollable container shared by the table and the Phone page |
 | `web/` | The page the phone loads (HTML, CSS, JS, manifest, service worker) |
 | `viewwindow.py` | Large multi-page window |
 | `visualizer.py` | Stage mode ids and drawing helpers |
