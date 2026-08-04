@@ -77,37 +77,30 @@ def bootstrap_main(argv: Optional[Sequence[str]] = None) -> int:
 
     use_venv = not args.no_venv
     splash = None
+    # Checked before anything can create the file: on the very first start the
+    # window is opened instead of going straight to the tray.
+    first_start = not (Path(args.config).expanduser() if args.config else paths.config_file()).is_file()
 
     if not args.skip_checks:
         print(_banner(), file=sys.stderr)
-        # Visible feedback while packages install — otherwise a double-click
-        # on run.py looks like nothing is happening.
+        messages = i18n.load(_startup_language(args))
+        # Visible feedback while packages install — otherwise a double-click on
+        # run.py (or run.bat, which starts without a console) looks frozen.
         try:
             from .setup_ui import open_setup_splash
 
-            config_path = Path(args.config).expanduser() if args.config else paths.config_file()
-            language = "en"
-            if config_path.is_file():
-                try:
-                    language = Config.load(config_path).language or "en"
-                except Exception:
-                    language = "en"
-            if args.lang:
-                language = args.lang
-            messages = i18n.load(language)
             splash = open_setup_splash(messages)
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover - headless / missing Tk
             log.debug("Setup splash could not be opened: %s", exc)
             splash = None
 
         def on_progress(message: str) -> None:
-            print("  {0}".format(message), file=sys.stderr, flush=True)
+            _print_progress(message)
             if splash is not None:
                 splash.set_status(message)
 
         try:
-            if splash is not None:
-                splash.set_status(messages.get("setup_checking", "Checking dependencies..."))
+            on_progress(messages.get("setup_checking", "Checking dependencies..."))
             report = installer.bootstrap(
                 auto_install=not args.no_auto_install,
                 use_venv=use_venv,
@@ -116,13 +109,15 @@ def bootstrap_main(argv: Optional[Sequence[str]] = None) -> int:
                 update_check_hours=_configured_update_hours(args.config),
                 on_progress=on_progress,
             )
+            if report.ok and not (args.check or args.create_shortcut or args.autostart):
+                on_progress(messages.get("setup_starting", "Starting YouTube Clipster..."))
         finally:
             if splash is not None:
                 splash.close()
                 splash = None
 
         if not report.ok:
-            _report_failures(report)
+            _report_failures(report, messages)
             return 1
         log.info("All components are ready.")
 
@@ -133,10 +128,30 @@ def bootstrap_main(argv: Optional[Sequence[str]] = None) -> int:
     if args.check:
         return 0
 
+    arguments = _first_start_arguments(arguments, args, first_start)
+
     if use_venv and not paths.running_in_managed_venv():
         return _relaunch_in_venv(arguments)
 
     return main(arguments)
+
+
+def _first_start_arguments(arguments: List[str], args: argparse.Namespace, first_start: bool) -> List[str]:
+    """Open the window on the very first start.
+
+    ``start_minimized`` defaults to true, so a fresh installation would finish
+    by putting an icon into the tray and nothing else - after minutes of
+    downloading that looks like a program that failed to start.
+
+    :param arguments: The current argument list.
+    :param args: The parsed arguments.
+    :param first_start: Whether no configuration file existed yet.
+    :return: The argument list to hand on.
+    """
+    if not first_start or args.no_window or args.show_window or args.check:
+        return arguments
+    log.info("First start - opening the window so the program is visible.")
+    return arguments + ["--show-window"]
 
 
 def _banner() -> str:
@@ -157,19 +172,111 @@ def _configured_update_hours(config_path: Optional[str]) -> int:
     return Config.load(target).update_check_hours
 
 
-def _report_failures(report: installer.InstallReport) -> None:
-    """Print a readable summary of everything that could not be installed.
+def _startup_language(args: argparse.Namespace) -> str:
+    """Determine the interface language before the configuration is loaded.
 
-    :param report: The finished install report.
+    The dependency phase runs before :func:`main` reads the configuration, but
+    the setup window already needs translated strings.
+
+    :param args: The parsed command line arguments.
+    :return: A language code, falling back to ``en``.
+    """
+    if args.lang:
+        return str(args.lang)
+    target = Path(args.config).expanduser() if args.config else paths.config_file()
+    if target.is_file():
+        try:
+            return Config.load(target).language or "en"
+        except Exception:  # pragma: no cover - unreadable config must not stop setup
+            log.debug("Language could not be read from %s", target)
+    return "en"
+
+
+def _print_progress(message: str) -> None:
+    """Echo one setup step to the console, whatever its code page can encode.
+
+    The translated texts contain typographic characters (dashes, ellipses) that
+    a legacy Windows code page cannot represent. Reporting progress must never
+    be the thing that breaks the installation.
+
+    :param message: The status line from the installer.
     :return: None
     """
+    try:
+        print("  {0}".format(message), file=sys.stderr, flush=True)
+    except UnicodeEncodeError:
+        plain = message.encode("ascii", "replace").decode("ascii")
+        print("  {0}".format(plain), file=sys.stderr, flush=True)
+    except OSError:  # pragma: no cover - closed or full stream
+        log.debug("Progress line could not be printed")
+
+
+def _console_is_visible() -> bool:
+    """Return ``True`` when the user can actually read what is printed.
+
+    ``run.bat`` starts ``pythonw.exe`` (no console, ``sys.stderr`` is ``None``)
+    and the Linux desktop launcher redirects stderr into the session log. In
+    both cases a printed error never reaches anybody, so it has to be shown in
+    a dialog instead.
+
+    :return: ``True`` only for a real terminal.
+    """
+    stream = getattr(sys, "stderr", None)
+    if stream is None:
+        return False
+    try:
+        return bool(stream.isatty())
+    except (AttributeError, ValueError):  # pragma: no cover - closed stream
+        return False
+
+
+def summarize_failures(report: installer.InstallReport, max_lines: int = 8) -> str:
+    """Turn the failed steps of a report into a readable block of text.
+
+    :param report: The finished install report.
+    :param max_lines: Maximum number of components listed before summarising.
+    :return: One text block, without a trailing newline.
+    """
+    # Plain ASCII: this text is printed to a console whose code page may not be
+    # able to encode a bullet, and a UnicodeEncodeError here would replace the
+    # error message with a traceback.
+    failures = list(report.failures)
+    lines = []
+    for step in failures[:max_lines]:
+        lines.append("  * {0}: {1}".format(step.name, step.detail or "missing"))
+        if step.hint:
+            lines.append("    -> {0}".format(step.hint))
+    if len(failures) > max_lines:
+        lines.append("  ... and {0} more".format(len(failures) - max_lines))
+    return "\n".join(lines)
+
+
+def _report_failures(report: installer.InstallReport, messages: Optional[i18n.Messages] = None) -> None:
+    """Report everything that could not be installed, visibly.
+
+    :param report: The finished install report.
+    :param messages: Optional catalogue for the dialog shown without a console.
+    :return: None
+    """
+    summary = summarize_failures(report)
     print("", file=sys.stderr)
     print("Setup incomplete - the following components are missing:", file=sys.stderr)
-    for step in report.failures:
-        print("  * {0}: {1}".format(step.name, step.detail or "missing"), file=sys.stderr)
-        if step.hint:
-            print("    -> {0}".format(step.hint), file=sys.stderr)
+    print(summary, file=sys.stderr)
     print("", file=sys.stderr)
+
+    if _console_is_visible():
+        return
+    intro = "Setup incomplete - the following components are missing:"
+    title = APP_TITLE
+    if messages is not None:
+        intro = messages.get("setup_failed_intro", intro)
+        title = messages.get("setup_failed_title", title)
+    try:
+        from .setup_ui import show_setup_failure
+
+        show_setup_failure(title, "{0}\n\n{1}".format(intro, summary))
+    except Exception as exc:  # pragma: no cover - headless session
+        log.debug("Setup failure dialog could not be shown: %s", exc)
 
 
 def _create_shortcut() -> int:

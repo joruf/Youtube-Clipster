@@ -27,19 +27,61 @@ import sys
 MIN_PYTHON = (3, 8)
 
 
+def _write_console(message):
+    """Write an error to the console, if this process has one.
+
+    Started through ``pythonw.exe`` - which ``run.bat`` does so the setup
+    window is the only visible interface - ``sys.stderr`` is ``None``, and
+    writing to it would end the program with an AttributeError nobody sees.
+
+    :param message: The text shown to the user.
+    :return: True when the message landed somewhere visible.
+    """
+    stream = getattr(sys, "stderr", None) or getattr(sys, "stdout", None)
+    if stream is None:
+        return False
+    try:
+        stream.write("[ERROR] " + message + "\n")
+        stream.flush()
+        return True
+    except Exception:
+        return False
+
+
+def _show_dialog(message):
+    """Show an error dialog - the only way to reach a user without a console.
+
+    :param message: The text shown to the user.
+    :return: True when the dialog could be shown.
+    """
+    try:
+        import tkinter
+        from tkinter import messagebox
+
+        root = tkinter.Tk()
+        root.withdraw()
+        messagebox.showerror("Loresoft YouTube Clipster", message)
+        root.destroy()
+        return True
+    except Exception:
+        return False
+
+
 def _fail(message):
-    """Print an error and exit with status 1.
+    """Report an error where the user can see it, then exit with status 1.
 
     :param message: The text shown to the user.
     :return: Never returns.
     """
-    sys.stderr.write("[ERROR] " + message + "\n")
-    if os.name == "nt":
-        # Keep the console window open when started with a double click.
-        try:
-            input("\nPress Enter to close...")
-        except Exception:
-            pass
+    if _write_console(message):
+        if os.name == "nt":
+            # Keep the console window open when started with a double click.
+            try:
+                input("\nPress Enter to close...")
+            except Exception:
+                pass
+    else:
+        _show_dialog(message)
     sys.exit(1)
 
 

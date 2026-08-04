@@ -103,7 +103,7 @@ PCM-backed modes (`spectrum`, `waveform`, `pulse`) read analysis from `DiscoverP
 
 ### Bootstrap / installer
 
-`cli.py` + `installer.py` + `dependencies.py`: ensure Python, tkinter, venv, yt-dlp, ffmpeg, clipboard helpers, optional tray stack. `setup_ui.py` can show a splash while deps install.
+`cli.py` + `installer.py` + `dependencies.py`: ensure Python, tkinter, venv, yt-dlp, ffmpeg, clipboard helpers, optional tray stack. `setup_ui.py` shows the setup window while deps install - naming the component in progress, and reporting an unfinished setup in a dialog, because `run.bat` starts `pythonw.exe` and there is no console to print to.
 
 ## Module map
 
@@ -130,7 +130,7 @@ PCM-backed modes (`spectrum`, `waveform`, `pulse`) read analysis from `DiscoverP
 | `paths.py` | Platform paths; `YOUTUBE_CLIPSTER_HOME` override |
 | `player.py` | In-tab Streaming player |
 | `recommend.py` | Deezer / ListenBrainz similarity helpers |
-| `setup_ui.py` | Early setup splash |
+| `setup_ui.py` | Early setup window: progress, failure dialog |
 | `shortcuts.py` | Desktop shortcut + autostart |
 | `singleinstance.py` | Single-instance lock |
 | `spectrum.py` | EQ / FakeSpectrum helpers |

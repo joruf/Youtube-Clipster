@@ -62,17 +62,104 @@ def test_a_windows_double_click_keeps_the_error_visible() -> None:
 
 
 # ----------------------------------------------------------------------
+# run.py survives a start without a console (pythonw.exe)
+# ----------------------------------------------------------------------
+@pytest.fixture()
+def entry_module():
+    """Import run.py as a module without executing its main block."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("clipster_run_entry", RUN_PY)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_without_any_stream_nothing_is_written(entry_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    """pythonw.exe sets both streams to None - writing there kills the start."""
+    monkeypatch.setattr(entry_module.sys, "stderr", None)
+    monkeypatch.setattr(entry_module.sys, "stdout", None)
+    assert entry_module._write_console("boom") is False
+
+
+def test_stdout_is_used_when_stderr_is_gone(entry_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+
+    buffer = io.StringIO()
+    monkeypatch.setattr(entry_module.sys, "stderr", None)
+    monkeypatch.setattr(entry_module.sys, "stdout", buffer)
+    assert entry_module._write_console("boom") is True
+    assert "boom" in buffer.getvalue()
+
+
+def test_a_windowless_failure_falls_back_to_a_dialog(entry_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    shown = []
+    monkeypatch.setattr(entry_module, "_write_console", lambda message: False)
+    monkeypatch.setattr(entry_module, "_show_dialog", lambda message: shown.append(message) or True)
+    with pytest.raises(SystemExit) as exit_info:
+        entry_module._fail("Python is too old")
+    assert exit_info.value.code == 1
+    assert shown == ["Python is too old"]
+
+
+def test_a_console_failure_does_not_open_a_dialog(entry_module, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A terminal user has already read the message; a modal would only annoy."""
+    monkeypatch.setattr(entry_module.os, "name", "posix")
+    monkeypatch.setattr(entry_module, "_write_console", lambda message: True)
+    monkeypatch.setattr(entry_module, "_show_dialog", lambda message: pytest.fail("dialog opened"))
+    with pytest.raises(SystemExit):
+        entry_module._fail("nope")
+
+
+# ----------------------------------------------------------------------
 # The starter scripts
 # ----------------------------------------------------------------------
-def test_both_starters_point_at_the_entry_point() -> None:
+def test_every_starter_points_at_the_entry_point() -> None:
     assert 'ENTRY="$SCRIPT_DIR/run.py"' in (ROOT / "install.sh").read_text(encoding="utf-8")
-    assert 'set "ENTRY=%~dp0run.py"' in (ROOT / "install.bat").read_text(encoding="utf-8")
+    for name in ("install.bat", "run.bat"):
+        assert 'set "ENTRY=%~dp0run.py"' in (ROOT / name).read_text(encoding="utf-8"), name
 
 
-def test_the_windows_starter_can_install_python_and_waits_on_errors() -> None:
-    content = (ROOT / "install.bat").read_text(encoding="utf-8", errors="replace").lower()
+@pytest.mark.parametrize("name", ["install.bat", "run.bat"])
+def test_the_windows_starters_can_install_python_and_wait_on_errors(name: str) -> None:
+    content = (ROOT / name).read_text(encoding="utf-8", errors="replace").lower()
     assert "winget" in content
     assert "pause" in content, "a double clicked window would close before the error is read"
+
+
+# ----------------------------------------------------------------------
+# run.bat: the Windows launcher that shows a window instead of a console
+# ----------------------------------------------------------------------
+RUN_BAT = ROOT / "run.bat"
+
+
+def test_the_launcher_starts_the_windowless_interpreter() -> None:
+    """Without pythonw.exe a console window would sit behind the program."""
+    content = RUN_BAT.read_text(encoding="utf-8", errors="replace")
+    assert "pythonw.exe" in content
+    assert 'start "" "%PYTHONW%"' in content
+
+
+def test_the_launcher_only_hides_the_console_when_a_window_is_possible() -> None:
+    """No tkinter means no setup window, so the console has to stay visible."""
+    content = RUN_BAT.read_text(encoding="utf-8", errors="replace")
+    assert "-c \"import tkinter\"" in content
+    assert content.index("import tkinter") < content.index('start "" "%PYTHONW%"')
+
+
+def test_the_launcher_fast_path_matches_the_real_environment_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A renamed venv directory would silently break the fast path."""
+    monkeypatch.setattr(paths, "IS_WINDOWS", True)
+    monkeypatch.setenv(paths.HOME_ENV_VAR, "C:/clipster")
+    # PurePosixPath parts on the test host, but the same three names Windows uses.
+    assert paths.venv_python(gui=True).parts[-3:] == ("venv", "Scripts", "pythonw.exe")
+
+    content = RUN_BAT.read_text(encoding="utf-8", errors="replace")
+    assert r"\venv\Scripts\pythonw.exe" in content
+    assert paths.HOME_ENV_VAR in content, "the home override must be honoured too"
 
 
 def test_no_file_still_refers_to_the_previous_name() -> None:

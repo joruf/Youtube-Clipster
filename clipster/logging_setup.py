@@ -103,9 +103,12 @@ def configure(verbose: bool = False, log_to_file: bool = True, level: str | None
     logger.setLevel(resolved)
     logger.propagate = False
 
-    console = logging.StreamHandler(stream=sys.stderr)
-    console.setFormatter(ClipsterFormatter(color=_supports_color(sys.stderr)))
-    logger.addHandler(console)
+    # Under pythonw.exe there is no console and sys.stderr is None; a
+    # StreamHandler on it would fail on every single record.
+    if sys.stderr is not None:
+        console = logging.StreamHandler(stream=sys.stderr)
+        console.setFormatter(ClipsterFormatter(color=_supports_color(sys.stderr)))
+        logger.addHandler(console)
 
     if log_to_file:
         try:

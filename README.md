@@ -102,14 +102,27 @@ git clone https://github.com/joruf/youtube-clipster.git
 cd youtube-clipster
 
 REM 2. Install everything that is missing and start the program
-install.bat
+run.bat
 ```
 
-Or simply **double-click `install.bat`** in Explorer.
+Or simply **double-click `run.bat`** in Explorer.
 
-If no Python is found, `install.bat` offers to install it via `winget`. Without `winget` it opens
+`run.bat` starts the program through `pythonw.exe`, so there is no console window. What the setup is
+doing is shown in a small window instead – naming the component being installed right now – and once
+everything is in place YouTube Clipster starts by itself. The first start downloads `yt-dlp` and
+`ffmpeg` and takes a few minutes.
+
+The console stays visible only while it is still needed: to find or install Python, when `tkinter` is
+missing (no `tkinter`, no window), and whenever you pass options such as `run.bat --check`, because
+that output belongs in the console. If the setup cannot be completed, the missing components are
+reported in a dialog rather than on an invisible `stderr`.
+
+If no Python is found, `run.bat` offers to install it via `winget`. Without `winget` it opens
 <https://www.python.org/downloads/> – make sure **“Add python.exe to PATH”** is ticked during that
-installation, then start `install.bat` again.
+installation, then start `run.bat` again.
+
+`install.bat` does the same thing but keeps the console window and its log output, which is the better
+choice when something goes wrong and you want to see every line.
 
 Windows Defender / SmartScreen may ask for confirmation on the first start because `yt-dlp` and
 `ffmpeg` are downloaded. Allow the access.
@@ -160,7 +173,7 @@ Check the setup without starting the program:
 
 ```bash
 python3 run.py --check      # Linux/macOS
-install.bat --check                      # Windows
+run.bat --check                          # Windows
 ```
 
 ---
@@ -345,7 +358,7 @@ The log file lives next to the configuration:
 
 ## Command line options
 
-Both `install.sh` and `install.bat` forward every option to `run.py`.
+`install.sh`, `run.bat` and `install.bat` forward every option to `run.py`.
 
 ```
 --check               only check/install dependencies, do not start
@@ -376,7 +389,7 @@ Both `install.sh` and `install.bat` forward every option to `run.py`.
 
 ```bash
 python3 run.py --create-shortcut     # Linux/macOS
-install.bat --create-shortcut                     # Windows
+run.bat --create-shortcut                         # Windows
 ```
 
 - Linux: a freedesktop `.desktop` launcher on your desktop, marked executable and trusted
@@ -439,7 +452,8 @@ and the newest supported Python, Windows without the GUI tests, plus a check tha
 youtube-clipster/
 ├── run.py                   # bootstrapper: dependency check, relaunch, start
 ├── install.sh               # Linux/macOS starter (finds or installs Python)
-├── install.bat              # Windows starter (finds or installs Python)
+├── run.bat                  # Windows starter (no console, progress in a window)
+├── install.bat              # Windows starter (keeps the console and its log)
 ├── requirements.txt         # generated from clipster/dependencies.py
 ├── config.example.json      # documented example configuration
 ├── requirements-dev.txt     # pytest, for the test suite

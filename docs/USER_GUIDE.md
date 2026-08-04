@@ -29,10 +29,15 @@ The installer installs missing system packages (may ask for `sudo`) and creates 
 ```bat
 git clone https://github.com/joruf/youtube-clipster.git
 cd youtube-clipster
-install.bat
+run.bat
 ```
 
-Or double-click `install.bat`. Allow Defender/SmartScreen prompts for yt-dlp and ffmpeg on first run.
+Or double-click `run.bat`. It starts without a console window and shows a small setup window naming
+whatever is being installed at that moment; when everything is in place the program starts by itself.
+The first start takes a few minutes because `yt-dlp` and `ffmpeg` are downloaded. Use `install.bat` if
+you would rather watch the whole log in a console window.
+
+Allow Defender/SmartScreen prompts for yt-dlp and ffmpeg on first run.
 
 ### Requirements (handled automatically)
 

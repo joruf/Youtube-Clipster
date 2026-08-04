@@ -208,6 +208,10 @@
   "setup_heading": "Setting up YouTube Clipster",
   "setup_please_wait": "Please wait — dependencies are being checked and installed. This can take a few minutes the first time.",
   "setup_checking": "Checking dependencies...",
+  "setup_failed_title": "YouTube Clipster — Setup incomplete",
+  "setup_failed_intro": "Setup could not be completed. These components are missing:",
+  "setup_starting": "Starting YouTube Clipster...",
+  "setup_still_running": "Please wait — the installation is still running.",
   "language_names": {
     "ar": "Arabic",
     "cs": "Czech",

@@ -208,6 +208,10 @@
   "setup_heading": "YouTube Clipster wird eingerichtet",
   "setup_please_wait": "Bitte warten — Abhängigkeiten werden geprüft und ggf. installiert. Das kann beim ersten Start einige Minuten dauern.",
   "setup_checking": "Abhängigkeiten werden geprüft…",
+  "setup_failed_title": "YouTube Clipster — Einrichtung unvollständig",
+  "setup_failed_intro": "Die Einrichtung konnte nicht abgeschlossen werden. Diese Komponenten fehlen:",
+  "setup_starting": "YouTube Clipster wird gestartet…",
+  "setup_still_running": "Bitte warten — die Installation läuft noch…",
   "language_names": {
     "ar": "Arabisch",
     "cs": "Tschechisch",
