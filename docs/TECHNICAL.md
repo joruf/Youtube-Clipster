@@ -101,6 +101,36 @@ PCM-backed modes (`spectrum`, `waveform`, `pulse`) read analysis from `DiscoverP
 
 `tray.TrayIcon` (pystray) when `use_tray` is true and the backend works. Click opens the view window; menu offers Show / Open folder / Quit. Without a tray, the view window stays visible and closing it quits.
 
+### Install on Android
+
+`android.py` wraps `adb`; `parse_devices` is a pure function so every device state is testable without
+a phone, and the tests use a fake `adb` on PATH. The bundle deliberately omits `config.json` and
+`history.json` - the configuration holds this machine's remote token.
+
+The flow ends with one line the user runs inside Termux, and that is not a shortcut: `adb shell` runs as
+the `shell` user while Termux's home lives in its own private app storage, so the PC cannot write there.
+The archive goes to `/sdcard/Download` and Termux picks it up.
+
+`android_dialog.py` runs every adb call on a worker thread and those threads never touch Tk - they queue
+their result and the Tk thread drains it on a timer. `widget.after()` from another thread appears to
+work and then raises "main thread is not in main loop".
+
+### Headless
+
+`--headless` swaps two objects instead of touching the hundred places in `app.py` that reach for the
+interface: `HeadlessRoot` provides the `after` / `after_cancel` / `mainloop` that Tk's root would - one
+thread runs every callback, as inside Tk's loop, so code relying on that stays correct - and
+`HeadlessGui` answers every interface call and does nothing visible. `view` is `None`, which the
+application already handles everywhere.
+
+Mind the thread rule: `TkBridge` only drains on the thread that called `start()`, and `run()` starts it
+and then enters `mainloop()` on that same thread. Running the loop elsewhere makes every marshalled
+call hang.
+
+Streaming is unavailable in this mode - the queue and player belong to `DiscoverPage` - and reports
+itself as `unavailable` rather than failing. The format question cannot be asked either, so headless
+downloads always carry their format, which is what a remote request does anyway.
+
 ### Phone interface
 
 Off by default (`remote_enabled`), and bound to loopback until `remote_bind` is changed. A
@@ -185,6 +215,9 @@ the process and take the downloader with it.
 | `phonesetup.py` | The same setup as a console wizard (`--phone-setup`) |
 | `qrview.py` | Draws a QR code onto a Tk canvas (no Pillow needed) |
 | `scroller.py` | Scrollable container shared by the table and the Phone page |
+| `headless.py` | `--headless`: a timer-only event loop plus a do-nothing interface |
+| `android.py` | adb wrapper: device states, bundle, push with progress |
+| `android_dialog.py` | The four-step "Install on Android" window |
 | `web/` | The page the phone loads (HTML, CSS, JS, manifest, service worker) |
 | `viewwindow.py` | Large multi-page window |
 | `visualizer.py` | Stage mode ids and drawing helpers |

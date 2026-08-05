@@ -81,6 +81,8 @@ class PhonePage(ttk.Frame):
         self._refresh_job: Optional[str] = None
         self._last_url = ""
         self._last_contact = ""
+        #: The open "Install on Android" window, when there is one.
+        self._android: Optional[Any] = None
 
         self._build()
 
@@ -205,10 +207,28 @@ class PhonePage(ttk.Frame):
                       wraplength=280, justify="left").grid(
                 row=0, column=column, sticky="nw",
                 padx=(0 if column == 0 else PAD_SMALL, 0))
+        # Putting the program onto the phone itself is a different job from
+        # steering this PC, so it gets its own window.
+        ttk.Button(card, text=self.messages["android_install"], style="Row.TButton",
+                   command=self._install_on_android).grid(
+            row=1, column=0, columnspan=len(keys), sticky="w", pady=(PAD, 0))
 
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
+    def _install_on_android(self) -> None:
+        """Open the window that puts the program onto a plugged-in phone."""
+        from .android_dialog import AndroidDialog
+
+        if self._android is not None:
+            try:
+                self._android.window.lift()
+                return
+            except tk.TclError:
+                self._android = None
+        self._android = AndroidDialog(self, self.messages, self.palette, self.fonts,
+                                     on_copy=self._on_copy)
+
     def _port_number(self) -> int:
         """Return the port from the entry, falling back to the stored one."""
         try:

@@ -108,12 +108,25 @@ def test_the_minimum_python_is_shared_with_the_installer() -> None:
 @pytest.mark.parametrize("manager", [m for m in installer._PACKAGE_MANAGERS if m.name != "brew"],
                          ids=lambda m: m.name)
 def test_every_system_key_resolves_to_a_package(manager) -> None:
-    """A key without a mapping would make the installer silently do nothing."""
+    """A key without a mapping would make the installer silently do nothing.
+
+    A platform may declare a component as ``unsupported`` - Android has no system
+    tray at all - but only explicitly, so that a forgotten mapping still fails.
+    """
     for entry in dependencies.SYSTEM_DEPENDENCIES:
-        if not entry.system_key:
+        if not entry.system_key or not manager.supports(entry.system_key):
             continue
         assert manager.package_for(entry.system_key), \
             "{0} has no package for '{1}'".format(manager.name, entry.system_key)
+
+
+@pytest.mark.parametrize("manager", [m for m in installer._PACKAGE_MANAGERS if m.name != "brew"],
+                         ids=lambda m: m.name)
+def test_what_a_platform_declares_missing_really_has_no_package(manager) -> None:
+    """Otherwise "unsupported" would hide a mapping that does exist."""
+    for key in manager.unsupported:
+        assert manager.package_for(key) is None, \
+            "{0} declares '{1}' unsupported but maps it anyway".format(manager.name, key)
 
 
 def test_a_mapping_with_several_packages_is_split() -> None:

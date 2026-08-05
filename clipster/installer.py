@@ -35,7 +35,7 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import config as config_module
 from . import dependencies
@@ -123,13 +123,47 @@ class PackageManager:
     refresh: Optional[List[str]]
     install: List[str]
     packages: Dict[str, str]
+    #: Components this platform genuinely does not have, so there is nothing to
+    #: install. Declared rather than simply left out of ``packages``, so that an
+    #: accidental omission still shows up as a missing mapping.
+    unsupported: Tuple[str, ...] = ()
 
     def package_for(self, key: str) -> Optional[str]:
         """Return the distribution package name for a logical component."""
         return self.packages.get(key)
 
+    def supports(self, key: str) -> bool:
+        """Return whether this platform has such a component at all.
+
+        :param key: The logical component name.
+        :return: ``False`` only for what was explicitly declared missing.
+        """
+        return key not in self.unsupported
+
 
 _PACKAGE_MANAGERS: List[PackageManager] = [
+    PackageManager(
+        # Termux on Android. First in the list and gated on is_termux(), because
+        # FreeBSD also has a "pkg" that means something entirely different.
+        name="pkg",
+        refresh=["pkg", "update", "-y"],
+        install=["pkg", "install", "-y"],
+        packages={
+            "ffmpeg": "ffmpeg",
+            "mpv": "mpv",
+            "tk": "python-tkinter",
+            # venv and pip ship with Termux's python package.
+            "venv": "python",
+            "pip": "python-pip",
+            # No X11 here; the clipboard comes from termux-api instead.
+            "xclip": "termux-api",
+            "wl-clipboard": "termux-api",
+            "js": "nodejs",
+            "python": "python",
+        },
+        # Android has no system tray and no AppIndicator to put a menu into.
+        unsupported=("appindicator",),
+    ),
     PackageManager(
         name="apt-get",
         refresh=["apt-get", "update"],
@@ -242,6 +276,8 @@ def detect_package_manager() -> Optional[PackageManager]:
         return _detected_manager
     _manager_detected = True
     for manager in _PACKAGE_MANAGERS:
+        if manager.name == "pkg" and not paths.is_termux():
+            continue                        # FreeBSD's pkg is a different thing
         if shutil.which(manager.name):
             _detected_manager = manager
             log.debug("Detected package manager: %s", manager.name)
@@ -263,7 +299,8 @@ def _privileged(command: Sequence[str]) -> Optional[List[str]]:
     :param command: The command to run as administrator.
     :return: The runnable command, or ``None`` when privileges are unreachable.
     """
-    if _is_root() or (command and command[0] == "brew"):
+    if _is_root() or (command and command[0] in ("brew", "pkg")):
+        # Termux installs into the user's own prefix, Homebrew likewise.
         return list(command)
     if shutil.which("sudo"):
         return ["sudo", "-p", "[sudo] password for %u (YouTube Clipster setup): "] + list(command)
@@ -393,7 +430,7 @@ def manual_install_hint(keys: Sequence[str]) -> str:
     packages = _package_names(manager, keys)
     if not packages:
         return "Please install manually: {0}".format(", ".join(keys))
-    prefix = "" if _is_root() or manager.name == "brew" else "sudo "
+    prefix = "" if _is_root() or manager.name in ("brew", "pkg") else "sudo "
     return "Run manually: {0}{1} {2}".format(prefix, " ".join(manager.install), " ".join(packages))
 
 
@@ -1122,6 +1159,7 @@ def bootstrap(
     recreate_venv: bool = False,
     update_check_hours: int = 24,
     on_progress: Optional[Callable[[str], None]] = None,
+    need_gui: bool = True,
 ) -> InstallReport:
     """Run every dependency check and install what is missing.
 
@@ -1131,6 +1169,9 @@ def bootstrap(
     :param recreate_venv: Delete and rebuild the virtual environment.
     :param update_check_hours: Minimum hours between two yt-dlp update checks.
     :param on_progress: Optional UI/console callback with a short status line.
+    :param need_gui: Whether windows will be opened. Without them tkinter, the
+        tray and the clipboard helpers are not needed - which is what makes a
+        server, a Raspberry Pi or Termux on Android workable.
     :return: The collected report.
     """
     report = InstallReport()
@@ -1148,8 +1189,11 @@ def bootstrap(
     if not report.add(check_python()).ok:
         return report
 
-    note("Checking tkinter...")
-    report.add(check_tkinter(auto_install=auto_install))
+    if need_gui:
+        note("Checking tkinter...")
+        report.add(check_tkinter(auto_install=auto_install))
+    else:
+        log.info("[OK] tkinter - not needed without windows")
 
     interpreter = Path(sys.executable)
     if use_venv:
@@ -1171,12 +1215,16 @@ def bootstrap(
     report.add(ensure_ffmpeg(auto_install=auto_install))
     note("Checking mpv (optional, for in-tab video)...")
     report.add(ensure_mpv(auto_install=auto_install))
-    note("Checking clipboard helper...")
-    report.add(ensure_clipboard_tool(auto_install=auto_install))
-    note("Checking tray menu support...")
-    report.add(ensure_tray_menu(interpreter=interpreter, auto_install=auto_install))
-    note("Checking system tray...")
-    report.add(ensure_tray_support(interpreter=interpreter, auto_install=auto_install))
+    if need_gui:
+        note("Checking clipboard helper...")
+        report.add(ensure_clipboard_tool(auto_install=auto_install))
+        note("Checking tray menu support...")
+        report.add(ensure_tray_menu(interpreter=interpreter, auto_install=auto_install))
+        note("Checking system tray...")
+        report.add(ensure_tray_support(interpreter=interpreter, auto_install=auto_install))
+    else:
+        # No clipboard to watch and no tray to sit in without a desktop.
+        log.info("[OK] Clipboard access, tray - not needed without windows")
     note("Checking QR code support (optional, for the phone setup)...")
     report.add(ensure_qr_support(interpreter=interpreter, auto_install=auto_install))
     note("Checking JavaScript runtime...")

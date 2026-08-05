@@ -69,6 +69,7 @@ More detail: [User guide](docs/USER_GUIDE.md) · [Technical documentation](docs/
 | **Download engine** | `yt-dlp` | `yt-dlp` |
 | **Media processing** | `ffmpeg` | `ffmpeg` |
 | **System tray** *(optional)* | `pystray`, `Pillow`, `python-xlib` | `pystray`, `Pillow` |
+| **Headless** | none of the above — see [Without a screen](#without-a-screen--server-raspberry-pi-android-termux) | — |
 | **Phone QR code** *(optional)* | `qrcode` | `qrcode` |
 
 **You do not have to install any of this by hand.** The bootstrapper `run.py` checks
@@ -396,6 +397,8 @@ The log file lives next to the configuration:
 --no-window           never show the view window at startup
 --no-tray             do not place an icon in the system tray
 --show-window         start with the view window open
+--headless            run without windows or tray (see "Without a screen")
+--accept-terms        confirm the terms of use (only needed with --headless)
 -v, --verbose         verbose (DEBUG) logging
 --version             print the version
 ```
@@ -670,6 +673,95 @@ send.
 
 ---
 
+## Without a screen — server, Raspberry Pi, Android (Termux)
+
+`--headless` runs the program with no windows and no tray. The download pipeline, the history and the
+remote interface all work unchanged; what falls away is everything that needed a desktop. You then
+operate it from the browser of any device — including the phone the program is running on.
+
+```bash
+python3 run.py --headless --accept-terms
+```
+
+`--accept-terms` confirms the terms of use, which normally happens in a dialog. It is a deliberate
+switch: the program does not give a legal confirmation on your behalf.
+
+Switch remote control on first, otherwise there is no way to reach it at all — the log says so on
+startup. Easiest is one guided run beforehand:
+
+```bash
+python3 run.py --phone-setup
+```
+
+### What works headless, and what does not
+
+| | Headless |
+|---|---|
+| Downloads through the remote interface | **yes**, fully |
+| Download list, play, save, delete | **yes** |
+| Search, queue, volume, playback on the device | **yes** |
+| Terms, config, history, updates | **yes** |
+| **Streaming** | **no** — the queue and the player live in the view window. The Streaming tab reports "not available"; nothing crashes. |
+| Clipboard watching | **no** — there is nobody copying links on a screenless machine |
+| Tray, windows, setup splash | not applicable, and not installed either |
+
+The dependency check skips tkinter, the tray and the clipboard helpers in this mode, so a machine
+without a desktop needs no X11 packages.
+
+### From the PC, over USB
+
+The program can hand itself to a plugged-in phone. Open the view window, go to **Remote** and press
+**Install on Android**:
+
+![Install on Android](docs/images/android-install.png)
+
+Four steps, each saying what it is waiting for:
+
+1. **Android tools** — `adb` has to be installed. Missing, the window shows the exact command for your
+   system.
+2. **The phone** — plug it in with a cable that carries data, and switch on USB debugging (Settings →
+   About phone → tap *Build number* seven times → Developer options → USB debugging). The phone then
+   asks whether to allow this computer; the window says so and waits, and notices the tap by itself.
+3. **Transfer** — the program packs itself up and copies the archive to the phone, with a progress bar.
+   The configuration and the history stay behind: the configuration holds this machine's remote control
+   token, which has no business on another device.
+4. **On the phone** — one line to run in Termux, with a *Copy the command* button and a button that
+   brings Termux to the front on the phone.
+
+That last step cannot be done from the PC, and not for lack of trying: `adb shell` runs as a different
+user, and Termux keeps its home in its own private app storage that no other user may enter. So the
+archive goes to the shared `Download` folder and Termux fetches it from there.
+
+### On Android, through Termux
+
+Android *is* Linux and this is plain Python, so it runs in [Termux](https://termux.dev/) — with one
+thing that cannot work there, see below.
+
+```bash
+# In Termux (from F-Droid or GitHub - the Play Store build is outdated and broken)
+pkg update && pkg install python ffmpeg mpv git
+git clone https://github.com/joruf/youtube-clipster.git
+cd youtube-clipster
+python run.py --phone-setup          # switch on remote control, once
+python run.py --headless --accept-terms
+```
+
+Then open the address it prints in the phone's own browser. Termux is recognised automatically:
+`pkg` is used for system packages, without `sudo`, and neither tkinter nor the tray is asked for.
+
+Two things that will otherwise cost you an evening:
+
+- **Android kills background processes.** Run `termux-wake-lock` before starting, and exempt Termux
+  from battery optimisation. Without that the download stops when the screen goes off.
+- **Copying a link cannot start a download on Android.** Android has forbidden reading the clipboard
+  in the background since Android 10. Use the **share sheet** instead — the same PWA flow described
+  above works when the program runs on the very phone doing the sharing.
+
+Running it on the phone is not the only option, and often not the best one: with the PC doing the work
+you get Streaming as well, and the phone stays a remote control.
+
+---
+
 ## Tests
 
 ```bash
@@ -724,6 +816,8 @@ youtube-clipster/
 ├── tools/make_logo.py       # regenerates the logo (SVG + PNG + ICO)
 ├── tools/capture_screenshots.py  # anonymized UI screenshots for docs
 ├── tools/phone_link.py      # prints the phone address and a QR code for it
+├── install-android.sh       # Termux setup: launcher icon, boot start, terms
+├── tools/android/clipster-start  # what the home screen icon runs
 └── clipster/
     ├── cli.py               # argument parsing, bootstrap, relaunch into the venv
     ├── dependencies.py      # THE dependency definition - what is needed and why
@@ -747,6 +841,9 @@ youtube-clipster/
     ├── phone_page.py        # the Phone page of the view window
     ├── qrview.py            # draws a QR code onto a Tk canvas
     ├── scroller.py          # the scrollable container both pages use
+    ├── headless.py          # windowless event loop and interface (--headless)
+    ├── android.py           # adb: find the phone, pack up, transfer
+    ├── android_dialog.py    # the "Install on Android" window
     ├── web/                 # the page the phone loads (HTML, CSS, JS, manifest)
     ├── clipboard.py         # Win32 / wl-clipboard / xclip / xsel / pbpaste / Tk
     ├── singleinstance.py    # flock (POSIX) and named mutex (Windows)

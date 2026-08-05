@@ -61,6 +61,10 @@ def build_parser() -> argparse.ArgumentParser:
     runtime.add_argument("--no-tray", action="store_true", help="do not place an icon in the system tray")
     runtime.add_argument("--show-window", action="store_true",
                          help="open the view window at startup")
+    runtime.add_argument("--headless", action="store_true",
+                         help="run without windows or tray, driven by the remote interface")
+    runtime.add_argument("--accept-terms", action="store_true",
+                         help="confirm the terms of use (only needed with --headless)")
     return parser
 
 
@@ -91,7 +95,8 @@ def bootstrap_main(argv: Optional[Sequence[str]] = None) -> int:
         try:
             from .setup_ui import open_setup_splash
 
-            splash = open_setup_splash(messages)
+            # Nothing to show a splash on, and nothing to show it to.
+            splash = None if args.headless else open_setup_splash(messages)
         except Exception as exc:  # pragma: no cover - headless / missing Tk
             log.debug("Setup splash could not be opened: %s", exc)
             splash = None
@@ -110,6 +115,7 @@ def bootstrap_main(argv: Optional[Sequence[str]] = None) -> int:
                 recreate_venv=args.reinstall,
                 update_check_hours=_configured_update_hours(args.config),
                 on_progress=on_progress,
+                need_gui=not args.headless,
             )
             if report.ok and not (args.check or args.create_shortcut or args.autostart):
                 on_progress(messages.get("setup_starting", "Starting YouTube Clipster..."))
@@ -150,7 +156,7 @@ def _first_start_arguments(arguments: List[str], args: argparse.Namespace, first
     :param first_start: Whether no configuration file existed yet.
     :return: The argument list to hand on.
     """
-    if not first_start or args.no_window or args.show_window or args.check:
+    if not first_start or args.no_window or args.show_window or args.check or args.headless:
         return arguments
     log.info("First start - opening the window so the program is visible.")
     return arguments + ["--show-window"]
@@ -394,13 +400,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         from .app import ClipsterApp
     except ImportError as exc:
-        log.error("The GUI could not be initialised: %s", exc)
-        log.error("On Linux install the tkinter package, e.g. 'sudo apt install python3-tk'.")
+        log.error("The application could not be initialised: %s", exc)
+        if not args.headless:
+            log.error("On Linux install the tkinter package, e.g. 'sudo apt install python3-tk'.")
         lock.release()
         return 1
 
     try:
-        return ClipsterApp(config, messages).run()
+        return ClipsterApp(config, messages, headless=args.headless,
+                           accept_terms=args.accept_terms).run()
     finally:
         lock.release()
 

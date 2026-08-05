@@ -146,20 +146,35 @@ class ClipsterApp:
     #: Upper bound for the waiting list, so a stuck download cannot pile up.
     MAX_QUEUE = 20
 
-    def __init__(self, config: Config, messages: Messages) -> None:
+    def __init__(self, config: Config, messages: Messages, *, headless: bool = False,
+                 accept_terms: bool = False) -> None:
         """
         :param config: The active user configuration.
         :param messages: The active translation table.
+        :param headless: Run without windows and without a tray, driven by the
+            remote interface. For a machine with no screen - a server, or Android
+            through Termux.
+        :param accept_terms: Confirm the terms of use without asking. Only ever
+            passed from an explicit command line switch.
         """
         self.config = config
         self.messages = messages
+        self.headless = bool(headless)
         self.download_dir = config.resolved_download_dir()
 
         self.history = History(limit=config.history_limit).load()
         self.taste = DiscoverTaste().load()
-        self.gui = Gui(messages, config, self.download_dir)
+        if self.headless:
+            from .headless import HeadlessGui
+
+            self.gui: Any = HeadlessGui(messages, config, self.download_dir,
+                                        accept_terms=accept_terms)
+        else:
+            self.gui = Gui(messages, config, self.download_dir)
         self.bridge = TkBridge(self.gui.root)
-        self.clipboard = Clipboard(self.gui.root)
+        # No Tk fallback backend without Tk, and no clipboard watching either:
+        # a headless machine has nobody copying links into it.
+        self.clipboard = Clipboard(None if self.headless else self.gui.root)
         self.downloader = Downloader(config, messages)
         self.tray = TrayIcon(
             messages=messages,
@@ -271,13 +286,13 @@ class ClipsterApp:
         self.bridge.start()
         self.gui.render_history(self.history.entries)
 
-        if self.config.use_tray:
+        if self.config.use_tray and not self.headless:
             self._tray_active = self.tray.start()
-        self._apply_initial_visibility()
-        self._tray_show_armed = True
-
-        # Ignore whatever is already in the clipboard at startup.
-        self._last_seen = self.clipboard.read()
+        if not self.headless:
+            self._apply_initial_visibility()
+            self._tray_show_armed = True
+            # Ignore whatever is already in the clipboard at startup.
+            self._last_seen = self.clipboard.read()
 
         log.info("%s", self.messages["separator"])
         log.info("%s", APP_TITLE)
@@ -285,10 +300,16 @@ class ClipsterApp:
         log.info("%s", self.messages["started"])
         log.info("Download folder: %s", self.download_dir)
         log.info("Download history: %s entries (%s)", len(self.history), self.history.path)
+        if self.headless and not self.config.remote_enabled:
+            # Without windows and without the remote interface there would be no
+            # way to reach the program at all.
+            log.warning("Headless without remote control - switch on \"remote_enabled\" "
+                        "in %s, or run with --phone-setup once.", self.config.path)
         self.start_remote()
 
         self.gui.root.after(200, self._post_start)
-        self.gui.root.after(self.config.poll_interval_ms(), self._poll_clipboard)
+        if not self.headless:
+            self.gui.root.after(self.config.poll_interval_ms(), self._poll_clipboard)
 
         try:
             self.gui.root.mainloop()

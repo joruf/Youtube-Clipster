@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+#
+# Loresoft YouTube Clipster - start on Android, from a home screen icon.
+#
+# One tap has to do everything a launcher would: keep the phone from stopping the
+# process, start the program if it is not already running, and open its
+# interface. Tapping again while it runs only opens the interface.
+#
+# Usage:  clipster-start [--open] [--stop] [--status]
+#
+# Author:  Joachim Ruf, Loresoft.de
+# License: GPLv3
+
+set -u
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+PID_FILE="${TMPDIR:-/tmp}/youtube-clipster-android.pid"
+LOG_FILE="$HOME/.local/share/YoutubeClipster/android-start.log"
+OPEN=0
+ACTION="start"
+
+for argument in "$@"; do
+    case "$argument" in
+        --open)   OPEN=1 ;;
+        --stop)   ACTION="stop" ;;
+        --status) ACTION="status" ;;
+        -h|--help)
+            sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+        *) printf 'Unknown option: %s\n' "$argument" >&2; exit 1 ;;
+    esac
+done
+
+running() {
+    # A pid file alone proves nothing - the process may be long gone.
+    [ -f "$PID_FILE" ] || return 1
+    local pid
+    pid="$(cat "$PID_FILE" 2>/dev/null)"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+case "$ACTION" in
+    status)
+        if running; then
+            printf 'running (pid %s)\n' "$(cat "$PID_FILE")"
+            exit 0
+        fi
+        printf 'not running\n'
+        exit 1
+        ;;
+    stop)
+        if running; then
+            kill "$(cat "$PID_FILE")" 2>/dev/null
+            printf 'stopped\n'
+        else
+            printf 'was not running\n'
+        fi
+        rm -f "$PID_FILE"
+        command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock
+        exit 0
+        ;;
+esac
+
+# Without this Android suspends the process as soon as the screen goes off, and
+# a download that takes minutes never finishes.
+if command -v termux-wake-lock >/dev/null 2>&1; then
+    termux-wake-lock
+fi
+
+if running; then
+    printf 'Already running (pid %s).\n' "$(cat "$PID_FILE")"
+else
+    mkdir -p "$(dirname "$LOG_FILE")"
+    # Detached, so closing Termux does not take the program with it.
+    # Deliberately no --accept-terms: install-android.sh asks for that once,
+    # with the text in front of the user. A launcher must not confirm terms on
+    # every tap.
+    nohup python "$ROOT/run.py" --headless --skip-checks \
+        >>"$LOG_FILE" 2>&1 &
+    printf '%s\n' "$!" > "$PID_FILE"
+    printf 'Started (pid %s). Log: %s\n' "$!" "$LOG_FILE"
+    # The interface needs a moment before it answers.
+    sleep 3
+fi
+
+if [ "$OPEN" -eq 1 ]; then
+    URL="$(python "$ROOT/tools/phone_link.py" --url 2>/dev/null || true)"
+    if [ -z "$URL" ]; then
+        printf 'The address could not be determined - is remote control switched on?\n' >&2
+        exit 1
+    fi
+    if command -v termux-open-url >/dev/null 2>&1; then
+        termux-open-url "$URL"
+    else
+        printf 'Open this in your browser:\n    %s\n' "$URL"
+    fi
+fi

@@ -21,6 +21,21 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 HOME_ENV_VAR = "YOUTUBE_CLIPSTER_HOME"
 
 
+def is_termux() -> bool:
+    """Return whether this runs inside Termux on Android.
+
+    Android reports itself as Linux, so nothing else would tell the difference -
+    and it matters: Termux has its own package manager, needs no ``sudo``, and
+    has neither a system tray nor an X server.
+
+    :return: ``True`` inside Termux.
+    """
+    prefix = os.environ.get("PREFIX", "")
+    if "com.termux" in prefix:
+        return True
+    return bool(os.environ.get("TERMUX_VERSION")) or Path("/data/data/com.termux").exists()
+
+
 def install_dir() -> Path:
     """Return the writable application data directory for the current user."""
     override = os.environ.get(HOME_ENV_VAR)
