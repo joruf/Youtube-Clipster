@@ -7,8 +7,13 @@ One constraint shapes the whole flow: **adb cannot write into Termux.**
 ``adb shell`` runs as the ``shell`` user, and Termux keeps its home inside its own
 private app storage, which no other user may enter. So the transfer goes to the
 shared storage every app can read, and the last step - unpacking and installing -
-happens inside Termux itself. That is one line to run there, and it cannot be
-avoided from this side.
+has to happen inside Termux itself.
+
+*Where* that line runs cannot be moved. Who types it can: :func:`run_on_phone`
+brings Termux to the front and sends the command as keystrokes, so nobody has to
+key a 130-character shell command into a phone keyboard. Keystrokes go to whatever
+holds the focus, which is why nothing is ever typed without checking that Termux
+really is the app on screen.
 
 Nothing here touches the interface; the wizard does the talking.
 """
@@ -55,6 +60,12 @@ _SKIP_FILES = frozenset({"config.json", "history.json", "discover_taste.json",
 
 #: ``adb push`` prints its progress like ``[ 42%] /sdcard/Download/...``.
 _PROGRESS = re.compile(r"\[\s*(\d{1,3})%\]")
+
+#: The app that has to be on screen before anything is typed into it.
+TERMUX_PACKAGE = "com.termux"
+
+#: Pulls ``com.termux/com.termux.app.TermuxActivity`` out of a dumpsys line.
+_PACKAGE = re.compile(r"([a-zA-Z][\w.]*\.[\w.]+)/[\w.$]+")
 
 #: What a device line of ``adb devices`` means for the user.
 STATE_READY = "device"
@@ -348,7 +359,7 @@ def open_termux(serial: str = "") -> bool:
     command = [adb]
     if serial:
         command += ["-s", serial]
-    command += ["shell", "monkey", "-p", "com.termux", "-c",
+    command += ["shell", "monkey", "-p", TERMUX_PACKAGE, "-c",
                 "android.intent.category.LAUNCHER", "1"]
     try:
         finished = subprocess.run(command, capture_output=True, text=True, timeout=20,
@@ -357,6 +368,150 @@ def open_termux(serial: str = "") -> bool:
         log.debug("Termux could not be started: %s", exc)
         return False
     return finished.returncode == 0
+
+
+def foreground_app(serial: str = "") -> str:
+    """Return the package name of the app currently on screen.
+
+    Asked before anything is typed. Keystrokes go to whatever has focus, so
+    without this check a command could land in a chat window.
+
+    :param serial: Which device, when several are plugged in.
+    :return: The package name, or an empty string when it cannot be determined.
+    """
+    adb = adb_path()
+    if not adb:
+        return ""
+    command = [adb]
+    if serial:
+        command += ["-s", serial]
+    command += ["shell", "dumpsys", "window"]
+    try:
+        finished = subprocess.run(command, capture_output=True, text=True, timeout=20,
+                                  **_no_window())
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.debug("The foreground app could not be determined: %s", exc)
+        return ""
+    for line in finished.stdout.splitlines():
+        if "mCurrentFocus" not in line and "mFocusedApp" not in line:
+            continue
+        match = _PACKAGE.search(line)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def typeable(text: str) -> bool:
+    """Return whether ``text`` can be typed safely with ``input text``.
+
+    ``input text`` reads ``%s`` as a space, and the text has to survive being
+    single-quoted for the shell on the phone. Anything carrying a quote or a
+    percent sign is refused rather than typed wrongly - a half-typed command is
+    worse than none.
+
+    :param text: The command to type.
+    :return: Whether it can be sent as is.
+    """
+    return bool(text) and "'" not in text and "%" not in text and "\n" not in text
+
+
+def type_text(text: str, serial: str = "") -> bool:
+    """Type ``text`` into whatever is on screen on the phone.
+
+    :param text: The text to type. Must pass :func:`typeable`.
+    :param serial: Which device, when several are plugged in.
+    :return: Whether adb accepted it.
+    """
+    adb = adb_path()
+    if not adb or not typeable(text):
+        return False
+    command = [adb]
+    if serial:
+        command += ["-s", serial]
+    # Single-quoted for the phone's shell; spaces as %s, which is what input
+    # text expects and what survives every Android version reliably.
+    command += ["shell", "input text '{0}'".format(text.replace(" ", "%s"))]
+    try:
+        finished = subprocess.run(command, capture_output=True, text=True, timeout=60,
+                                  **_no_window())
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.debug("The text could not be typed: %s", exc)
+        return False
+    return finished.returncode == 0
+
+
+def press_enter(serial: str = "") -> bool:
+    """Press the return key on the phone.
+
+    :param serial: Which device, when several are plugged in.
+    :return: Whether adb accepted it.
+    """
+    adb = adb_path()
+    if not adb:
+        return False
+    command = [adb]
+    if serial:
+        command += ["-s", serial]
+    command += ["shell", "input", "keyevent", "66"]      # KEYCODE_ENTER
+    try:
+        finished = subprocess.run(command, capture_output=True, text=True, timeout=30,
+                                  **_no_window())
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.debug("Return could not be pressed: %s", exc)
+        return False
+    return finished.returncode == 0
+
+
+def wait_for_termux(serial: str = "", timeout: float = 20.0, poll: float = 0.5) -> bool:
+    """Wait until Termux is the app on screen.
+
+    :param serial: Which device, when several are plugged in.
+    :param timeout: How long to wait, in seconds.
+    :param poll: Seconds between two looks.
+    :return: Whether Termux got there.
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        if foreground_app(serial).startswith(TERMUX_PACKAGE):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(max(0.1, poll))
+
+
+def run_on_phone(command: str, serial: str = "",
+                 on_status: Optional[Callable[[str], None]] = None) -> Tuple[bool, str]:
+    """Open Termux on the phone and type the command into it.
+
+    This exists so nobody has to key a 130-character shell command into a phone
+    keyboard. It is still Termux that runs it - that part cannot move to the PC,
+    see the module docstring - but the typing can.
+
+    The foreground check is not politeness: ``input text`` goes to whatever has
+    focus, so if Termux never comes up, this refuses rather than typing a shell
+    command into whatever app happens to be open.
+
+    :param command: The line to run on the phone.
+    :param serial: Which device, when several are plugged in.
+    :param on_status: Called with a short progress key: ``opening``, ``typing``.
+    :return: ``(success, reason)``. The reason names what failed, or is empty.
+    """
+    if not typeable(command):
+        return False, "untypeable"
+    if on_status is not None:
+        on_status("opening")
+    if not open_termux(serial):
+        return False, "termux_missing"
+    if not wait_for_termux(serial):
+        return False, "termux_not_open"
+    if on_status is not None:
+        on_status("typing")
+    if not type_text(command, serial):
+        return False, "typing_failed"
+    if not press_enter(serial):
+        return False, "typing_failed"
+    log.info("The install command was typed into Termux on the phone.")
+    return True, ""
 
 
 def install_command(bundle_name: str = BUNDLE_NAME, remote_dir: str = REMOTE_DIR) -> str:

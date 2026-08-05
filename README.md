@@ -740,12 +740,22 @@ Four steps, each saying what it is waiting for:
 3. **Transfer** — the program packs itself up and copies the archive to the phone, with a progress bar.
    The configuration and the history stay behind: the configuration holds this machine's remote control
    token, which has no business on another device.
-4. **On the phone** — one line to run in Termux, with a *Copy the command* button and a button that
-   brings Termux to the front on the phone.
+4. **On the phone** — press **Run it on the phone**. The program brings Termux to the front and types
+   the command in for you, then presses Return. You do not type anything on the phone. *Copy the
+   command* and *Open Termux on the phone* stay there as a fallback.
 
-That last step cannot be done from the PC, and not for lack of trying: `adb shell` runs as a different
-user, and Termux keeps its home in its own private app storage that no other user may enter. So the
-archive goes to the shared `Download` folder and Termux fetches it from there.
+   Two taps on the phone remain, and neither can be automated: Android asks for **storage
+   permission** (its own permission dialog), and the setup asks you to **accept the terms of use**
+   once — that is a decision a program must not make for you.
+
+*Where* that last line runs cannot be moved to the PC, and not for lack of trying: `adb shell` runs as
+a different user, and Termux keeps its home in its own private app storage that no other user may
+enter. So the archive goes to the shared `Download` folder and Termux fetches it from there. Only the
+*typing* could be moved, and it was.
+
+Nothing is ever typed blindly: keystrokes go to whichever app holds the focus, so the program checks
+that Termux really is on screen first and refuses rather than typing a shell command into whatever
+happens to be open.
 
 ### On Android, through Termux
 

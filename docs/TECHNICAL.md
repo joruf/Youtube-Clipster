@@ -107,9 +107,23 @@ PCM-backed modes (`spectrum`, `waveform`, `pulse`) read analysis from `DiscoverP
 a phone, and the tests use a fake `adb` on PATH. The bundle deliberately omits `config.json` and
 `history.json` - the configuration holds this machine's remote token.
 
-The flow ends with one line the user runs inside Termux, and that is not a shortcut: `adb shell` runs as
-the `shell` user while Termux's home lives in its own private app storage, so the PC cannot write there.
-The archive goes to `/sdcard/Download` and Termux picks it up.
+The flow ends with one line inside Termux, and that is not a shortcut: `adb shell` runs as the `shell`
+user while Termux's home lives in its own private app storage, so the PC cannot write there. The archive
+goes to `/sdcard/Download` and Termux picks it up.
+
+*Where* that line runs is fixed; who types it is not. `run_on_phone()` launches Termux, waits for it to
+reach the foreground, and sends the command with `adb shell input text` followed by keyevent 66. Three
+details matter:
+
+* `input text` types into **whatever holds the focus**. So `foreground_app()` parses `dumpsys window`
+  for `mCurrentFocus` and the run is abandoned unless the package is `com.termux` - otherwise a shell
+  command could be typed into a chat window. This is the reason the check exists, not politeness.
+* `input text` reads `%s` as a space, so spaces are substituted and the whole string is single-quoted
+  for the phone's shell. `typeable()` refuses anything containing `'`, `%` or a newline instead of
+  typing it wrongly; a half-typed shell command is worse than none. A test asserts the real install
+  command passes that gate, so it fails the moment the command grows such a character.
+* Two things on the phone stay manual by nature: Android's storage permission dialog, and accepting the
+  terms of use. The launcher deliberately does not pass `--accept-terms` either.
 
 `android_dialog.py` runs every adb call on a worker thread and those threads never touch Tk - they queue
 their result and the Tk thread drains it on a timer. `widget.after()` from another thread appears to

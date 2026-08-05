@@ -696,3 +696,201 @@ def test_a_long_output_line_stays_one_row(dialog_without_adb) -> None:
     window, root = dialog_without_adb
     window._adb_output("x" * 400)
     assert len(window._adb_hint.cget("text")) <= 90
+
+
+# ----------------------------------------------------------------------
+# Typing the last command into Termux, instead of the user doing it
+# ----------------------------------------------------------------------
+@pytest.fixture()
+def recording_adb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Put an adb on PATH that records every call and fakes the foreground app."""
+    directory = tmp_path / "bin"
+    directory.mkdir()
+    log_file = tmp_path / "calls.log"
+    script = directory / "adb"
+
+    def program(focus: str = "com.termux/com.termux.app.TermuxActivity",
+                exit_code: int = 0) -> Path:
+        script.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' \"$*\" >> '{log}'\n"
+            "case \"$*\" in\n"
+            "  *dumpsys*) echo '  mCurrentFocus=Window{{aaa u0 {focus}}}';;\n"
+            "  *devices*) echo 'List of devices attached'; echo 'AAA device model:Pixel_7';;\n"
+            "  *) exit {code} ;;\n"
+            "esac\n".format(log=log_file, focus=focus, code=exit_code),
+            encoding="utf-8",
+        )
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        monkeypatch.setenv("PATH", str(directory) + os.pathsep + os.environ["PATH"])
+        return log_file
+
+    return program
+
+
+def test_the_focused_app_is_recognised(recording_adb) -> None:
+    recording_adb()
+    assert android.foreground_app() == "com.termux"
+
+
+def test_another_app_in_front_is_reported_as_itself(recording_adb) -> None:
+    recording_adb(focus="com.whatsapp/com.whatsapp.HomeActivity")
+    assert android.foreground_app() == "com.whatsapp"
+
+
+def test_an_unreadable_answer_means_unknown(recording_adb) -> None:
+    recording_adb(focus="")
+    assert android.foreground_app() == ""
+
+
+def test_nothing_is_typed_into_another_app(recording_adb) -> None:
+    """The whole point of the check: keystrokes go wherever the focus is."""
+    log_file = recording_adb(focus="com.whatsapp/com.whatsapp.HomeActivity")
+
+    ok, reason = android.run_on_phone("echo hello")
+
+    assert not ok
+    assert reason == "termux_not_open"
+    calls = log_file.read_text(encoding="utf-8")
+    assert "input text" not in calls, "typed a command into a foreign app"
+
+
+def test_with_termux_in_front_the_command_is_typed_and_entered(recording_adb) -> None:
+    log_file = recording_adb()
+
+    ok, reason = android.run_on_phone(android.install_command())
+
+    assert ok and reason == ""
+    calls = log_file.read_text(encoding="utf-8")
+    assert "input text" in calls
+    assert "install-android.sh" in calls
+    assert "keyevent 66" in calls, "the command was typed but never run"
+
+
+def test_the_command_is_reported_step_by_step(recording_adb) -> None:
+    recording_adb()
+    seen: list = []
+    android.run_on_phone("echo hello", on_status=seen.append)
+    assert seen == ["opening", "typing"]
+
+
+def test_spaces_survive_the_way_to_the_phone(recording_adb) -> None:
+    """input text reads %s as a space; a raw space would split the command."""
+    log_file = recording_adb()
+    android.type_text("pkg install -y tar")
+    calls = log_file.read_text(encoding="utf-8")
+    assert "pkg%sinstall%s-y%star" in calls
+
+
+def test_the_real_install_command_can_be_typed() -> None:
+    """If this ever fails the command grew a character that cannot be sent."""
+    assert android.typeable(android.install_command())
+
+
+@pytest.mark.parametrize("text", ["it's", "100%", "two\nlines", ""])
+def test_what_cannot_be_typed_safely_is_refused(text: str) -> None:
+    """A half-typed shell command is worse than none at all."""
+    assert not android.typeable(text)
+
+
+def test_an_untypeable_command_never_reaches_the_phone(recording_adb) -> None:
+    log_file = recording_adb()
+    ok, reason = android.run_on_phone("echo 'quoted'")
+    assert not ok and reason == "untypeable"
+    assert not log_file.exists() or "input text" not in log_file.read_text(encoding="utf-8")
+
+
+def test_without_adb_nothing_can_be_typed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(android, "adb_path", lambda: None)
+    assert android.type_text("echo hello") is False
+    assert android.press_enter() is False
+    assert android.foreground_app() == ""
+
+
+def test_waiting_gives_up_rather_than_hanging(recording_adb) -> None:
+    recording_adb(focus="com.android.launcher/com.android.launcher.Launcher")
+    assert android.wait_for_termux(timeout=0.3, poll=0.1) is False
+
+
+@pytest.mark.gui
+def test_the_run_button_waits_for_a_ready_phone(dialog) -> None:
+    window, _, root = dialog
+    _settle(root, window)
+    assert str(window._run_button.cget("state")) == "normal"
+
+
+@pytest.mark.gui
+@pytest.mark.parametrize("dialog", ["List of devices attached"], indirect=True)
+def test_without_a_phone_nothing_can_be_typed(dialog) -> None:
+    window, _, root = dialog
+    _settle(root, window)
+    assert str(window._run_button.cget("state")) == "disabled"
+
+
+@pytest.mark.gui
+def test_the_window_reports_a_typed_command(dialog, messages,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    window, _, root = dialog
+    _settle(root, window)
+    monkeypatch.setattr(android, "run_on_phone", lambda *a, **k: (True, ""))
+
+    window._run_on_phone()
+    _settle(root, window, 1.0)
+
+    assert window._labels["finish"].cget("text") == messages["android_run_started"]
+
+
+@pytest.mark.gui
+def test_a_refusal_to_type_names_the_reason(dialog, messages,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    """"Termux did not come up" and "adb refused" need different answers."""
+    window, _, root = dialog
+    _settle(root, window)
+    monkeypatch.setattr(android, "run_on_phone", lambda *a, **k: (False, "termux_not_open"))
+
+    window._run_on_phone()
+    _settle(root, window, 1.0)
+
+    assert window._labels["finish"].cget("text") == messages["android_run_failed_termux_not_open"]
+
+
+@pytest.mark.gui
+def test_an_unknown_reason_still_says_something_useful(dialog, messages,
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    window, _, root = dialog
+    _settle(root, window)
+    monkeypatch.setattr(android, "run_on_phone", lambda *a, **k: (False, "something-new"))
+
+    window._run_on_phone()
+    _settle(root, window, 1.0)
+
+    assert window._labels["finish"].cget("text") == messages["android_run_failed"]
+
+
+def test_every_reason_the_typing_can_fail_with_has_a_message() -> None:
+    """A new reason would otherwise silently fall back to the vague message."""
+    import re
+
+    from clipster import android_dialog
+
+    source = Path(android.__file__).read_text(encoding="utf-8")
+    body = source.split("def run_on_phone", 1)[1].split("\ndef ", 1)[0]
+    reasons = set(re.findall(r'return False, "([a-z_]+)"', body))
+
+    assert reasons, "no failure reasons found - did run_on_phone change shape?"
+    assert reasons <= set(android_dialog.RUN_FAILURES), \
+        "no message for: {0}".format(sorted(reasons - set(android_dialog.RUN_FAILURES)))
+
+
+def test_every_status_the_typing_reports_has_a_message() -> None:
+    import re
+
+    from clipster import android_dialog
+
+    source = Path(android.__file__).read_text(encoding="utf-8")
+    body = source.split("def run_on_phone", 1)[1].split("\ndef ", 1)[0]
+    statuses = set(re.findall(r'on_status\("([a-z_]+)"\)', body))
+
+    assert statuses == set(android_dialog.RUN_STATUS), \
+        "status keys and messages drifted: {0}".format(
+            statuses ^ set(android_dialog.RUN_STATUS))

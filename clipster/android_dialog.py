@@ -42,6 +42,22 @@ PUMP_MS = 80
 #: The four steps, in order.
 STEPS = ("adb", "device", "transfer", "finish")
 
+#: Progress of the typing -> the line to show. Spelled out instead of assembled
+#: from the status, so every key stays greppable and the translation checks can
+#: see that it is used.
+RUN_STATUS = {
+    "opening": "android_run_opening",
+    "typing": "android_run_typing",
+}
+
+#: Why the typing failed -> the message that says what to do about it.
+RUN_FAILURES = {
+    "untypeable": "android_run_failed_untypeable",
+    "termux_missing": "android_run_failed_termux_missing",
+    "termux_not_open": "android_run_failed_termux_not_open",
+    "typing_failed": "android_run_failed_typing_failed",
+}
+
 
 class AndroidDialog:
     """Walks the user through putting the program onto a phone."""
@@ -132,8 +148,13 @@ class AndroidDialog:
         self._command.pack(fill="x", pady=(PAD_SMALL, 0))
         row = ttk.Frame(card, style="Panel.TFrame")
         row.pack(fill="x", pady=(PAD_SMALL, 0))
+        # The main way out of this step: nobody should have to key a 130-character
+        # shell command into a phone keyboard. The other two stay as a fallback.
+        self._run_button = ttk.Button(row, text=self.messages["android_run_on_phone"],
+                                     style="Accent.TButton", command=self._run_on_phone)
+        self._run_button.pack(side="left")
         ttk.Button(row, text=self.messages["android_copy_command"], style="Row.TButton",
-                   command=self._copy_command).pack(side="left")
+                   command=self._copy_command).pack(side="left", padx=(PAD_SMALL, 0))
         self._termux_button = ttk.Button(row, text=self.messages["android_open_termux"],
                                         style="Row.TButton", command=self._open_termux)
         self._termux_button.pack(side="left", padx=(PAD_SMALL, 0))
@@ -238,6 +259,7 @@ class AndroidDialog:
         try:
             self._start_button.configure(state="normal" if ready else "disabled")
             self._termux_button.configure(state="normal" if ready else "disabled")
+            self._run_button.configure(state="normal" if ready else "disabled")
         except tk.TclError:  # pragma: no cover
             pass
         # Keep looking while the phone is not ready yet, so plugging it in or
@@ -430,6 +452,54 @@ class AndroidDialog:
         """Put the Termux command on the clipboard."""
         self._on_copy(android.install_command())
         self._set("finish", self.messages["android_copied"], "Panel.Success.TLabel")
+
+    def _run_on_phone(self) -> None:
+        """Let the program type the last command into Termux on the phone."""
+        if self._busy or self._device is None:
+            return
+        serial = self._device.serial
+        command = android.install_command()
+        self._busy = True
+        self._arm_watch(False)
+        try:
+            self._run_button.configure(state="disabled")
+        except tk.TclError:  # pragma: no cover
+            pass
+        self._set("finish", self.messages["android_run_opening"])
+
+        def work() -> None:
+            ok, reason = android.run_on_phone(
+                command, serial,
+                on_status=lambda key: self._post(self._show_run_status, key),
+            )
+            self._post(self._run_done, ok, reason)
+
+        threading.Thread(target=work, name="clipster-adb-type", daemon=True).start()
+
+    def _show_run_status(self, status: str) -> None:
+        """Show how far the typing has got.
+
+        :param status: One of the keys of :data:`RUN_STATUS`.
+        :return: None
+        """
+        key = RUN_STATUS.get(status)
+        if key is not None:
+            self._set("finish", self.messages[key])
+
+    def _run_done(self, ok: bool, reason: str) -> None:
+        """Say how the typing went, and what is left to do by hand."""
+        self._busy = False
+        try:
+            self._run_button.configure(state="normal")
+        except tk.TclError:  # pragma: no cover
+            pass
+        if ok:
+            self._set("finish", self.messages["android_run_started"], "Panel.Success.TLabel")
+        else:
+            # An unknown reason still has to say something useful.
+            key = RUN_FAILURES.get(reason, "android_run_failed")
+            self._set("finish", self.messages[key], "Panel.Warning.TLabel")
+        self._arm_watch(not ok)
 
     def _open_termux(self) -> None:
         """Bring Termux to the front on the phone."""
