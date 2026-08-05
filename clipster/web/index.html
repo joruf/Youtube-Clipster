@@ -22,15 +22,83 @@
 <header class="bar">
     <img class="logo" src="/icon.png" alt="">
     <h1>YouTube Clipster</h1>
+    <button id="quit" type="button" class="quiet quit" hidden>Quit</button>
     <span id="connection" class="dot" title="Connection"></span>
 </header>
 
 <nav class="tabs" role="tablist">
-    <button id="tab-downloads" class="tab selected" type="button" role="tab">Downloads</button>
-    <button id="tab-streaming" class="tab" type="button" role="tab">Streaming</button>
+    <button id="tab-streaming" class="tab selected" type="button" role="tab">Streaming</button>
+    <button id="tab-downloads" class="tab" type="button" role="tab">Downloads</button>
+    <button id="tab-settings" class="tab" type="button" role="tab">Settings</button>
+    <button id="tab-about" class="tab" type="button" role="tab">About</button>
 </nav>
 
-<main id="view-downloads">
+<main id="view-streaming">
+    <section class="card">
+        <div class="row between">
+            <label class="label" for="search">Search YouTube</label>
+            <button id="results-toggle" type="button" class="quiet" hidden
+                    aria-expanded="true" aria-controls="results">▲ Hide</button>
+        </div>
+        <input id="search" type="search" inputmode="search" autocomplete="off"
+               autocapitalize="off" spellcheck="false" placeholder="Artist, song, anything">
+        <p id="search-note" class="meta"></p>
+        <ul id="results" class="downloads"></ul>
+    </section>
+
+    <section class="card" id="target-card">
+        <h2>Play on</h2>
+        <div class="formats" role="radiogroup" aria-label="Playback target">
+            <label class="chip" id="target-host-chip">
+                <input type="radio" name="target" value="host" checked>
+                <span>The PC</span>
+            </label>
+            <label class="chip">
+                <input type="radio" name="target" value="guest">
+                <span id="target-guest-label">This device</span>
+            </label>
+        </div>
+        <p id="target-note" class="meta"></p>
+        <div class="row" id="volume-row">
+            <span class="meta" id="volume-label">Volume</span>
+            <input id="volume" type="range" min="0" max="100" step="1" value="70"
+                   aria-label="Volume">
+            <span class="meta" id="volume-value">70</span>
+        </div>
+    </section>
+
+    <section class="card" id="now-playing">
+        <h2>Now playing</h2>
+        <p id="stream-title" class="stream-title">Nothing yet.</p>
+        <p id="stream-uploader" class="meta"></p>
+        <div class="track" id="stream-track">
+            <div class="fill" id="stream-fill"></div>
+        </div>
+        <p class="meta" id="stream-time">–:– / –:–</p>
+        <div class="level" aria-hidden="true"><div class="level-fill" id="stream-level"></div></div>
+        <div class="transport">
+            <button id="stream-previous" class="icon" type="button" aria-label="Previous">⏮</button>
+            <button id="stream-toggle" class="primary" type="button" aria-label="Play or pause">▶</button>
+            <button id="stream-stop" class="icon" type="button" aria-label="Stop">⏹</button>
+            <button id="stream-next" class="icon" type="button" aria-label="Next">⏭</button>
+            <button id="stream-like" class="icon" type="button" aria-label="Like">👍</button>
+            <button id="stream-dislike" class="icon" type="button" aria-label="Dislike">👎</button>
+            <button id="stream-download" class="icon" type="button" aria-label="Download">⤓</button>
+        </div>
+        <p id="stream-message" class="message" hidden></p>
+    </section>
+
+    <section class="card">
+        <div class="row between">
+            <h2>Queue</h2>
+            <button id="stream-refresh" type="button" class="quiet">Find similar</button>
+        </div>
+        <ul id="queue" class="downloads"></ul>
+        <p id="queue-empty" class="message" hidden>No songs yet — tap Find similar.</p>
+    </section>
+</main>
+
+<main id="view-downloads" hidden>
     <form id="submit-form" class="card">
         <label class="label" for="url">YouTube link</label>
         <input id="url" name="url" type="url" inputmode="url" autocomplete="off"
@@ -59,78 +127,124 @@
     <section class="card">
         <div class="row between">
             <h2>Downloads</h2>
-            <button id="refresh" type="button" class="quiet">Refresh</button>
+            <div class="row">
+                <button id="history-clear" type="button" class="quiet">Clear list</button>
+                <button id="refresh" type="button" class="quiet">Refresh</button>
+            </div>
+        </div>
+        <div class="formats filters" role="radiogroup" aria-label="Filter">
+            <label class="chip"><input type="radio" name="dl-filter" value="all" checked><span>All</span></label>
+            <label class="chip"><input type="radio" name="dl-filter" value="ok"><span>Ready</span></label>
+            <label class="chip"><input type="radio" name="dl-filter" value="failed"><span>Failed</span></label>
+            <label class="chip"><input type="radio" name="dl-filter" value="canceled"><span>Canceled</span></label>
         </div>
         <ul id="downloads" class="downloads"></ul>
         <p id="empty" class="message" hidden>Nothing here yet.</p>
     </section>
 </main>
 
-<main id="view-streaming" hidden>
-    <section class="card">
-        <div class="row between">
-            <label class="label" for="search">Search YouTube</label>
-            <button id="results-toggle" type="button" class="quiet" hidden
-                    aria-expanded="true" aria-controls="results">▲ Hide</button>
-        </div>
-        <input id="search" type="search" inputmode="search" autocomplete="off"
-               autocapitalize="off" spellcheck="false" placeholder="Artist, song, anything">
-        <p id="search-note" class="meta"></p>
-        <ul id="results" class="downloads"></ul>
-    </section>
+<main id="view-settings" hidden>
+    <form id="settings-form" class="card">
+        <h2>Settings</h2>
+        <p class="meta">Changes apply on this device immediately after Save.</p>
 
-    <section class="card">
-        <h2>Play on</h2>
-        <div class="formats" role="radiogroup" aria-label="Playback target">
-            <label class="chip">
-                <input type="radio" name="target" value="host" checked>
-                <span>The PC</span>
-            </label>
-            <label class="chip">
-                <input type="radio" name="target" value="guest">
-                <span>This device</span>
-            </label>
+        <label class="label" for="set-language">Language</label>
+        <select id="set-language" class="field">
+            <option value="en">English</option>
+            <option value="de">Deutsch</option>
+        </select>
+
+        <label class="label" for="set-format">Default format</label>
+        <select id="set-format" class="field">
+            <option value="mp3">MP3</option>
+            <option value="mp4">MP4</option>
+        </select>
+
+        <label class="label" for="set-download-dir">Download folder</label>
+        <input id="set-download-dir" class="field" type="text" autocomplete="off" spellcheck="false">
+        <p id="set-download-resolved" class="meta"></p>
+
+        <label class="label" for="set-history">History limit</label>
+        <input id="set-history" class="field" type="number" min="1" step="1">
+
+        <label class="check"><input id="set-parallel" type="checkbox"> Parallel downloads</label>
+        <label class="label" for="set-max-parallel">Max parallel</label>
+        <input id="set-max-parallel" class="field" type="number" min="1" step="1">
+
+        <label class="check"><input id="set-no-playlist" type="checkbox"> Never download whole playlists</label>
+        <label class="check"><input id="set-restrict" type="checkbox"> Restrict file names to ASCII</label>
+        <label class="check"><input id="set-ask-audio" type="checkbox"> Ask for audio language when several exist</label>
+
+        <h2 class="section">Streaming</h2>
+        <label class="label" for="set-suffix">Search suffix</label>
+        <input id="set-suffix" class="field" type="text" autocomplete="off">
+        <label class="label" for="set-mode">Discover mode</label>
+        <select id="set-mode" class="field">
+            <option value="search">search</option>
+            <option value="related">related</option>
+            <option value="deezer">deezer</option>
+            <option value="listenbrainz">listenbrainz</option>
+        </select>
+        <label class="label" for="set-max-results">Max results</label>
+        <input id="set-max-results" class="field" type="number" min="1" step="1">
+        <label class="check"><input id="set-require-suffix" type="checkbox"> Require suffix in titles</label>
+
+        <h2 class="section">Cookies (YouTube)</h2>
+        <p class="meta">Only needed when downloads are blocked. Use your own account and accept the risk.</p>
+        <label class="check"><input id="set-cookies-risk" type="checkbox"> I understand the cookie / ToS risk</label>
+        <label class="label" for="set-cookies-browser">Cookies from browser</label>
+        <select id="set-cookies-browser" class="field">
+            <option value="">Off</option>
+            <option value="firefox">Firefox</option>
+            <option value="chrome">Chrome</option>
+            <option value="chromium">Chromium</option>
+            <option value="brave">Brave</option>
+            <option value="edge">Edge</option>
+        </select>
+        <label class="label" for="set-cookies-file">Cookies file path</label>
+        <input id="set-cookies-file" class="field" type="text" autocomplete="off" spellcheck="false">
+
+        <div class="row" style="margin-top:14px">
+            <button id="settings-reload" type="button" class="quiet">Reload</button>
+            <button id="settings-save" type="submit" class="primary">Save</button>
         </div>
-        <p id="target-note" class="meta"></p>
-        <div class="row" id="volume-row">
-            <span class="meta" id="volume-label">Volume</span>
-            <input id="volume" type="range" min="0" max="100" step="1" value="70"
-                   aria-label="Volume">
-            <span class="meta" id="volume-value">70</span>
+        <p id="settings-message" class="message" hidden></p>
+    </form>
+</main>
+
+<main id="view-about" hidden>
+    <section class="card">
+        <h2 id="about-name">YouTube Clipster</h2>
+        <p id="about-version" class="meta"></p>
+        <p id="about-text"></p>
+        <p id="about-license" class="meta"></p>
+        <div class="row" style="margin-top:12px">
+            <button id="about-terms-app" type="button" class="quiet">App terms</button>
+            <button id="about-terms-streaming" type="button" class="quiet">Streaming terms</button>
         </div>
     </section>
-
-    <section class="card" id="now-playing">
-        <h2>Now playing</h2>
-        <p id="stream-title" class="stream-title">Nothing yet.</p>
-        <p id="stream-uploader" class="meta"></p>
-        <div class="track" id="stream-track">
-            <div class="fill" id="stream-fill"></div>
-        </div>
-        <p class="meta" id="stream-time">–:– / –:–</p>
-        <div class="level" aria-hidden="true"><div class="level-fill" id="stream-level"></div></div>
-        <div class="transport">
-            <button id="stream-previous" class="icon" type="button" aria-label="Previous">⏮</button>
-            <button id="stream-toggle" class="primary" type="button" aria-label="Play or pause">▶</button>
-            <button id="stream-next" class="icon" type="button" aria-label="Next">⏭</button>
-            <button id="stream-like" class="icon" type="button" aria-label="Like">👍</button>
-            <button id="stream-dislike" class="icon" type="button" aria-label="Dislike">👎</button>
-            <button id="stream-download" class="icon" type="button" aria-label="Download">⤓</button>
-        </div>
-        <p id="stream-message" class="message" hidden></p>
-    </section>
-
     <section class="card">
-        <div class="row between">
-            <h2>Queue</h2>
-            <button id="stream-refresh" type="button" class="quiet">Find similar</button>
-        </div>
-        <ul id="queue" class="downloads"></ul>
-        <p id="queue-empty" class="message" hidden>No songs yet — tap Find similar.</p>
+        <h2>Author</h2>
+        <p id="about-author"></p>
+        <p><a id="about-website" href="#" target="_blank" rel="noopener"></a></p>
+        <p><a id="about-repo" href="#" target="_blank" rel="noopener"></a></p>
+    </section>
+    <section class="card">
+        <h2>Files and folders</h2>
+        <ul id="about-paths" class="meta-list"></ul>
     </section>
 </main>
 
 <audio id="player" controls hidden preload="none"></audio>
+
+<dialog id="terms-dialog" class="terms-dialog">
+    <h2 id="terms-title">Streaming terms</h2>
+    <pre id="terms-body" class="terms-body"></pre>
+    <div class="row">
+        <button id="terms-decline" type="button" class="quiet">Decline</button>
+        <button id="terms-accept" type="button" class="primary">Accept</button>
+    </div>
+</dialog>
 
 <script src="/app.js"></script>
 </body>

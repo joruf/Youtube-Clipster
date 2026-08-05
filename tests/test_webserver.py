@@ -29,6 +29,8 @@ class FakeApp:
         self.entries = entries or []
         self.submitted: List[Tuple[str, str, bool]] = []
         self.deleted: List[HistoryEntry] = []
+        self.hidden: List[HistoryEntry] = []
+        self.cleared = False
         self.result: Any = None
         self.raise_on_submit = False
         self.delete_result = True
@@ -58,7 +60,85 @@ class FakeApp:
         return self.delete_result
 
     def remote_status(self) -> Dict[str, Any]:
-        return {"active": [{"url": "u", "percent": 42.0}], "queued": 1, "parallel": 1}
+        return {
+            "active": [{"url": "u", "percent": 42.0}],
+            "queued": 1,
+            "parallel": 1,
+            "can_quit": False,
+        }
+
+    def request_quit(self) -> None:
+        self.quit_calls = getattr(self, "quit_calls", 0) + 1
+
+    def remote_about(self) -> Dict[str, Any]:
+        return {
+            "name": "YouTube Clipster",
+            "version": "2.0.0",
+            "author": "Joachim Ruf",
+            "website": "https://www.loresoft.de",
+            "repository": "https://github.com/joruf/youtube-clipster",
+            "text": "about",
+            "license": "GPLv3",
+            "paths": {"config": "/tmp/c", "history": "/tmp/h", "log": "/tmp/l",
+                      "download_dir": "/tmp/d"},
+        }
+
+    def remote_settings(self) -> Dict[str, Any]:
+        return {
+            "language": "en",
+            "default_format": "mp3",
+            "download_dir": "",
+            "download_dir_resolved": "/tmp/d",
+            "history_limit": 100,
+            "parallel_downloads": False,
+            "max_parallel_downloads": 3,
+            "no_playlist": True,
+            "restrict_filenames": False,
+            "ask_audio_language": True,
+            "discover_search_suffix": "lyrics",
+            "discover_mode": "related",
+            "discover_max_results": 40,
+            "discover_require_suffix": True,
+            "languages": ["de", "en"],
+            "discover_modes": ["search", "related", "deezer", "listenbrainz"],
+        }
+
+    def apply_app_settings(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        self.settings_updates = getattr(self, "settings_updates", [])
+        self.settings_updates.append(updates)
+        data = self.remote_settings()
+        data.update({k: v for k, v in updates.items() if k in data})
+        return data
+
+    def hide_remote(self, entry: HistoryEntry) -> bool:
+        self.hidden.append(entry)
+        return True
+
+    def clear_history_remote(self) -> bool:
+        self.cleared = True
+        self.entries = []
+        return True
+
+    def remote_terms(self) -> Dict[str, Any]:
+        return {
+            "app_accepted": True,
+            "streaming_accepted": False,
+            "app_version": "2",
+            "streaming_version": "2",
+            "app_title": "App terms",
+            "app_body": "app body",
+            "streaming_title": "Streaming terms",
+            "streaming_body": "streaming body",
+            "accept_label": "Accept",
+            "decline_label": "Decline",
+        }
+
+    def accept_remote_terms(self, kind: str = "streaming") -> Dict[str, Any]:
+        self.terms_kind = kind
+        data = self.remote_terms()
+        data["streaming_accepted"] = True
+        data["ok"] = True
+        return data
 
     # -- streaming -----------------------------------------------------
     def discover_remote_state(self) -> Dict[str, Any]:
@@ -297,6 +377,66 @@ def test_the_status_endpoint_reports_progress(served) -> None:
     payload = json.loads(_request(base + "/api/status")[2])
     assert payload["active"][0]["percent"] == 42.0
     assert payload["queued"] == 1
+    assert payload["can_quit"] is False
+
+
+def test_quit_asks_the_application_to_shut_down(served) -> None:
+    app, base, _ = served
+    status, _, body = _request(base + "/api/quit", method="POST", body={})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    assert app.quit_calls == 1
+
+
+def test_about_endpoint_reports_version(served) -> None:
+    _, base, _ = served
+    status, _, body = _request(base + "/api/about")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["name"] == "YouTube Clipster"
+    assert payload["version"]
+
+
+def test_settings_can_be_read_and_saved(served) -> None:
+    app, base, _ = served
+    status, _, body = _request(base + "/api/settings")
+    assert status == 200
+    assert json.loads(body)["default_format"] == "mp3"
+    status, _, body = _request(base + "/api/settings", method="POST",
+                               body={"default_format": "mp4", "history_limit": 50})
+    assert status == 200
+    assert app.settings_updates[-1]["default_format"] == "mp4"
+    assert json.loads(body)["default_format"] == "mp4"
+
+
+
+def test_hide_and_clear_history(served) -> None:
+    from clipster.history import STATUS_OK, HistoryEntry
+    app, base, _ = served
+    entry = HistoryEntry(url="https://youtu.be/abcdefghijk", title="Song",
+                         media_format="mp3", status=STATUS_OK)
+    app.entries = [entry]
+    status, _, body = _request(base + "/api/downloads/hide", method="POST",
+                               body={"id": entry.identifier()})
+    assert status == 200
+    assert json.loads(body)["hidden"] is True
+    assert app.hidden[0] is entry
+    status, _, body = _request(base + "/api/downloads/clear", method="POST", body={})
+    assert status == 200
+    assert json.loads(body)["cleared"] is True
+    assert app.cleared is True
+
+
+def test_terms_can_be_read_and_accepted(served) -> None:
+    app, base, _ = served
+    status, _, body = _request(base + "/api/terms")
+    assert status == 200
+    assert "streaming_body" in json.loads(body)
+    status, _, body = _request(base + "/api/terms", method="POST",
+                               body={"kind": "streaming"})
+    assert status == 200
+    assert app.terms_kind == "streaming"
+    assert json.loads(body)["streaming_accepted"] is True
 
 
 # ----------------------------------------------------------------------
@@ -938,8 +1078,14 @@ def test_a_shutting_down_program_answers_503_for_streaming(served) -> None:
 def test_the_interface_offers_both_views(real_web) -> None:
     _, base = real_web
     page = _request(base + "/")[2].decode("utf-8")
-    assert 'id="tab-downloads"' in page
     assert 'id="tab-streaming"' in page
+    assert 'id="tab-downloads"' in page
+    assert 'id="tab-settings"' in page
+    assert 'id="tab-about"' in page
+    # Linux order: Streaming before Downloads.
+    assert page.index('id="tab-streaming"') < page.index('id="tab-downloads"')
+    assert page.index('id="tab-downloads"') < page.index('id="tab-settings"')
+    assert page.index('id="tab-settings"') < page.index('id="tab-about"')
     assert 'id="view-streaming"' in page
 
 

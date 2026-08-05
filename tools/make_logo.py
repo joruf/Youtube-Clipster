@@ -162,7 +162,63 @@ def main() -> int:
     preview_path = OUT / "youtube-clipster-preview.png"
     sheet.save(preview_path)
     print("wrote", preview_path.relative_to(ROOT), sheet.size)
+
+    _write_android_launcher(master)
     return 0
+
+
+def _write_android_launcher(master: Image.Image) -> None:
+    """Write mipmap / adaptive foreground assets for the phone launcher APK."""
+    res = ROOT / "tools" / "android" / "launcher" / "app" / "src" / "main" / "res"
+    if not res.is_dir():
+        return
+    sizes = {
+        "mipmap-mdpi": 48,
+        "mipmap-hdpi": 72,
+        "mipmap-xhdpi": 96,
+        "mipmap-xxhdpi": 144,
+        "mipmap-xxxhdpi": 192,
+    }
+    for folder, size in sizes.items():
+        out_dir = res / folder
+        out_dir.mkdir(parents=True, exist_ok=True)
+        img = master.resize((size, size), Image.LANCZOS)
+        img.save(out_dir / "ic_launcher.png")
+        img.save(out_dir / "ic_launcher_round.png")
+        print("wrote", (out_dir / "ic_launcher.png").relative_to(ROOT))
+
+    # Adaptive foreground: glyph only (launcher supplies the dark tile).
+    size = 432
+    big = size * SCALE
+    fg = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(fg)
+    centre = big / 2.0
+    _rounded_polygon(
+        draw,
+        [
+            (centre - big * TRIANGLE_HALF_WIDTH, big * TRIANGLE_TOP),
+            (centre + big * TRIANGLE_HALF_WIDTH, big * TRIANGLE_TOP),
+            (centre, big * TRIANGLE_BOTTOM),
+        ],
+        radius=big * CORNER_RADIUS,
+        fill=ACCENT,
+    )
+    draw.rounded_rectangle(
+        (
+            centre - big * BAR_HALF_WIDTH,
+            big * BAR_TOP,
+            centre + big * BAR_HALF_WIDTH,
+            big * BAR_BOTTOM,
+        ),
+        radius=big * BAR_RADIUS,
+        fill=ACCENT_DARK,
+    )
+    fg = fg.resize((size, size), Image.LANCZOS)
+    drawable = res / "drawable"
+    drawable.mkdir(parents=True, exist_ok=True)
+    target = drawable / "ic_launcher_foreground.png"
+    fg.save(target)
+    print("wrote", target.relative_to(ROOT))
 
 
 if __name__ == "__main__":

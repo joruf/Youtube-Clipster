@@ -332,6 +332,39 @@ def _goto_step(window, step: str) -> None:
 
 
 @pytest.mark.gui
+def test_wizard_shows_one_page_at_a_time(dialog, messages) -> None:
+    """Future steps must not sit empty under the current page."""
+    from clipster.android_dialog import WIZARD_STEPS
+
+    window, _, root = dialog
+    _settle(root, window)
+    assert window._current_step == "prepare"
+    assert "1" in window._progress_label.cget("text")
+    for step, card in window._step_cards.items():
+        manager = card.winfo_manager()
+        if step == "prepare":
+            assert manager == "pack"
+        else:
+            assert manager == ""
+    assert str(window._back_button.cget("state")) == "disabled"
+    window._adb_ready = True
+    window._device_ready = True
+    window._complete_current()
+    _settle(root, window)
+    assert window._current_step == "terms"
+    assert window._step_cards["prepare"].winfo_manager() == ""
+    assert window._step_cards["terms"].winfo_manager() == "pack"
+    assert str(window._back_button.cget("state")) == "normal"
+    window._go_back()
+    _settle(root, window)
+    assert window._current_step == "prepare"
+    assert window._step_cards["prepare"].winfo_manager() == "pack"
+    assert WIZARD_STEPS == ("prepare", "terms", "termux", "setup", "done")
+    assert messages["android_wizard_back"]
+    assert messages["android_wizard_prepare_item_usb"]
+
+
+@pytest.mark.gui
 def test_a_ready_phone_unlocks_the_transfer(dialog) -> None:
     window, _, root = dialog
     _settle(root, window)
@@ -1046,3 +1079,45 @@ def test_every_status_the_typing_reports_has_a_message() -> None:
     assert statuses == set(android_dialog.RUN_STATUS), \
         "status keys and messages drifted: {0}".format(
             statuses ^ set(android_dialog.RUN_STATUS))
+
+
+# ----------------------------------------------------------------------
+# Clipster launcher APK
+# ----------------------------------------------------------------------
+def test_launcher_apk_path_is_under_tools_android() -> None:
+    path = android.launcher_apk_path()
+    assert path.name == "clipster-launcher.apk"
+    assert path.parent.name == "android"
+    assert "tools" in path.parts
+
+
+def test_install_clipster_launcher_fails_when_apk_missing(tmp_path: Path,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(android, "launcher_apk_path", lambda: tmp_path / "missing.apk")
+    ok, message = android.install_clipster_launcher()
+    assert ok is False
+    assert "missing" in message.lower()
+
+
+def test_termux_phone_url_parses_config(fake_adb) -> None:
+    config = (
+        '{"remote_bind": "127.0.0.1", "remote_port": 8765, '
+        '"remote_token": "abc123token"}'
+    )
+    script = fake_adb("List of devices attached\nAAA device")
+    body = script.read_text(encoding="utf-8")
+    script.write_text(
+        body.replace(
+            "  *run-as*) exit 1 ;;\n",
+            "  *run-as*) cat <<'OUT'\n{0}\nOUT\n    ;;\n".format(config),
+        ),
+        encoding="utf-8",
+    )
+    url = android.termux_phone_url()
+    assert url == "http://127.0.0.1:8765/?token=abc123token"
+
+
+def test_termux_phone_url_empty_when_config_unreadable(fake_adb) -> None:
+    fake_adb("List of devices attached\nAAA device")
+    assert android.termux_phone_url() == ""
+

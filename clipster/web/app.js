@@ -24,12 +24,18 @@ const elements = {
     downloads: document.getElementById("downloads"),
     empty: document.getElementById("empty"),
     refresh: document.getElementById("refresh"),
+    historyClear: document.getElementById("history-clear"),
     connection: document.getElementById("connection"),
+    quit: document.getElementById("quit"),
     player: document.getElementById("player"),
     tabDownloads: document.getElementById("tab-downloads"),
     tabStreaming: document.getElementById("tab-streaming"),
+    tabSettings: document.getElementById("tab-settings"),
+    tabAbout: document.getElementById("tab-about"),
     viewDownloads: document.getElementById("view-downloads"),
     viewStreaming: document.getElementById("view-streaming"),
+    viewSettings: document.getElementById("view-settings"),
+    viewAbout: document.getElementById("view-about"),
     streamTitle: document.getElementById("stream-title"),
     streamUploader: document.getElementById("stream-uploader"),
     streamTrack: document.getElementById("stream-track"),
@@ -37,6 +43,7 @@ const elements = {
     streamTime: document.getElementById("stream-time"),
     streamLevel: document.getElementById("stream-level"),
     streamToggle: document.getElementById("stream-toggle"),
+    streamStop: document.getElementById("stream-stop"),
     streamMessage: document.getElementById("stream-message"),
     streamRefresh: document.getElementById("stream-refresh"),
     queue: document.getElementById("queue"),
@@ -46,9 +53,47 @@ const elements = {
     results: document.getElementById("results"),
     resultsToggle: document.getElementById("results-toggle"),
     targetNote: document.getElementById("target-note"),
+    targetHostChip: document.getElementById("target-host-chip"),
+    targetGuestLabel: document.getElementById("target-guest-label"),
     volumeRow: document.getElementById("volume-row"),
     volume: document.getElementById("volume"),
     volumeValue: document.getElementById("volume-value"),
+    settingsForm: document.getElementById("settings-form"),
+    settingsMessage: document.getElementById("settings-message"),
+    settingsSave: document.getElementById("settings-save"),
+    settingsReload: document.getElementById("settings-reload"),
+    setLanguage: document.getElementById("set-language"),
+    setFormat: document.getElementById("set-format"),
+    setDownloadDir: document.getElementById("set-download-dir"),
+    setDownloadResolved: document.getElementById("set-download-resolved"),
+    setHistory: document.getElementById("set-history"),
+    setParallel: document.getElementById("set-parallel"),
+    setMaxParallel: document.getElementById("set-max-parallel"),
+    setNoPlaylist: document.getElementById("set-no-playlist"),
+    setRestrict: document.getElementById("set-restrict"),
+    setAskAudio: document.getElementById("set-ask-audio"),
+    setSuffix: document.getElementById("set-suffix"),
+    setMode: document.getElementById("set-mode"),
+    setMaxResults: document.getElementById("set-max-results"),
+    setRequireSuffix: document.getElementById("set-require-suffix"),
+    setCookiesRisk: document.getElementById("set-cookies-risk"),
+    setCookiesBrowser: document.getElementById("set-cookies-browser"),
+    setCookiesFile: document.getElementById("set-cookies-file"),
+    aboutName: document.getElementById("about-name"),
+    aboutVersion: document.getElementById("about-version"),
+    aboutText: document.getElementById("about-text"),
+    aboutLicense: document.getElementById("about-license"),
+    aboutAuthor: document.getElementById("about-author"),
+    aboutWebsite: document.getElementById("about-website"),
+    aboutRepo: document.getElementById("about-repo"),
+    aboutPaths: document.getElementById("about-paths"),
+    aboutTermsApp: document.getElementById("about-terms-app"),
+    aboutTermsStreaming: document.getElementById("about-terms-streaming"),
+    termsDialog: document.getElementById("terms-dialog"),
+    termsTitle: document.getElementById("terms-title"),
+    termsBody: document.getElementById("terms-body"),
+    termsAccept: document.getElementById("terms-accept"),
+    termsDecline: document.getElementById("terms-decline"),
 };
 
 /** Where the sound comes out: "host" (the PC) or "guest" (this device). */
@@ -72,8 +117,14 @@ let guestIndex = -1;
 /** The track the queue was last centred on, so scrolling only follows changes. */
 let centredOn = "";
 
-/** Which view is on screen: "downloads" or "streaming". */
-let view = "downloads";
+/** Which view is on screen: "streaming", "downloads", "settings" or "about". */
+let view = "streaming";
+
+/** Standalone Android run (owns Quit and plays only on this device). */
+let standalone = false;
+
+/** Whether Streaming terms are already accepted on this device / host. */
+let streamingTermsOk = true;
 
 /** Signature of the queue as last rendered, so a poll does not rebuild it. */
 let lastQueue = "";
@@ -83,6 +134,10 @@ let streamDuration = 0;
 
 let pollTimer = null;
 let lastSignature = "";
+/** Cached download rows for client-side status filters. */
+let downloadEntries = [];
+/** Active downloads filter: "all", "ok", "failed" or "canceled". */
+let downloadFilter = "all";
 
 /**
  * Read a query parameter of the current URL.
@@ -396,8 +451,83 @@ function downloadRow(entry) {
         actions.appendChild(save);
     }
     actions.appendChild(button("✕", "Delete", () => remove(entry), "danger"));
+    actions.appendChild(button("–", "Hide", () => hideEntry(entry)));
     row.appendChild(actions);
     return row;
+}
+
+/**
+ * Hide a download from the list but keep the file.
+ *
+ * @param {object} entry One item of the download list.
+ * @returns {Promise<void>}
+ */
+async function hideEntry(entry) {
+    try {
+        const answer = await api("/api/downloads/hide", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({id: entry.id}),
+        });
+        if (answer.body.hidden) {
+            say("Hidden from the list.", "good");
+            lastSignature = "";
+            await loadDownloads();
+        } else {
+            say("Could not hide that entry.", "bad");
+        }
+    } catch (error) {
+        setConnection(false);
+        say(standalone ? "Clipster cannot be reached." : "The PC cannot be reached.", "bad");
+    }
+}
+
+/**
+ * Clear the whole download list (files stay on disk).
+ *
+ * @returns {Promise<void>}
+ */
+async function clearHistory() {
+    if (!window.confirm("Remove all entries from the list? Downloaded files are kept.")) {
+        return;
+    }
+    try {
+        const answer = await api("/api/downloads/clear", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: "{}",
+        });
+        if (answer.body.cleared) {
+            say("List cleared.", "good");
+            lastSignature = "";
+            await loadDownloads();
+        } else {
+            say("Could not clear the list.", "bad");
+        }
+    } catch (error) {
+        setConnection(false);
+        say(standalone ? "Clipster cannot be reached." : "The PC cannot be reached.", "bad");
+    }
+}
+
+/**
+ * Apply the active status filter to the cached download rows.
+ *
+ * @returns {void}
+ */
+function renderDownloadList() {
+    const filtered = downloadFilter === "all"
+        ? downloadEntries
+        : downloadEntries.filter((entry) => entry.status === downloadFilter);
+    elements.downloads.textContent = "";
+    filtered.forEach((entry) => elements.downloads.appendChild(downloadRow(entry)));
+    elements.empty.hidden = filtered.length > 0;
+    if (filtered.length === 0 && downloadEntries.length > 0) {
+        elements.empty.hidden = false;
+        elements.empty.textContent = "No download matches this filter.";
+    } else if (filtered.length === 0) {
+        elements.empty.textContent = "Nothing here yet.";
+    }
 }
 
 /**
@@ -416,14 +546,13 @@ async function loadDownloads() {
     const entries = answer.body.downloads || [];
     // Only rebuild when something actually changed, so a tap is not eaten by a
     // redraw that happened to land at the same moment.
-    const signature = JSON.stringify(entries.map((entry) => [entry.id, entry.playable]));
+    const signature = JSON.stringify(entries.map((entry) => [entry.id, entry.playable, entry.status]));
     if (signature === lastSignature) {
         return;
     }
     lastSignature = signature;
-    elements.downloads.textContent = "";
-    entries.forEach((entry) => elements.downloads.appendChild(downloadRow(entry)));
-    elements.empty.hidden = entries.length > 0;
+    downloadEntries = entries;
+    renderDownloadList();
 }
 
 /**
@@ -484,10 +613,64 @@ async function poll() {
     }
     const active = answer.body.active || [];
     renderActive(active, answer.body.queued || 0);
+    if (elements.quit) {
+        elements.quit.hidden = !answer.body.can_quit;
+    }
+    applyStandalone(!!answer.body.can_quit);
     if (active.length > 0) {
         // A download just finished somewhere between two polls.
         await loadDownloads();
     }
+}
+
+/**
+ * Adapt the UI when Clipster runs on the phone itself (not remoting a PC).
+ *
+ * @param {boolean} on Whether this is the standalone Android app.
+ * @returns {void}
+ */
+function applyStandalone(on) {
+    if (standalone === on) {
+        return;
+    }
+    standalone = on;
+    if (elements.targetHostChip) {
+        elements.targetHostChip.hidden = on;
+    }
+    if (on) {
+        setTarget("guest");
+        const guest = document.querySelector('input[name=target][value=guest]');
+        if (guest) {
+            guest.checked = true;
+        }
+    }
+}
+
+/**
+ * Shut the standalone app down: stop the local server, then close the launcher.
+ *
+ * @returns {Promise<void>}
+ */
+async function quitApp() {
+    if (elements.quit) {
+        elements.quit.disabled = true;
+    }
+    say("Stopping…", "info");
+    try {
+        await api("/api/quit", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: "{}",
+        });
+    } catch (error) {
+        // Server may already be gone; the launcher still tears the rest down.
+    }
+    if (window.ClipsterBridge && typeof window.ClipsterBridge.quitApp === "function") {
+        window.ClipsterBridge.quitApp();
+        return;
+    }
+    say("Stopped.", "info");
+    setConnection(false);
 }
 
 /**
@@ -522,32 +705,205 @@ function tick() {
         pollStream();
         return;
     }
-    poll();
-    loadDownloads();
+    if (view === "downloads") {
+        poll();
+        loadDownloads();
+    }
 }
 
-// -------------------------------------------------------------- streaming
 /**
- * Show one of the two views.
+ * Show one of the main views (same order as the Linux app).
  *
- * @param {string} name "downloads" or "streaming".
+ * @param {string} name "streaming", "downloads", "settings" or "about".
  * @returns {void}
  */
 function showView(name) {
+    const known = {streaming: 1, downloads: 1, settings: 1, about: 1};
+    if (!known[name]) {
+        name = "streaming";
+    }
     view = name;
     // In the address, so a reload keeps the tab the user was on - and so the
     // view can be opened directly from a bookmark.
     if (window.location.hash !== "#" + name) {
         window.history.replaceState({}, "", window.location.pathname + "#" + name);
     }
-    const streaming = name === "streaming";
-    elements.viewDownloads.hidden = streaming;
-    elements.viewStreaming.hidden = !streaming;
-    elements.tabDownloads.classList.toggle("selected", !streaming);
-    elements.tabStreaming.classList.toggle("selected", streaming);
+    elements.viewStreaming.hidden = name !== "streaming";
+    elements.viewDownloads.hidden = name !== "downloads";
+    elements.viewSettings.hidden = name !== "settings";
+    elements.viewAbout.hidden = name !== "about";
+    elements.tabStreaming.classList.toggle("selected", name === "streaming");
+    elements.tabDownloads.classList.toggle("selected", name === "downloads");
+    elements.tabSettings.classList.toggle("selected", name === "settings");
+    elements.tabAbout.classList.toggle("selected", name === "about");
+    if (name === "settings") {
+        loadSettings();
+    } else if (name === "about") {
+        loadAbout();
+    }
     syncPolling();
 }
 
+/**
+ * Fill the Settings form from the server.
+ *
+ * @returns {Promise<void>}
+ */
+async function loadSettings() {
+    let answer;
+    try {
+        answer = await api("/api/settings");
+    } catch (error) {
+        saySettings("Could not load settings.", "bad");
+        return;
+    }
+    if (answer.status !== 200) {
+        saySettings("Could not load settings.", "bad");
+        return;
+    }
+    const s = answer.body;
+    elements.setLanguage.value = s.language || "en";
+    elements.setFormat.value = s.default_format || "mp3";
+    elements.setDownloadDir.value = s.download_dir || "";
+    elements.setDownloadResolved.textContent = s.download_dir_resolved
+        ? "Resolved: " + s.download_dir_resolved : "";
+    elements.setHistory.value = String(s.history_limit || 100);
+    elements.setParallel.checked = !!s.parallel_downloads;
+    elements.setMaxParallel.value = String(s.max_parallel_downloads || 3);
+    elements.setNoPlaylist.checked = !!s.no_playlist;
+    elements.setRestrict.checked = !!s.restrict_filenames;
+    elements.setAskAudio.checked = !!s.ask_audio_language;
+    elements.setSuffix.value = s.discover_search_suffix || "";
+    elements.setMode.value = s.discover_mode || "related";
+    elements.setMaxResults.value = String(s.discover_max_results || 40);
+    elements.setRequireSuffix.checked = !!s.discover_require_suffix;
+    elements.setCookiesRisk.checked = !!s.cookies_risk_acknowledged;
+    elements.setCookiesBrowser.value = s.cookies_from_browser || "";
+    elements.setCookiesFile.value = s.cookies_file || "";
+    syncCookieFields();
+    saySettings("", "");
+}
+
+/**
+ * Enable cookie fields only after the risk is acknowledged.
+ *
+ * @returns {void}
+ */
+function syncCookieFields() {
+    const on = !!(elements.setCookiesRisk && elements.setCookiesRisk.checked);
+    if (elements.setCookiesBrowser) {
+        elements.setCookiesBrowser.disabled = !on;
+    }
+    if (elements.setCookiesFile) {
+        elements.setCookiesFile.disabled = !on;
+    }
+}
+
+/**
+ * Persist the Settings form.
+ *
+ * @param {Event} event Form submit.
+ * @returns {Promise<void>}
+ */
+async function saveSettings(event) {
+    event.preventDefault();
+    const body = {
+        language: elements.setLanguage.value,
+        default_format: elements.setFormat.value,
+        download_dir: elements.setDownloadDir.value,
+        history_limit: Number(elements.setHistory.value),
+        parallel_downloads: elements.setParallel.checked,
+        max_parallel_downloads: Number(elements.setMaxParallel.value),
+        no_playlist: elements.setNoPlaylist.checked,
+        restrict_filenames: elements.setRestrict.checked,
+        ask_audio_language: elements.setAskAudio.checked,
+        discover_search_suffix: elements.setSuffix.value,
+        discover_mode: elements.setMode.value,
+        discover_max_results: Number(elements.setMaxResults.value),
+        discover_require_suffix: elements.setRequireSuffix.checked,
+        cookies_risk_acknowledged: elements.setCookiesRisk.checked,
+        cookies_from_browser: elements.setCookiesBrowser.value,
+        cookies_file: elements.setCookiesFile.value,
+    };
+    try {
+        const answer = await api("/api/settings", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(body),
+        });
+        if (answer.status !== 200) {
+            saySettings("Could not save settings.", "bad");
+            return;
+        }
+        saySettings("Saved.", "good");
+        await loadSettings();
+    } catch (error) {
+        saySettings("Could not save settings.", "bad");
+    }
+}
+
+/**
+ * @param {string} text Message text; empty hides it.
+ * @param {string} kind "good", "bad", or empty.
+ * @returns {void}
+ */
+function saySettings(text, kind) {
+    elements.settingsMessage.textContent = text;
+    elements.settingsMessage.className = kind ? "message " + kind : "message";
+    elements.settingsMessage.hidden = !text;
+}
+
+/**
+ * Fill the About page from the server.
+ *
+ * @returns {Promise<void>}
+ */
+async function loadAbout() {
+    let answer;
+    try {
+        answer = await api("/api/about");
+    } catch (error) {
+        return;
+    }
+    if (answer.status !== 200) {
+        return;
+    }
+    const a = answer.body;
+    elements.aboutName.textContent = a.name || "YouTube Clipster";
+    elements.aboutVersion.textContent = a.version ? "Version " + a.version : "";
+    elements.aboutText.textContent = a.text || "";
+    elements.aboutLicense.textContent = a.license || "";
+    elements.aboutAuthor.textContent = a.author || "";
+    if (a.website) {
+        elements.aboutWebsite.href = a.website;
+        elements.aboutWebsite.textContent = a.website;
+    }
+    if (a.repository) {
+        elements.aboutRepo.href = a.repository;
+        elements.aboutRepo.textContent = a.repository;
+    }
+    elements.aboutPaths.innerHTML = "";
+    const paths = a.paths || {};
+    const labels = {
+        download_dir: "Downloads",
+        config: "Configuration",
+        history: "Download list",
+        log: "Log file",
+    };
+    Object.keys(labels).forEach((key) => {
+        if (!paths[key]) {
+            return;
+        }
+        const li = document.createElement("li");
+        const strong = document.createElement("strong");
+        strong.textContent = labels[key];
+        li.appendChild(strong);
+        li.appendChild(document.createTextNode(paths[key]));
+        elements.aboutPaths.appendChild(li);
+    });
+}
+
+// -------------------------------------------------------------- streaming
 /**
  * Say something in the Streaming view.
  *
@@ -586,7 +942,114 @@ function transport(command) {
         }
     } else if (command === "stop") {
         elements.player.pause();
+        elements.player.removeAttribute("src");
+        elements.player.load();
     }
+}
+
+/** Whether a terms dialog is already open. */
+let termsDialogOpen = false;
+
+/**
+ * Show terms text (app or streaming). Optionally require acceptance.
+ *
+ * @param {string} kind "streaming" or "app".
+ * @param {boolean} [requireAccept] When true, Accept writes acceptance.
+ * @returns {Promise<boolean>} Whether accepted (or already accepted / closed).
+ */
+async function showTerms(kind, requireAccept) {
+    const which = kind === "app" ? "app" : "streaming";
+    if (termsDialogOpen || !elements.termsDialog) {
+        return which === "streaming" ? streamingTermsOk : true;
+    }
+    termsDialogOpen = true;
+    try {
+        const answer = await api("/api/terms");
+        if (answer.status !== 200) {
+            sayStream("Could not load the terms.", "bad");
+            return false;
+        }
+        const data = answer.body;
+        const already = which === "streaming" ? data.streaming_accepted : data.app_accepted;
+        if (requireAccept && already) {
+            if (which === "streaming") {
+                streamingTermsOk = true;
+            }
+            return true;
+        }
+        elements.termsTitle.textContent = (which === "app"
+            ? data.app_title : data.streaming_title) || "Terms";
+        elements.termsBody.textContent = (which === "app"
+            ? data.app_body : data.streaming_body) || "";
+        elements.termsAccept.textContent = requireAccept
+            ? (data.accept_label || "Accept") : "Close";
+        elements.termsDecline.textContent = data.decline_label || "Decline";
+        elements.termsDecline.hidden = !requireAccept;
+        if (typeof elements.termsDialog.showModal === "function") {
+            elements.termsDialog.showModal();
+        } else {
+            elements.termsDialog.setAttribute("open", "");
+        }
+        const accepted = await new Promise((resolve) => {
+            const onAccept = async () => {
+                cleanup();
+                if (!requireAccept) {
+                    resolve(true);
+                    return;
+                }
+                try {
+                    const result = await api("/api/terms", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({kind: which}),
+                    });
+                    resolve(result.status === 200 && result.body.ok !== false);
+                } catch (error) {
+                    resolve(false);
+                }
+            };
+            const onDecline = () => {
+                cleanup();
+                resolve(false);
+            };
+            function cleanup() {
+                elements.termsAccept.removeEventListener("click", onAccept);
+                elements.termsDecline.removeEventListener("click", onDecline);
+                elements.termsDecline.hidden = false;
+                if (elements.termsDialog.open) {
+                    elements.termsDialog.close();
+                }
+            }
+            elements.termsAccept.addEventListener("click", onAccept);
+            elements.termsDecline.addEventListener("click", onDecline);
+        });
+        if (which === "streaming" && requireAccept) {
+            streamingTermsOk = !!accepted;
+            if (accepted) {
+                sayStream("Streaming terms accepted.", "good");
+                if (view === "streaming") {
+                    pollStream();
+                }
+            } else {
+                sayStream("Streaming terms were declined.", "bad");
+            }
+        }
+        return !!accepted;
+    } finally {
+        termsDialogOpen = false;
+    }
+}
+
+/**
+ * Show Streaming terms on this device and accept them when confirmed.
+ *
+ * @returns {Promise<boolean>} Whether terms are accepted afterwards.
+ */
+async function offerStreamingTerms() {
+    if (streamingTermsOk) {
+        return true;
+    }
+    return showTerms("streaming", true);
 }
 
 /**
@@ -604,11 +1067,12 @@ async function stream(command, extra) {
             body: JSON.stringify(Object.assign({command: command}, extra || {})),
         });
         if (answer.status === 403 && answer.body.error === "terms_required") {
-            sayStream("Accept the Streaming terms once on the PC, then try again.", "bad");
+            await offerStreamingTerms();
             return;
         }
         if (!answer.body.ok) {
-            sayStream("The PC could not do that (" + (answer.body.error || answer.status) + ").", "bad");
+            sayStream((standalone ? "Could not do that (" : "The PC could not do that (")
+                + (answer.body.error || answer.status) + ").", "bad");
             return;
         }
         sayStream("");
@@ -617,7 +1081,7 @@ async function stream(command, extra) {
         }
     } catch (error) {
         setConnection(false);
-        sayStream("The PC cannot be reached.", "bad");
+        sayStream(standalone ? "Clipster cannot be reached." : "The PC cannot be reached.", "bad");
     }
 }
 
@@ -709,12 +1173,22 @@ function centreQueue(videoId) {
  * @returns {void}
  */
 function renderStream(state) {
+    if (typeof state.terms_accepted === "boolean") {
+        streamingTermsOk = state.terms_accepted;
+    }
     if (!state.available) {
-        elements.streamTitle.textContent = "Streaming is not available on the PC.";
+        elements.streamTitle.textContent = standalone
+            ? "Streaming is starting…"
+            : "Streaming is not available on the PC.";
         return;
     }
     if (!state.terms_accepted) {
-        sayStream("Streaming needs its terms of use accepted once on the PC.", "bad");
+        sayStream(standalone
+            ? "Accept the Streaming terms to search and play."
+            : "Streaming needs its terms of use accepted once on the PC.", "bad");
+        if (standalone) {
+            offerStreamingTerms();
+        }
     }
 
     let current = state.current;
@@ -867,12 +1341,17 @@ async function runSearch() {
             body: JSON.stringify({query: query}),
         });
         if (answer.status === 403) {
-            elements.searchNote.textContent = "Accept the Streaming terms once on the PC.";
+            elements.searchNote.textContent = standalone
+                ? "Accept the Streaming terms to search."
+                : "Accept the Streaming terms once on the PC.";
+            await offerStreamingTerms();
             return;
         }
         const results = answer.body.results || [];
         if (!answer.body.ok) {
-            elements.searchNote.textContent = "The search failed on the PC.";
+            elements.searchNote.textContent = standalone
+                ? "The search failed."
+                : "The search failed on the PC.";
             return;
         }
         elements.searchNote.textContent = results.length
@@ -883,7 +1362,9 @@ async function runSearch() {
         showResults(results.length > 0);
     } catch (error) {
         setConnection(false);
-        elements.searchNote.textContent = "The PC cannot be reached.";
+        elements.searchNote.textContent = standalone
+            ? "Clipster cannot be reached."
+            : "The PC cannot be reached.";
     }
 }
 
@@ -929,8 +1410,13 @@ async function pick(found) {
         });
         if (!answer.body.ok) {
             elements.searchNote.textContent = answer.status === 403
-                ? "Accept the Streaming terms once on the PC."
-                : "The PC did not accept that track.";
+                ? (standalone
+                    ? "Accept the Streaming terms to play."
+                    : "Accept the Streaming terms once on the PC.")
+                : (standalone ? "That track was not accepted." : "The PC did not accept that track.");
+            if (answer.status === 403) {
+                await offerStreamingTerms();
+            }
             return;
         }
         elements.searchNote.textContent = "Added: " + found.title;
@@ -1067,16 +1553,44 @@ function acceptShare() {
 
 document.addEventListener("DOMContentLoaded", () => {
     const shared = acceptShare();
-    const wanted = window.location.hash === "#streaming" ? "streaming" : "downloads";
+    const hash = (window.location.hash || "").replace(/^#/, "");
+    const wanted = ["streaming", "downloads", "settings", "about"].indexOf(hash) >= 0
+        ? hash : "streaming";
     hideToken();
+    localizeChrome();
     elements.form.addEventListener("submit", submit);
     elements.refresh.addEventListener("click", () => {
         lastSignature = "";
         loadDownloads();
     });
+    if (elements.historyClear) {
+        elements.historyClear.addEventListener("click", clearHistory);
+    }
+    document.querySelectorAll("input[name=dl-filter]").forEach((radio) => {
+        radio.addEventListener("change", () => {
+            downloadFilter = radio.value;
+            renderDownloadList();
+        });
+    });
+    if (elements.quit) {
+        elements.quit.addEventListener("click", quitApp);
+    }
+    elements.settingsForm.addEventListener("submit", saveSettings);
+    elements.settingsReload.addEventListener("click", () => loadSettings());
+    if (elements.setCookiesRisk) {
+        elements.setCookiesRisk.addEventListener("change", syncCookieFields);
+    }
+    if (elements.aboutTermsApp) {
+        elements.aboutTermsApp.addEventListener("click", () => showTerms("app", false));
+    }
+    if (elements.aboutTermsStreaming) {
+        elements.aboutTermsStreaming.addEventListener("click", () => showTerms("streaming", false));
+    }
 
-    elements.tabDownloads.addEventListener("click", () => showView("downloads"));
     elements.tabStreaming.addEventListener("click", () => showView("streaming"));
+    elements.tabDownloads.addEventListener("click", () => showView("downloads"));
+    elements.tabSettings.addEventListener("click", () => showView("settings"));
+    elements.tabAbout.addEventListener("click", () => showView("about"));
     // Likes, dislikes and downloads always belong to the PC; the transport
     // follows whichever side is playing.
     [["stream-like", "like"], ["stream-dislike", "dislike"],
@@ -1087,6 +1601,9 @@ document.addEventListener("DOMContentLoaded", () => {
         document.getElementById(id).addEventListener("click", () => transport(command));
     });
     elements.streamToggle.addEventListener("click", () => transport("toggle"));
+    if (elements.streamStop) {
+        elements.streamStop.addEventListener("click", () => transport("stop"));
+    }
 
     elements.search.addEventListener("input", scheduleSearch);
     elements.search.addEventListener("search", runSearch);
@@ -1110,8 +1627,10 @@ document.addEventListener("DOMContentLoaded", () => {
     elements.streamTrack.addEventListener("click", seekFromClick);
     elements.resultsToggle.addEventListener("click", () => showResults());
     document.addEventListener("visibilitychange", syncPolling);
+    bootstrapStatus();
     showView(wanted);
     if (shared) {
+        showView("downloads");
         elements.form.requestSubmit();
     }
     if ("serviceWorker" in navigator) {
@@ -1121,3 +1640,40 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 });
+
+/**
+ * Read status once so Quit / standalone mode are right before the first poll.
+ *
+ * @returns {Promise<void>}
+ */
+async function bootstrapStatus() {
+    try {
+        const answer = await api("/api/status");
+        if (answer.status === 200) {
+            if (elements.quit) {
+                elements.quit.hidden = !answer.body.can_quit;
+            }
+            applyStandalone(!!answer.body.can_quit);
+        }
+    } catch (error) {
+        // First paint can retry via normal polling.
+    }
+}
+
+/**
+ * Localise a few chrome labels when the phone language is German.
+ *
+ * @returns {void}
+ */
+function localizeChrome() {
+    if (!/^de\b/i.test(navigator.language || "")) {
+        return;
+    }
+    if (elements.quit) {
+        elements.quit.textContent = "Beenden";
+    }
+    elements.tabStreaming.textContent = "Streaming";
+    elements.tabDownloads.textContent = "Downloads";
+    elements.tabSettings.textContent = "Einstellungen";
+    elements.tabAbout.textContent = "Über";
+}

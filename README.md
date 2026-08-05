@@ -755,8 +755,13 @@ Four steps, each saying what it is waiting for:
 
    If you ever see **Permission denied** on `/sdcard/…` in Termux: do not use that path. Run
    `bash ~/clipster-phone-setup.sh` instead, or grant Termux all-files access
-   (`termux-setup-storage` → Allow). To start Clipster after install:
-   `bash ~/youtube-clipster/tools/android/clipster-start --open`
+   (`termux-setup-storage` → Allow). After install, tap **Clipster** in the app list
+   (the wizard installs a small launcher APK via USB). The Termux:Widget shortcut remains
+   as a fallback.
+
+*Clipster launcher:* the PC wizard also installs a debug APK (`tools/android/clipster-launcher.apk`)
+so **Clipster** appears in the Android app drawer — not only as a browser home-screen shortcut.
+It starts Clipster in Termux and opens the local web UI in a full-screen WebView.
 
 *Where* the unpacking runs cannot fully leave the phone: `adb shell` is a different user. Official
 Termux can still receive files via `run-as` into its private home; without that, the archive goes to

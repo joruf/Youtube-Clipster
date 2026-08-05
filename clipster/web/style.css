@@ -212,6 +212,12 @@ button {
     font-size: 0.8rem;
 }
 
+.bar .quit {
+    flex-shrink: 0;
+    color: var(--text);
+    border-color: var(--border);
+}
+
 .message {
     margin: 12px 0 0;
     padding: 10px 12px;
@@ -378,22 +384,119 @@ button {
     position: sticky;
     top: 0;
     z-index: 1;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
 .tab {
-    flex: 1;
-    padding: 13px 8px;
+    flex: 1 0 auto;
+    min-width: 5.5rem;
+    padding: 13px 10px;
     background: transparent;
     border: 0;
     border-bottom: 2px solid transparent;
     color: var(--muted);
-    font-size: 0.92rem;
+    font-size: 0.88rem;
     font-weight: 600;
 }
 
 .tab.selected {
     color: var(--text);
     border-bottom-color: var(--accent);
+}
+
+.filters {
+    margin: 0 0 10px;
+}
+
+.field {
+    display: block;
+    width: 100%;
+    margin: 0 0 12px;
+    padding: 12px;
+    background: var(--elevated);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font: inherit;
+}
+
+.field:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.check {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    margin: 0 0 10px;
+    color: var(--text);
+    font-size: 0.92rem;
+}
+
+.check input {
+    margin-top: 3px;
+}
+
+h2.section {
+    margin: 18px 0 10px;
+}
+
+.meta-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.meta-list li {
+    padding: 8px 0;
+    border-top: 1px solid var(--border);
+    overflow-wrap: anywhere;
+    font-size: 0.85rem;
+    color: var(--muted);
+}
+
+.meta-list li:first-child {
+    border-top: 0;
+}
+
+.meta-list strong {
+    display: block;
+    color: var(--text);
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+#view-about a {
+    color: var(--accent);
+    overflow-wrap: anywhere;
+}
+
+.terms-dialog {
+    width: min(92vw, 520px);
+    max-height: 85vh;
+    padding: 18px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--panel);
+    color: var(--text);
+}
+
+.terms-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.55);
+}
+
+.terms-body {
+    max-height: 50vh;
+    overflow: auto;
+    margin: 12px 0 16px;
+    padding: 12px;
+    white-space: pre-wrap;
+    font: 0.85rem/1.4 system-ui, sans-serif;
+    background: var(--elevated);
+    border-radius: 10px;
+    color: var(--text);
 }
 
 /* -------------------------------------------------------------- streaming */

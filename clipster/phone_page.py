@@ -92,14 +92,24 @@ class PhonePage(ttk.Frame):
     def _build(self) -> None:
         """Create the page."""
         ttk.Label(self, text=self.messages["page_phone"], style="Title.TLabel").pack(anchor="w")
-        ttk.Label(self, text=self.messages["phone_intro"], style="Muted.TLabel",
-                  wraplength=760, justify="left").pack(anchor="w", pady=(2, PAD))
 
         # Scrollable: at the smallest allowed window size the cards are taller
         # than the page, and a clipped card is worse than a scrollbar.
         self._scroller = Scroller(self, self.palette)
         self._scroller.pack(fill="both", expand=True)
-        columns = ttk.Frame(self._scroller.body, style="Panel.TFrame")
+        body = ttk.Frame(self._scroller.body, style="Panel.TFrame")
+        body.pack(fill="both", expand=True)
+
+        # Standalone Android install first and clearly separated from remote
+        # control of this PC — they are different products on one page.
+        self._build_android(body)
+
+        ttk.Label(body, text=self.messages["phone_remote_section"], style="Title.TLabel").pack(
+            anchor="w", pady=(PAD, 0))
+        ttk.Label(body, text=self.messages["phone_intro"], style="Muted.TLabel",
+                  wraplength=760, justify="left").pack(anchor="w", pady=(2, PAD))
+
+        columns = ttk.Frame(body, style="Panel.TFrame")
         columns.pack(fill="both", expand=True)
         columns.columnconfigure(0, weight=1)
         columns.columnconfigure(1, weight=0)
@@ -108,17 +118,24 @@ class PhonePage(ttk.Frame):
         left.grid(row=0, column=0, sticky="nsew", padx=(0, PAD_SMALL))
         right = ttk.Frame(columns, style="Panel.TFrame")
         right.grid(row=0, column=1, sticky="n")
-        # The steps run under both columns: side by side they stay short, and
-        # the space next to the code would be wasted otherwise.
         below = ttk.Frame(columns, style="Panel.TFrame")
         below.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(PAD, 0))
 
         self._build_connection(left)
         self._build_code(right)
         self._build_steps(below)
-        # The wheel has to work over the cards too, not only over empty space.
-        self._scroller.bind_wheel_tree(columns)
+        self._scroller.bind_wheel_tree(body)
         self.refresh()
+
+    def _build_android(self, master: tk.Misc) -> None:
+        """Card that installs Clipster on the phone (not remote control)."""
+        card = ttk.LabelFrame(master, text=self.messages["android_section_title"],
+                              style="Card.TLabelframe", padding=PAD)
+        card.pack(fill="x", pady=(0, PAD))
+        ttk.Label(card, text=self.messages["android_section_intro"], style="Panel.Muted.TLabel",
+                  wraplength=720, justify="left").pack(anchor="w")
+        ttk.Button(card, text=self.messages["android_install"], style="Accent.TButton",
+                   command=self._install_on_android).pack(anchor="w", pady=(PAD, 0))
 
     def _build_connection(self, master: tk.Misc) -> None:
         """Create the settings and status card."""
@@ -207,11 +224,6 @@ class PhonePage(ttk.Frame):
                       wraplength=280, justify="left").grid(
                 row=0, column=column, sticky="nw",
                 padx=(0 if column == 0 else PAD_SMALL, 0))
-        # Putting the program onto the phone itself is a different job from
-        # steering this PC, so it gets its own window.
-        ttk.Button(card, text=self.messages["android_install"], style="Row.TButton",
-                   command=self._install_on_android).grid(
-            row=1, column=0, columnspan=len(keys), sticky="w", pady=(PAD, 0))
 
     # ------------------------------------------------------------------
     # Actions

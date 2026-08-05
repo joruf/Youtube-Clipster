@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import APP_SHORT_NAME, APP_TITLE, paths, shortcuts
+from . import APP_AUTHOR, APP_SHORT_NAME, APP_TITLE, APP_URL, APP_VERSION, APP_WEBSITE, paths, shortcuts
 from .bridge import Prompt, TkBridge
 from .clipboard import Clipboard
 from .config import Config
@@ -50,6 +50,8 @@ from .history import STATUS_CANCELED, STATUS_FAILED, STATUS_OK, History, History
 from .i18n import Messages
 from .logging_setup import get_logger
 from .terms import (
+    TERMS_APP_VERSION,
+    TERMS_STREAMING_VERSION,
     accept_app_terms,
     accept_streaming_terms,
     app_terms_accepted,
@@ -256,6 +258,19 @@ class ClipsterApp:
         self._auto_discover_done = False
         #: Tk ``after`` id for the deferred auto Discover start, if any.
         self._auto_discover_job: Optional[str] = None
+        #: Headless / Android Streaming backend (no Tk Discover page).
+        self._headless_discover: Any = None
+        if self.headless:
+            from .discover_session import HeadlessDiscoverSession
+
+            session = HeadlessDiscoverSession(config, messages)
+            session.player.set_options_provider(self.downloader._base_options)
+            session.ensure_terms = self._ensure_streaming_terms
+            session._on_like = self._discover_like
+            session._on_dislike = self._discover_dislike
+            session._on_download = self._discover_download
+            session._on_extend = self._discover_extend
+            self._headless_discover = session
         #: Ignore tray "show" callbacks until startup visibility has been applied
         #: (some backends fire activate while the icon is created).
         self._tray_show_armed = False
@@ -370,6 +385,12 @@ class ClipsterApp:
     # ------------------------------------------------------------------
     # Streaming, operated from the phone
     # ------------------------------------------------------------------
+    def _discover_page(self) -> Any:
+        """Return the GUI Discover page or the headless Streaming session."""
+        if self.gui.view is not None and self.gui.view.discover is not None:
+            return self.gui.view.discover
+        return self._headless_discover
+
     def discover_remote_state(self) -> Dict[str, Any]:
         """Describe the Streaming page for a remote client.
 
@@ -380,7 +401,7 @@ class ClipsterApp:
         """
         if not self.bridge.on_gui_thread():
             return dict(self.bridge.call(self.discover_remote_state))
-        page = self.gui.view.discover if self.gui.view is not None else None
+        page = self._discover_page()
         state: Dict[str, Any] = {
             "available": page is not None,
             "terms_accepted": streaming_terms_accepted(self.config),
@@ -552,7 +573,7 @@ class ClipsterApp:
                                          uploader, duration, play))
         if not streaming_terms_accepted(self.config):
             return {"ok": False, "error": "terms_required", "state": self.discover_remote_state()}
-        page = self.gui.view.discover if self.gui.view is not None else None
+        page = self._discover_page()
         if page is None:
             return {"ok": False, "error": "unavailable", "state": self.discover_remote_state()}
         if not video_id or len(str(video_id)) != 11:
@@ -602,7 +623,7 @@ class ClipsterApp:
             return dict(self.bridge.call(self.discover_remote_command, command, index, seconds))
         if command not in DISCOVER_COMMANDS:
             return {"ok": False, "error": "unknown_command", "state": self.discover_remote_state()}
-        page = self.gui.view.discover if self.gui.view is not None else None
+        page = self._discover_page()
         if page is None:
             return {"ok": False, "error": "unavailable", "state": self.discover_remote_state()}
         if command in DISCOVER_TERMS_COMMANDS and not streaming_terms_accepted(self.config):
@@ -820,7 +841,7 @@ class ClipsterApp:
         )
         if not accepted:
             log.info("User declined the Streaming terms of use.")
-            page = self.gui.view.discover if self.gui.view is not None else None
+            page = self._discover_page()
             if page is not None:
                 page.set_status(self.messages["terms_streaming_declined"], "warn")
             else:
@@ -1017,8 +1038,9 @@ class ClipsterApp:
         # Before the bridge stops: a request still in flight has to be able to
         # get its answer, rather than blocking on a bridge that is already gone.
         self.stop_remote()
-        if self.gui.view is not None and self.gui.view.discover is not None:
-            self.gui.view.discover.destroy_player()
+        page = self._discover_page()
+        if page is not None:
+            page.destroy_player()
         for worker in list(self._active.values()):
             if worker.is_alive():
                 worker.join(timeout=5.0)
@@ -1142,8 +1164,7 @@ class ClipsterApp:
             return
         if self._discover_busy:
             return
-        view = self.gui.view
-        page = view.discover if view is not None else None
+        page = self._discover_page()
         if page is None:
             return
         self._auto_discover_done = True
@@ -1201,7 +1222,7 @@ class ClipsterApp:
     def _discover_no_seeds(self) -> None:
         """Show the empty-seeds state after a background seed resolve."""
         self._discover_busy = False
-        page = self.gui.view.discover if self.gui.view is not None else None
+        page = self._discover_page()
         if page is None:
             return
         page.set_busy(False)
@@ -1211,7 +1232,7 @@ class ClipsterApp:
         """Append tracks as soon as a seed batch arrives during Find Similar."""
         if not self._discover_busy:
             return
-        page = self.gui.view.discover if self.gui.view is not None else None
+        page = self._discover_page()
         if page is None or not tracks:
             return
         filtered = self.taste.filter_tracks(tracks)
@@ -1222,7 +1243,7 @@ class ClipsterApp:
     def _discover_ready(self, outcome: DiscoverOutcome) -> None:
         """Show Discover results and status on the UI thread."""
         self._discover_busy = False
-        page = self.gui.view.discover if self.gui.view is not None else None
+        page = self._discover_page()
         if page is None:
             return
         outcome.tracks = self.taste.filter_tracks(outcome.tracks)
@@ -1239,7 +1260,7 @@ class ClipsterApp:
     def _discover_like(self, track: DiscoverTrack) -> None:
         """Remember a thumbs-up and load more songs like this one."""
         self.taste.like(track)
-        page = self.gui.view.discover if self.gui.view is not None else None
+        page = self._discover_page()
         if page is not None:
             page.set_status(self.messages["discover_liked"], "ok")
         if self._discover_busy or self._discover_extending:
@@ -1249,7 +1270,7 @@ class ClipsterApp:
     def _discover_dislike(self, track: DiscoverTrack) -> None:
         """Remember a thumbs-down, drop the track, and skip ahead."""
         self.taste.dislike(track)
-        page = self.gui.view.discover if self.gui.view is not None else None
+        page = self._discover_page()
         if page is None:
             return
         # Drop near-duplicates first so play_next does not land on another dislike.
@@ -1264,8 +1285,7 @@ class ClipsterApp:
         if self._discover_busy or self._discover_extending:
             # Keep _extend_requested / resume-after-extend so a later finish can continue.
             return
-        view = self.gui.view
-        page = view.discover if view is not None else None
+        page = self._discover_page()
         if page is None:
             return
         if self.taste.vote_for(track.video_id) == VOTE_DOWN:
@@ -1298,7 +1318,7 @@ class ClipsterApp:
     def _discover_extend_ready(self, outcome: DiscoverOutcome) -> None:
         """Append topped-up Discover tracks on the UI thread."""
         self._discover_extending = False
-        page = self.gui.view.discover if self.gui.view is not None else None
+        page = self._discover_page()
         if page is None:
             return
         page.set_loading(False)
@@ -1328,7 +1348,7 @@ class ClipsterApp:
     def _discover_extend_failed(self, details: str) -> None:
         """Show a Discover top-up error on the UI thread."""
         self._discover_extending = False
-        page = self.gui.view.discover if self.gui.view is not None else None
+        page = self._discover_page()
         if page is not None:
             page.mark_extend_idle()
             page.set_loading(False)
@@ -1407,7 +1427,7 @@ class ClipsterApp:
     def _discover_failed(self, details: str) -> None:
         """Show a Discover error on the UI thread."""
         self._discover_busy = False
-        page = self.gui.view.discover if self.gui.view is not None else None
+        page = self._discover_page()
         if page is not None:
             page.show_error(details)
 
@@ -1498,6 +1518,32 @@ class ClipsterApp:
         if not self.bridge.on_gui_thread():
             return bool(self.bridge.call(self.delete_remote, entry))
         return not self._remove_entry_and_file(entry)
+
+    def hide_remote(self, entry: HistoryEntry) -> bool:
+        """Hide a download row on the phone without deleting the file.
+
+        :param entry: The entry to remove from the list.
+        :return: ``True`` when the row is gone.
+        """
+        if not self.bridge.on_gui_thread():
+            return bool(self.bridge.call(self.hide_remote, entry))
+        self.history.remove(entry)
+        if self.gui.view is not None:
+            self.gui.render_history(self.history.entries)
+        return True
+
+    def clear_history_remote(self) -> bool:
+        """Clear the download list from the phone (files stay on disk).
+
+        :return: ``True`` when the list was emptied.
+        """
+        if not self.bridge.on_gui_thread():
+            return bool(self.bridge.call(self.clear_history_remote))
+        self.history.clear()
+        if self.gui.view is not None:
+            self.gui.render_history(self.history.entries)
+        log.info("Download list cleared remotely.")
+        return True
 
     def _hide_entry(self, entry: HistoryEntry) -> None:
         """Remove ``entry`` from the Downloads list but keep the file on disk.
@@ -1783,7 +1829,168 @@ class ClipsterApp:
             "active": active,
             "queued": len(self._queue),
             "parallel": self._parallel_limit(),
+            # Headless (Android) is the only mode where the phone UI owns the
+            # process lifecycle: Quit must tear the server down with it.
+            "can_quit": bool(self.headless),
         }
+
+    #: Settings the remote / Android UI may read and write.
+    _REMOTE_SETTING_KEYS = (
+        "language",
+        "default_format",
+        "download_dir",
+        "history_limit",
+        "parallel_downloads",
+        "max_parallel_downloads",
+        "no_playlist",
+        "restrict_filenames",
+        "ask_audio_language",
+        "discover_search_suffix",
+        "discover_mode",
+        "discover_max_results",
+        "discover_require_suffix",
+        "cookies_risk_acknowledged",
+        "cookies_from_browser",
+        "cookies_file",
+    )
+
+    def remote_terms(self) -> Dict[str, Any]:
+        """Return terms text and acceptance state for the phone / Android UI."""
+        return {
+            "app_accepted": app_terms_accepted(self.config),
+            "streaming_accepted": streaming_terms_accepted(self.config),
+            "app_version": TERMS_APP_VERSION,
+            "streaming_version": TERMS_STREAMING_VERSION,
+            "app_title": self.messages["terms_app_title"],
+            "app_body": self.messages["terms_app_body"],
+            "streaming_title": self.messages["terms_streaming_title"],
+            "streaming_body": self.messages["terms_streaming_body"],
+            "accept_label": self.messages.get("terms_accept", "Accept"),
+            "decline_label": self.messages.get("terms_decline", "Decline"),
+        }
+
+    def accept_remote_terms(self, kind: str = "streaming") -> Dict[str, Any]:
+        """Record terms acceptance from the phone UI (standalone Android).
+
+        :param kind: ``streaming``, ``app``, or ``both``.
+        :return: Updated :meth:`remote_terms` payload plus ``ok``.
+        """
+        if not self.bridge.on_gui_thread():
+            return dict(self.bridge.call(self.accept_remote_terms, kind))
+        which = str(kind or "streaming").strip().lower()
+        if which in ("app", "both"):
+            accept_app_terms(self.config)
+            log.info("Remote client accepted the app terms (v%s).", self.config.terms_app_version)
+        if which in ("streaming", "both"):
+            accept_streaming_terms(self.config)
+            log.info(
+                "Remote client accepted the Streaming terms (v%s).",
+                self.config.terms_streaming_version,
+            )
+            try:
+                self.gui.root.after(0, self._maybe_schedule_auto_discover)
+            except Exception:
+                pass
+        result = self.remote_terms()
+        result["ok"] = True
+        return result
+
+    def remote_about(self) -> Dict[str, Any]:
+        """Return About-page facts for the phone / Android UI."""
+        return {
+            "name": APP_SHORT_NAME,
+            "version": APP_VERSION,
+            "author": APP_AUTHOR,
+            "website": APP_WEBSITE,
+            "repository": APP_URL,
+            "text": self.messages["about_text"],
+            "license": self.messages["about_license"],
+            "paths": {
+                "config": str(paths.config_file()),
+                "history": str(paths.history_file()),
+                "log": str(paths.log_file()),
+                "download_dir": str(self.download_dir),
+            },
+        }
+
+    def remote_settings(self) -> Dict[str, Any]:
+        """Return the settings the phone UI may edit."""
+        data: Dict[str, Any] = {}
+        for key in self._REMOTE_SETTING_KEYS:
+            data[key] = getattr(self.config, key)
+        data["download_dir_resolved"] = str(self.download_dir)
+        data["languages"] = ["de", "en"]
+        data["discover_modes"] = ["search", "related", "deezer", "listenbrainz"]
+        return data
+
+    def apply_app_settings(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply a subset of settings from the phone UI and persist them.
+
+        :param updates: Key/value pairs; unknown keys are ignored.
+        :return: The settings after saving.
+        """
+        if not self.bridge.on_gui_thread():
+            return dict(self.bridge.call(self.apply_app_settings, updates))
+        config = self.config
+        if "language" in updates:
+            language = str(updates["language"] or "").strip().lower()
+            if language in ("de", "en"):
+                config.language = language
+        if "default_format" in updates:
+            fmt = str(updates["default_format"] or "").strip().lower()
+            if fmt in MEDIA_FORMATS:
+                config.default_format = fmt
+        if "download_dir" in updates:
+            config.download_dir = str(updates["download_dir"] or "").strip()
+        if "history_limit" in updates:
+            try:
+                config.history_limit = max(1, int(updates["history_limit"]))
+            except (TypeError, ValueError):
+                pass
+        if "parallel_downloads" in updates:
+            config.parallel_downloads = bool(updates["parallel_downloads"])
+        if "max_parallel_downloads" in updates:
+            try:
+                config.max_parallel_downloads = max(1, int(updates["max_parallel_downloads"]))
+            except (TypeError, ValueError):
+                pass
+        if "no_playlist" in updates:
+            config.no_playlist = bool(updates["no_playlist"])
+        if "restrict_filenames" in updates:
+            config.restrict_filenames = bool(updates["restrict_filenames"])
+        if "ask_audio_language" in updates:
+            config.ask_audio_language = bool(updates["ask_audio_language"])
+        if "discover_search_suffix" in updates:
+            config.discover_search_suffix = str(updates["discover_search_suffix"] or "")
+        if "discover_mode" in updates:
+            mode = str(updates["discover_mode"] or "").strip().lower()
+            if mode in ("search", "related", "deezer", "listenbrainz"):
+                config.discover_mode = mode
+        if "discover_max_results" in updates:
+            try:
+                config.discover_max_results = max(1, int(updates["discover_max_results"]))
+            except (TypeError, ValueError):
+                pass
+        if "discover_require_suffix" in updates:
+            config.discover_require_suffix = bool(updates["discover_require_suffix"])
+        if "cookies_risk_acknowledged" in updates:
+            acknowledged = bool(updates["cookies_risk_acknowledged"])
+            config.cookies_risk_acknowledged = acknowledged
+            if acknowledged and not config.cookies_risk_acknowledged_at:
+                from .terms import utc_now_iso
+                config.cookies_risk_acknowledged_at = utc_now_iso()
+            if not acknowledged:
+                config.cookies_risk_acknowledged_at = ""
+                config.cookies_from_browser = ""
+                config.cookies_file = ""
+        if "cookies_from_browser" in updates and config.cookies_risk_acknowledged:
+            browser = str(updates["cookies_from_browser"] or "").strip().lower()
+            if browser in ("", "firefox", "chrome", "chromium", "brave", "edge"):
+                config.cookies_from_browser = browser
+        if "cookies_file" in updates and config.cookies_risk_acknowledged:
+            config.cookies_file = str(updates["cookies_file"] or "").strip()
+        self._save_settings()
+        return self.remote_settings()
 
     def _auto_language(self, info: VideoInfo) -> str:
         """Return the audio track to use without asking the user.

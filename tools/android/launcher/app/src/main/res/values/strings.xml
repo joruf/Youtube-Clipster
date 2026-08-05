@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Clipster</string>
+    <string name="starting_hint">Clipster startet…\n\nStarting Clipster…</string>
+    <string name="start_failed_hint">Clipster konnte nicht gestartet werden.\n\n1. Termux einmal von Hand öffnen\n2. Dann Clipster erneut antippen\n\nAlles läuft auf dem Handy — der PC wird nur für die einmalige Installation gebraucht.\n\nCould not start Clipster.\nOpen Termux once, then tap Clipster again.\nEverything runs on the phone — the PC is only for the one-time install.</string>
+    <string name="setup_hint">Clipster is not set up yet.\n\nInstall via the PC wizard (USB), or open Termux once and run install-android.sh.\n\nClipster ist noch nicht eingerichtet.\n\nÜber den PC-Assistenten (USB) installieren, oder Termux einmal öffnen und install-android.sh ausführen.</string>
+</resources>

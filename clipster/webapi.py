@@ -128,10 +128,65 @@ class RemoteApi:
     def status(self) -> Tuple[int, Dict[str, Any]]:
         """Return what is downloading right now.
 
-        :return: ``(200, {"active": [...], "queued": int, "parallel": int})``
+        :return: ``(200, {"active": [...], "queued": int, "parallel": int, ...})``
         """
         self._record_contact()
         return 200, self._app.remote_status()
+
+    def quit(self) -> Tuple[int, Dict[str, Any]]:
+        """Ask the application to shut down (server, downloads, wake lock).
+
+        Used by the Android launcher when the user taps Quit / Beenden.
+
+        :return: ``(200, {"ok": True})`` once the quit was requested.
+        """
+        self._record_contact()
+        try:
+            self._app.request_quit()
+        except Exception as exc:  # pragma: no cover - must still answer the phone
+            log.debug("Remote quit refused: %s", exc)
+            return 503, {"ok": False, "error": "closing"}
+        return 200, {"ok": True}
+
+    def about(self) -> Tuple[int, Dict[str, Any]]:
+        """Return About-page data for the phone UI."""
+        self._record_contact()
+        return 200, self._app.remote_about()
+
+    def terms(self) -> Tuple[int, Dict[str, Any]]:
+        """Return terms text and acceptance flags for the phone UI."""
+        self._record_contact()
+        return 200, self._app.remote_terms()
+
+    def accept_terms(self, kind: str = "streaming") -> Tuple[int, Dict[str, Any]]:
+        """Accept terms from the phone UI (standalone Android).
+
+        :param kind: ``streaming``, ``app``, or ``both``.
+        """
+        self._record_contact()
+        try:
+            return 200, self._app.accept_remote_terms(kind)
+        except RuntimeError as exc:
+            log.debug("Remote terms refused: %s", exc)
+            return 503, {"ok": False, "error": "closing"}
+
+    def settings(self) -> Tuple[int, Dict[str, Any]]:
+        """Return editable settings for the phone UI."""
+        self._record_contact()
+        return 200, self._app.remote_settings()
+
+    def save_settings(self, updates: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Persist settings from the phone UI.
+
+        :param updates: Key/value pairs to apply.
+        :return: ``(200, settings)`` after saving.
+        """
+        self._record_contact()
+        try:
+            return 200, self._app.apply_app_settings(updates if isinstance(updates, dict) else {})
+        except RuntimeError as exc:
+            log.debug("Remote settings refused: %s", exc)
+            return 503, {"error": "closing"}
 
     def discover(self) -> Tuple[int, Dict[str, Any]]:
         """Return the Streaming queue and what is playing.
@@ -282,3 +337,30 @@ class RemoteApi:
         if not deleted:
             return 500, {"deleted": False, "id": entry_id}
         return 200, {"deleted": True, "id": entry_id}
+
+    def hide(self, entry_id: str) -> Tuple[int, Dict[str, Any]]:
+        """Remove a list row but keep the file on disk.
+
+        :param entry_id: The id from :meth:`HistoryEntry.identifier`.
+        :return: The HTTP status and a short body.
+        """
+        self._record_contact()
+        entry = self._app.history.find_by_id(entry_id)
+        if entry is None:
+            return 404, {"hidden": False}
+        try:
+            hidden = self._app.hide_remote(entry)
+        except RuntimeError as exc:
+            log.debug("Remote hide refused: %s", exc)
+            return 503, {"hidden": False}
+        return 200 if hidden else 500, {"hidden": bool(hidden), "id": entry_id}
+
+    def clear_history(self) -> Tuple[int, Dict[str, Any]]:
+        """Empty the download list; files stay on disk."""
+        self._record_contact()
+        try:
+            cleared = self._app.clear_history_remote()
+        except RuntimeError as exc:
+            log.debug("Remote clear refused: %s", exc)
+            return 503, {"cleared": False}
+        return 200, {"cleared": bool(cleared)}

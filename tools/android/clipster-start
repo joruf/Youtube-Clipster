@@ -62,7 +62,19 @@ case "$ACTION" in
         ;;
     stop)
         if running; then
-            kill "$(cat "$PID_FILE")" 2>/dev/null
+            pid="$(cat "$PID_FILE")"
+            # Graceful first: SIGTERM hits Clipster's signal handlers and runs
+            # the normal shutdown (HTTP server, downloads, locks).
+            kill -TERM "$pid" 2>/dev/null || true
+            for _ in 1 2 3 4 5 6 7 8 9 10; do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 0.3
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
+            # Children (yt-dlp, ffmpeg, …) may outlive the parent briefly.
+            pkill -TERM -P "$pid" 2>/dev/null || true
             printf 'stopped\n'
         else
             printf 'was not running\n'

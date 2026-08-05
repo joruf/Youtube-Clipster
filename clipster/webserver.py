@@ -480,6 +480,12 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
                 self._answer(*api.downloads())
             elif path == "/api/status":
                 self._answer(*api.status())
+            elif path == "/api/about":
+                self._answer(*api.about())
+            elif path == "/api/terms":
+                self._answer(*api.terms())
+            elif path == "/api/settings":
+                self._answer(*api.settings())
             elif path == "/api/discover":
                 self._answer(*api.discover())
             elif path.startswith("/media/"):
@@ -502,12 +508,32 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
                 return
             route = urlparse(self.path).path
             if route not in ("/api/submit", "/api/discover", "/api/discover/search",
-                             "/api/discover/queue"):
+                             "/api/discover/queue", "/api/quit", "/api/settings",
+                             "/api/terms", "/api/downloads/clear", "/api/downloads/hide"):
                 self._not_found()
                 return
+            if route == "/api/quit":
+                # Empty body is fine; Quit must work even if the client sends none.
+                self._answer(*api.quit())
+                return
             payload = self._read_json()
+            if payload is None and route not in ("/api/downloads/clear",):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "expected a JSON object"})
+                return
+            if route == "/api/downloads/clear":
+                self._answer(*api.clear_history())
+                return
+            if route == "/api/downloads/hide":
+                self._answer(*api.hide(str((payload or {}).get("id") or "")))
+                return
             if payload is None:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "expected a JSON object"})
+                return
+            if route == "/api/terms":
+                self._answer(*api.accept_terms(str(payload.get("kind") or "streaming")))
+                return
+            if route == "/api/settings":
+                self._answer(*api.save_settings(payload))
                 return
             if route == "/api/discover/search":
                 self._answer(*api.discover_search(str(payload.get("query") or "")))

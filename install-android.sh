@@ -162,6 +162,20 @@ if [ $? -ne 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
+step "Termux external apps"
+# ---------------------------------------------------------------------------
+# The Clipster launcher app starts Clipster via RUN_COMMAND; Termux must allow that.
+mkdir -p "$HOME/.termux"
+if grep -qE '^allow-external-apps[[:space:]]*=[[:space:]]*true' "$HOME/.termux/termux.properties" 2>/dev/null; then
+    info "allow-external-apps already enabled in ~/.termux/termux.properties"
+else
+    grep -v allow-external-apps "$HOME/.termux/termux.properties" > "$HOME/.termux/termux.properties.tmp" 2>/dev/null || true
+    mv "$HOME/.termux/termux.properties.tmp" "$HOME/.termux/termux.properties" 2>/dev/null || true
+    echo "allow-external-apps = true" >> "$HOME/.termux/termux.properties"
+    info "Enabled allow-external-apps in ~/.termux/termux.properties"
+fi
+
+# ---------------------------------------------------------------------------
 step "Creating the launcher"
 # ---------------------------------------------------------------------------
 LAUNCHER="$HOME/.shortcuts/Clipster"
@@ -181,6 +195,13 @@ LAUNCH
 else
     info "Skipped (--no-widget)."
 fi
+
+URL="$(python "$SCRIPT_DIR/tools/phone_link.py" --url 2>/dev/null || true)"
+if [ -d "$HOME/storage/downloads" ] && [ -n "$URL" ]; then
+    printf '%s\n' "$URL" > "$HOME/storage/downloads/YoutubeClipster.url"
+    info "URL written to ~/storage/downloads/YoutubeClipster.url"
+fi
+info "The PC wizard can install a Clipster app icon into your app list."
 
 # ---------------------------------------------------------------------------
 step "Start at boot"

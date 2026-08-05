@@ -1,8 +1,7 @@
-"""The "Install on Android" window: a numbered step-by-step wizard.
+"""The "Install on Android" window: a numbered page-by-page wizard.
 
-Eight steps appear one at a time. Completed steps show a checkmark; the active
-step expands with full instructions. Every call into ``adb`` happens on a worker
-thread; results are queued and drained on the Tk thread via :meth:`_pump`.
+One step is shown at a time. Back / Continue stay in a fixed footer so they
+remain visible. Worker threads never touch Tk; they queue results for :meth:`_pump`.
 """
 
 from __future__ import annotations
@@ -26,10 +25,14 @@ WATCH_MS = 1500
 PUMP_MS = 80
 
 #: Wizard steps in order.
-WIZARD_STEPS = ("adb", "developer", "connect", "usb_install", "terms", "termux", "setup", "done")
+WIZARD_STEPS = ("prepare", "terms", "termux", "setup", "done")
 
 #: Backward-compatible aliases for status labels used by tests and older code.
-_LABEL_ALIASES = {"device": "connect", "transfer": "setup", "finish": "done"}
+_LABEL_ALIASES = {"transfer": "setup", "finish": "done"}
+
+#: Default window size — large enough for one page + fixed footer.
+_WINDOW_W = 640
+_WINDOW_H = 560
 
 RUN_STATUS = {
     "opening": "android_run_opening",
@@ -81,13 +84,13 @@ class AndroidDialog:
         self.window = tk.Toplevel(master)
         self.window.title(messages["android_title"])
         self.window.configure(background=palette.base)
-        self.window.minsize(620, 520)
+        self.window.minsize(560, 480)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.window.transient(master.winfo_toplevel())
 
         self._labels: Dict[str, ttk.Label] = {}
         self._step_headers: Dict[str, ttk.Label] = {}
-        self._step_cards: Dict[str, ttk.LabelFrame] = {}
+        self._step_cards: Dict[str, ttk.Frame] = {}
         self._step_bodies: Dict[str, ttk.Frame] = {}
         self._build()
         self._centre()
@@ -99,101 +102,149 @@ class AndroidDialog:
     # Structure
     # ------------------------------------------------------------------
     def _build(self) -> None:
-        """Create the wizard steps and buttons."""
+        """Create one page per step and a fixed footer with Back / Continue."""
         outer = ttk.Frame(self.window, style="TFrame", padding=PAD)
         outer.pack(fill="both", expand=True)
+        outer.rowconfigure(2, weight=1)
+        outer.columnconfigure(0, weight=1)
 
-        ttk.Label(outer, text=self.messages["android_title"], style="Title.TLabel").pack(anchor="w")
-        ttk.Label(outer, text=self.messages["android_intro"], style="Muted.TLabel",
-                  wraplength=560, justify="left").pack(anchor="w", pady=(2, PAD))
+        ttk.Label(outer, text=self.messages["android_title"],
+                  style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        self._progress_label = ttk.Label(outer, text="", style="Muted.TLabel")
+        self._progress_label.grid(row=1, column=0, sticky="w", pady=(2, PAD_SMALL))
 
-        self._steps_container = ttk.Frame(outer, style="TFrame")
-        self._steps_container.pack(fill="both", expand=True)
+        # Scrollable page area (keeps the footer on screen for long steps).
+        page_host = ttk.Frame(outer, style="TFrame")
+        page_host.grid(row=2, column=0, sticky="nsew")
+        page_host.rowconfigure(0, weight=1)
+        page_host.columnconfigure(0, weight=1)
 
-        self._build_step_adb()
-        self._build_step_developer()
-        self._build_step_connect()
-        self._build_step_usb_install()
+        self._page_canvas = tk.Canvas(page_host, highlightthickness=0,
+                                      background=self.palette.base, borderwidth=0)
+        self._page_scroll = ttk.Scrollbar(page_host, orient="vertical",
+                                          command=self._page_canvas.yview)
+        self._page_canvas.configure(yscrollcommand=self._page_scroll.set)
+        self._page_canvas.grid(row=0, column=0, sticky="nsew")
+        self._page_scroll.grid(row=0, column=1, sticky="ns")
+
+        self._steps_container = ttk.Frame(self._page_canvas, style="TFrame")
+        self._page_window = self._page_canvas.create_window(
+            (0, 0), window=self._steps_container, anchor="nw")
+        self._steps_container.bind(
+            "<Configure>",
+            lambda _e: self._page_canvas.configure(
+                scrollregion=self._page_canvas.bbox("all")),
+        )
+        self._page_canvas.bind("<Configure>", self._on_page_canvas_configure)
+
+        self._build_step_prepare()
         self._build_step_terms()
         self._build_step_termux()
         self._build_step_setup()
         self._build_step_done()
         self._build_hidden_fallbacks(outer)
 
-        buttons = ttk.Frame(outer, style="TFrame")
-        buttons.pack(fill="x", pady=(PAD, 0))
-        ttk.Button(buttons, text=self.messages["android_close"],
+        # Fixed footer — always visible, never below the window edge.
+        footer = ttk.Frame(outer, style="TFrame")
+        footer.grid(row=3, column=0, sticky="ew", pady=(PAD, 0))
+        self._back_button = ttk.Button(footer, text=self.messages["android_wizard_back"],
+                                       command=self._go_back)
+        self._back_button.pack(side="left")
+        self._recheck_button = ttk.Button(footer, text=self.messages["android_recheck"],
+                                          command=self.refresh_device)
+        ttk.Button(footer, text=self.messages["android_close"],
                    command=self.close).pack(side="right")
-        self._start_button = ttk.Button(buttons, text=self.messages["android_install_now"],
+        self._start_button = ttk.Button(footer, text=self.messages["android_install_now"],
                                         style="Accent.TButton", command=self.start_install)
-        self._start_button.pack(side="right", padx=(0, PAD_SMALL))
-        self._primary_button = ttk.Button(buttons, text=self.messages["android_wizard_next"],
+        self._primary_button = ttk.Button(footer, text=self.messages["android_wizard_next"],
                                           style="Accent.TButton", command=self._on_primary)
         self._primary_button.pack(side="right", padx=(0, PAD_SMALL))
-        self._recheck_button = ttk.Button(buttons, text=self.messages["android_recheck"],
-                                          command=self.refresh_device)
-        self._recheck_button.pack(side="left")
-        # Every wizard title key must stay in the locale files (i18n grep check).
+
+        # Keep locale keys referenced for the i18n grep check.
         _ = (
-            self.messages["android_wizard_adb_title"],
-            self.messages["android_wizard_developer_title"],
-            self.messages["android_wizard_connect_title"],
-            self.messages["android_wizard_usb_install_title"],
+            self.messages["android_intro"],
+            self.messages["android_wizard_prepare_title"],
+            self.messages["android_wizard_prepare_body"],
+            self.messages["android_wizard_prepare_item_adb"],
+            self.messages["android_wizard_prepare_item_developer"],
+            self.messages["android_wizard_prepare_item_connect"],
+            self.messages["android_wizard_prepare_item_usb"],
             self.messages["android_wizard_terms_title"],
             self.messages["android_wizard_termux_title"],
             self.messages["android_wizard_setup_title"],
             self.messages["android_wizard_done_title"],
+            self.messages["android_wizard_progress"],
+            self.messages["android_wizard_back"],
+            self.messages["android_wizard_next"],
+            # Legacy keys still used as checklist detail text:
+            self.messages["android_wizard_adb_body"],
+            self.messages["android_wizard_developer_body"],
+            self.messages["android_wizard_connect_body"],
+            self.messages["android_wizard_usb_install_body"],
+            self.messages["android_wizard_usb_install_note"],
+            self.messages["android_wizard_developer_done"],
+            self.messages["android_wizard_usb_install_done"],
+            self.messages["android_wizard_adb_title"],
+            self.messages["android_wizard_developer_title"],
+            self.messages["android_wizard_connect_title"],
+            self.messages["android_wizard_usb_install_title"],
         )
 
-    def _wizard_card(self, step: str, title_key: str) -> ttk.LabelFrame:
-        """Return one wizard step card (header + expandable body)."""
-        card = ttk.LabelFrame(self._steps_container, text="", style="Card.TLabelframe",
-                              padding=PAD)
-        header = ttk.Label(card, text=self.messages[title_key], style="Panel.TLabel",
-                           wraplength=520, justify="left")
+    def _on_page_canvas_configure(self, event: tk.Event) -> None:
+        try:
+            self._page_canvas.itemconfigure(self._page_window, width=event.width)
+        except tk.TclError:  # pragma: no cover
+            pass
+
+    def _wizard_card(self, step: str, title_key: str) -> ttk.Frame:
+        """Return one wizard page (title + body). Only one page is packed at a time."""
+        card = ttk.Frame(self._steps_container, style="Panel.TFrame", padding=PAD)
+        header = ttk.Label(card, text=self.messages[title_key], style="Title.TLabel",
+                           wraplength=560, justify="left")
         header.pack(anchor="w")
         body = ttk.Frame(card, style="Panel.TFrame")
+        body.pack(fill="both", expand=True, anchor="w", pady=(PAD_SMALL, 0))
         self._step_headers[step] = header
         self._step_cards[step] = card
         self._step_bodies[step] = body
         return card
 
-    def _build_step_adb(self) -> None:
-        card = self._wizard_card("adb", "android_wizard_adb_title")
-        body = self._step_bodies["adb"]
-        ttk.Label(body, text=self.messages["android_wizard_adb_body"],
-                  style="Panel.Muted.TLabel", wraplength=520, justify="left").pack(
-                      anchor="w", pady=(2, 0))
+    def _build_step_prepare(self) -> None:
+        """One page listing former steps 1–4 (adb, developer, connect, USB install)."""
+        self._wizard_card("prepare", "android_wizard_prepare_title")
+        body = self._step_bodies["prepare"]
+        ttk.Label(body, text=self.messages["android_wizard_prepare_body"],
+                  style="Panel.Muted.TLabel", wraplength=560, justify="left").pack(
+                      anchor="w", pady=(2, PAD_SMALL))
+
+        items = (
+            ("android_wizard_prepare_item_adb", "android_wizard_adb_body"),
+            ("android_wizard_prepare_item_developer", "android_wizard_developer_body"),
+            ("android_wizard_prepare_item_connect", "android_wizard_connect_body"),
+            ("android_wizard_prepare_item_usb", "android_wizard_usb_install_body"),
+        )
+        for title_key, body_key in items:
+            ttk.Label(body, text=self.messages[title_key], style="Panel.Bold.TLabel",
+                      wraplength=560, justify="left").pack(anchor="w", pady=(PAD_SMALL, 0))
+            ttk.Label(body, text=self.messages[body_key], style="Panel.Muted.TLabel",
+                      wraplength=560, justify="left").pack(anchor="w")
+        ttk.Label(body, text=self.messages["android_wizard_usb_install_note"],
+                  style="Panel.Muted.TLabel", wraplength=560, justify="left").pack(
+                      anchor="w", pady=(PAD_SMALL, 0))
+
         self._labels["adb"] = self._status_label(body)
         self._adb_hint = ttk.Label(body, text="", style="Panel.Muted.TLabel",
-                                   wraplength=520, justify="left")
+                                   wraplength=560, justify="left")
         self._adb_hint.pack(anchor="w", pady=(2, 0))
         self._adb_row = ttk.Frame(body, style="Panel.TFrame")
         self._adb_button = ttk.Button(self._adb_row, text=self.messages["android_adb_install"],
                                       style="Row.TButton", command=self._install_adb)
         self._adb_button.pack(side="left")
-
-    def _build_step_developer(self) -> None:
-        card = self._wizard_card("developer", "android_wizard_developer_title")
-        body = self._step_bodies["developer"]
-        ttk.Label(body, text=self.messages["android_wizard_developer_body"],
-                  style="Panel.Muted.TLabel", wraplength=520, justify="left").pack(
-                      anchor="w", pady=(2, 0))
-
-    def _build_step_connect(self) -> None:
-        card = self._wizard_card("connect", "android_wizard_connect_title")
-        body = self._step_bodies["connect"]
-        ttk.Label(body, text=self.messages["android_wizard_connect_body"],
-                  style="Panel.Muted.TLabel", wraplength=520, justify="left").pack(
-                      anchor="w", pady=(2, 0))
         self._labels["device"] = self._status_label(body)
 
     def _step_title_key(self, step: str) -> str:
         keys = {
-            "adb": "android_wizard_adb_title",
-            "developer": "android_wizard_developer_title",
-            "connect": "android_wizard_connect_title",
-            "usb_install": "android_wizard_usb_install_title",
+            "prepare": "android_wizard_prepare_title",
             "terms": "android_wizard_terms_title",
             "termux": "android_wizard_termux_title",
             "setup": "android_wizard_setup_title",
@@ -204,46 +255,37 @@ class AndroidDialog:
     def _step_title(self, step: str) -> str:
         return self.messages[self._step_title_key(step)]
 
-    def _build_step_usb_install(self) -> None:
-        card = self._wizard_card("usb_install", self._step_title_key("usb_install"))
-        body = self._step_bodies["usb_install"]
-        ttk.Label(body, text=self.messages["android_wizard_usb_install_body"],
-                  style="Panel.Muted.TLabel", wraplength=520, justify="left").pack(
-                      anchor="w", pady=(2, 0))
-        ttk.Label(body, text=self.messages["android_wizard_usb_install_note"],
-                  style="Panel.Muted.TLabel", wraplength=520, justify="left").pack(
-                      anchor="w", pady=(2, 0))
-
     def _build_step_terms(self) -> None:
-        card = self._wizard_card("terms", "android_wizard_terms_title")
+        self._wizard_card("terms", "android_wizard_terms_title")
         body = self._step_bodies["terms"]
-        terms_body = self.messages["terms_app_body"]
-        if len(terms_body) > 900:
-            terms_body = terms_body[:899] + "…"
         ttk.Label(body, text=self.messages["android_wizard_terms_body"],
-                  style="Panel.Muted.TLabel", wraplength=520, justify="left").pack(
+                  style="Panel.Muted.TLabel", wraplength=560, justify="left").pack(
                       anchor="w", pady=(2, PAD_SMALL))
-        ttk.Label(body, text=terms_body, style="Panel.Muted.TLabel",
-                  wraplength=520, justify="left").pack(anchor="w")
+        terms = tk.Text(body, height=12, wrap="word", relief="flat",
+                        background=self.palette.elevated, foreground=self.palette.text,
+                        insertbackground=self.palette.text, font=self.fonts["small"])
+        terms.insert("1.0", self.messages["terms_app_body"])
+        terms.configure(state="disabled")
+        terms.pack(fill="both", expand=True)
 
     def _build_step_termux(self) -> None:
-        card = self._wizard_card("termux", "android_wizard_termux_title")
+        self._wizard_card("termux", "android_wizard_termux_title")
         body = self._step_bodies["termux"]
         ttk.Label(body, text=self.messages["android_wizard_termux_body"],
-                  style="Panel.Muted.TLabel", wraplength=520, justify="left").pack(
+                  style="Panel.Muted.TLabel", wraplength=560, justify="left").pack(
                       anchor="w", pady=(2, PAD_SMALL))
-        warning = ttk.Label(body, text=self.messages["android_wizard_termux_warning"],
-                            style="Panel.TLabel", wraplength=520, justify="left")
-        warning.pack(anchor="w", pady=(0, PAD_SMALL))
+        ttk.Label(body, text=self.messages["android_wizard_termux_warning"],
+                  style="Panel.TLabel", wraplength=560, justify="left").pack(
+                      anchor="w", pady=(0, PAD_SMALL))
         self._termux_status = self._status_label(body)
         self._termux_play_row = ttk.Frame(body, style="Panel.TFrame")
         ttk.Label(self._termux_play_row, text=self.messages["android_termux_play_found"],
-                  style="Panel.Warning.TLabel", wraplength=500, justify="left").pack(
+                  style="Panel.Warning.TLabel", wraplength=540, justify="left").pack(
                       anchor="w", pady=(0, PAD_SMALL))
         ttk.Label(self._termux_play_row,
                   text=self.messages.format("android_wizard_termux_play_prompt",
                                             url=android.TERMUX_GITHUB_PAGE),
-                  style="Panel.Muted.TLabel", wraplength=500, justify="left").pack(
+                  style="Panel.Muted.TLabel", wraplength=540, justify="left").pack(
                       anchor="w", pady=(0, PAD_SMALL))
         play_btns = ttk.Frame(self._termux_play_row, style="Panel.TFrame")
         play_btns.pack(anchor="w")
@@ -256,10 +298,10 @@ class AndroidDialog:
                        side="left", padx=(PAD_SMALL, 0))
         self._termux_usb_row = ttk.Frame(body, style="Panel.TFrame")
         ttk.Label(self._termux_usb_row, text=self.messages["android_termux_usb_blocked"],
-                  style="Panel.Warning.TLabel", wraplength=500, justify="left").pack(
+                  style="Panel.Warning.TLabel", wraplength=540, justify="left").pack(
                       anchor="w", pady=(0, PAD_SMALL))
         ttk.Label(self._termux_usb_row, text=self.messages["android_wizard_termux_usb_prompt"],
-                  style="Panel.Muted.TLabel", wraplength=500, justify="left").pack(
+                  style="Panel.Muted.TLabel", wraplength=540, justify="left").pack(
                       anchor="w", pady=(0, PAD_SMALL))
         usb_btns = ttk.Frame(self._termux_usb_row, style="Panel.TFrame")
         usb_btns.pack(anchor="w")
@@ -293,20 +335,20 @@ class AndroidDialog:
         self._termux_button.pack(side="left", padx=(PAD_SMALL, 0))
 
     def _build_step_setup(self) -> None:
-        card = self._wizard_card("setup", "android_wizard_setup_title")
+        self._wizard_card("setup", "android_wizard_setup_title")
         body = self._step_bodies["setup"]
         ttk.Label(body, text=self.messages["android_wizard_setup_body"],
-                  style="Panel.Muted.TLabel", wraplength=520, justify="left").pack(
+                  style="Panel.Muted.TLabel", wraplength=560, justify="left").pack(
                       anchor="w", pady=(2, 0))
         self._labels["transfer"] = self._status_label(body)
-        self._progress = ttk.Progressbar(body, mode="determinate", maximum=100, length=520)
+        self._progress = ttk.Progressbar(body, mode="determinate", maximum=100, length=560)
         self._progress.pack(fill="x", pady=(PAD_SMALL, 0))
 
     def _build_step_done(self) -> None:
-        card = self._wizard_card("done", "android_wizard_done_title")
+        self._wizard_card("done", "android_wizard_done_title")
         body = self._step_bodies["done"]
         ttk.Label(body, text=self.messages["android_wizard_done_body"],
-                  style="Panel.Muted.TLabel", wraplength=520, justify="left").pack(
+                  style="Panel.Muted.TLabel", wraplength=560, justify="left").pack(
                       anchor="w", pady=(2, 0))
         self._labels["finish"] = self._status_label(body)
 
@@ -314,7 +356,7 @@ class AndroidDialog:
         """Widgets kept for tests and manual fallback; not shown in the wizard."""
         hidden = ttk.Frame(master, style="TFrame")
         ttk.Label(hidden, text=self.messages["android_finish_hint"],
-                  style="Panel.Muted.TLabel", wraplength=520, justify="left").pack(anchor="w")
+                  style="Panel.Muted.TLabel", wraplength=560, justify="left").pack(anchor="w")
         self._command = tk.Text(hidden, height=2, wrap="word", relief="flat",
                                 background=self.palette.elevated, foreground=self.palette.text,
                                 insertbackground=self.palette.text, font=self.fonts["small"])
@@ -330,7 +372,7 @@ class AndroidDialog:
                    command=self._copy_command).pack(side="left", padx=(PAD_SMALL, 0))
 
     def _status_label(self, master: tk.Misc) -> ttk.Label:
-        label = ttk.Label(master, text="", style="Panel.TLabel", wraplength=520,
+        label = ttk.Label(master, text="", style="Panel.TLabel", wraplength=560,
                           justify="left")
         label.pack(anchor="w")
         return label
@@ -338,8 +380,9 @@ class AndroidDialog:
     def _centre(self) -> None:
         try:
             self.window.update_idletasks()
-            width = max(620, self.window.winfo_reqwidth())
-            height = max(520, self.window.winfo_reqheight())
+            width = max(_WINDOW_W, min(self.window.winfo_reqwidth(),
+                                       self.window.winfo_screenwidth() - 40))
+            height = min(max(_WINDOW_H, 480), self.window.winfo_screenheight() - 60)
             x = max(0, (self.window.winfo_screenwidth() - width) // 2)
             y = max(0, (self.window.winfo_screenheight() - height) // 3)
             self.window.geometry("{0}x{1}+{2}+{3}".format(width, height, x, y))
@@ -362,61 +405,86 @@ class AndroidDialog:
         return True
 
     def _refresh_wizard(self) -> None:
-        """Show completed headers, expand the active step, hide the rest."""
-        current_idx = self._step_index(self._current_step)
-        for idx, step in enumerate(WIZARD_STEPS):
-            card = self._step_cards[step]
-            header = self._step_headers[step]
-            body = self._step_bodies[step]
-            title = self._step_title(step)
-            if step in self._completed:
-                card.pack(fill="x", pady=(0, PAD_SMALL))
-                header.configure(text="✓  {0}".format(title), style="Panel.Muted.TLabel")
-                body.pack_forget()
-            elif step == self._current_step:
-                card.pack(fill="x", pady=(0, PAD_SMALL))
-                header.configure(text=title, style="Panel.TLabel")
-                body.pack(fill="x", anchor="w", pady=(PAD_SMALL, 0))
-            elif idx < current_idx:
-                card.pack_forget()
+        """Show exactly one page; keep Back / Continue in the fixed footer."""
+        idx = self._step_index(self._current_step)
+        try:
+            self._progress_label.configure(
+                text=self.messages.format(
+                    "android_wizard_progress",
+                    current=idx + 1,
+                    total=len(WIZARD_STEPS),
+                ))
+        except tk.TclError:  # pragma: no cover
+            pass
+        for step, card in self._step_cards.items():
+            if step == self._current_step:
+                card.pack(fill="both", expand=True)
+                title = self._step_title(step)
+                if step in self._completed and step != "done":
+                    title = "✓  {0}".format(title)
+                try:
+                    self._step_headers[step].configure(text=title)
+                except tk.TclError:  # pragma: no cover
+                    pass
             else:
-                card.pack(fill="x", pady=(0, PAD_SMALL))
-                header.configure(text=title, style="Panel.Muted.TLabel")
-                body.pack_forget()
+                card.pack_forget()
+        try:
+            self._page_canvas.yview_moveto(0)
+            self._steps_container.update_idletasks()
+            self._page_canvas.configure(scrollregion=self._page_canvas.bbox("all"))
+        except tk.TclError:  # pragma: no cover
+            pass
         self._update_primary_button()
         self._update_termux_controls()
+
+    def _go_back(self) -> None:
+        if self._busy:
+            return
+        idx = self._step_index(self._current_step)
+        if idx <= 0:
+            return
+        self._current_step = WIZARD_STEPS[idx - 1]
+        self._refresh_wizard()
+
+    def _advance_to(self, step: str) -> None:
+        self._current_step = step
+        self._refresh_wizard()
 
     def _complete_current(self) -> None:
         self._completed.add(self._current_step)
         idx = self._step_index(self._current_step)
         if idx + 1 < len(WIZARD_STEPS):
-            self._current_step = WIZARD_STEPS[idx + 1]
-        self._refresh_wizard()
-        self._on_step_entered(self._current_step)
+            nxt = WIZARD_STEPS[idx + 1]
+            self._current_step = nxt
+            self._refresh_wizard()
+            self._on_step_entered(nxt)
+        else:
+            self._refresh_wizard()
 
     def _on_step_entered(self, step: str) -> None:
-        if step == "connect":
+        if step == "prepare":
             self.refresh_device()
-        elif step == "setup":
+        elif step == "setup" and "setup" not in self._completed:
             self.start_install()
 
     def _on_primary(self) -> None:
         if self._busy:
             return
         step = self._current_step
-        if step == "adb":
-            if self._adb_ready:
-                self._complete_current()
-            elif android.adb_install_plan()[0] != "manual":
-                self._install_adb()
-        elif step == "developer":
-            self._complete_current()
-        elif step == "connect":
-            if self._device_ready:
-                self._complete_current()
-            else:
+        # Visiting an already completed page: Continue just moves forward.
+        if step in self._completed and step not in ("setup", "done"):
+            idx = self._step_index(step)
+            if idx + 1 < len(WIZARD_STEPS):
+                self._advance_to(WIZARD_STEPS[idx + 1])
+            return
+        if step == "prepare":
+            if not self._adb_ready:
+                if android.adb_install_plan()[0] != "manual":
+                    self._install_adb()
+                return
+            if not self._device_ready:
                 self.refresh_device()
-        elif step == "usb_install":
+                return
             self._complete_current()
         elif step == "terms":
             self._accept_terms()
@@ -425,6 +493,9 @@ class AndroidDialog:
                 self._complete_current()
             else:
                 self._start_termux_install()
+        elif step == "setup":
+            if not self._busy and self._device_ready:
+                self.start_install()
         elif step == "done":
             self.close()
 
@@ -436,17 +507,18 @@ class AndroidDialog:
         step = self._current_step
         text = self.messages["android_wizard_next"]
         state = "normal"
-        if step == "adb":
-            text = (self.messages["android_wizard_next"] if self._adb_ready
-                    else self.messages["android_adb_install"])
-            state = "normal" if self._adb_ready or android.adb_install_plan()[0] != "manual" else "disabled"
-        elif step == "developer":
-            text = self.messages["android_wizard_developer_done"]
-        elif step == "connect":
-            text = (self.messages["android_wizard_next"] if self._device_ready
-                    else self.messages["android_recheck"])
-        elif step == "usb_install":
-            text = self.messages["android_wizard_usb_install_done"]
+        if step in self._completed and step not in ("setup", "done"):
+            text = self.messages["android_wizard_next"]
+            state = "normal"
+        elif step == "prepare":
+            if not self._adb_ready:
+                text = self.messages["android_adb_install"]
+                state = ("normal" if android.adb_install_plan()[0] != "manual"
+                         else "disabled")
+            elif not self._device_ready:
+                text = self.messages["android_recheck"]
+            else:
+                text = self.messages["android_wizard_next"]
         elif step == "terms":
             text = self.messages["android_wizard_terms_accept"]
         elif step == "termux":
@@ -459,28 +531,23 @@ class AndroidDialog:
                 text = self.messages["android_wizard_termux_install"]
         elif step == "setup":
             text = self.messages["android_install_now"]
-            state = "disabled" if self._busy else "normal"
+            state = "disabled" if self._busy or not self._device_ready else "normal"
         elif step == "done":
             text = self.messages["android_close"]
 
         try:
-            show_primary = step != "setup"
-            if show_primary:
-                self._primary_button.pack(side="right", padx=(0, PAD_SMALL))
-                self._primary_button.configure(text=text, state=state)
-            else:
-                self._primary_button.pack_forget()
+            self._back_button.configure(
+                state="disabled" if self._step_index(step) == 0 or self._busy else "normal")
+            self._primary_button.pack(side="right", padx=(0, PAD_SMALL))
+            self._primary_button.configure(text=text, state=state)
             self._recheck_button.pack_forget()
-            if step == "connect":
-                self._recheck_button.pack(side="left")
-            setup_visible = step == "setup" and not self._busy
+            if step == "prepare":
+                self._recheck_button.pack(side="left", padx=(PAD_SMALL, 0))
+            # Keep _start_button for tests; mirror primary on the setup page.
             if step == "setup":
-                if setup_visible:
-                    self._start_button.pack(side="right", padx=(0, PAD_SMALL))
-                else:
-                    self._start_button.pack_forget()
-                self._start_button.configure(
-                    state="normal" if self._device_ready and not self._busy else "disabled")
+                self._start_button.pack(side="right", padx=(0, PAD_SMALL))
+                self._start_button.configure(state=state)
+                self._primary_button.pack_forget()
             else:
                 self._start_button.pack_forget()
         except tk.TclError:  # pragma: no cover
@@ -605,7 +672,7 @@ class AndroidDialog:
     def refresh_device(self) -> None:
         if self._closed or self._busy:
             return
-        if self._current_step == "connect" or "connect" in self._completed:
+        if self._current_step == "prepare" or "prepare" in self._completed:
             self._set("device", self.messages["android_looking"])
 
         def work() -> None:
@@ -657,7 +724,7 @@ class AndroidDialog:
         except tk.TclError:  # pragma: no cover
             pass
         self._update_primary_button()
-        keep_looking = (self._current_step == "connect" or
+        keep_looking = (self._current_step == "prepare" or
                         (self._current_step == "termux" and not self._termux_ready)) and not self._device_ready
         self._arm_watch(keep_looking and state != "no_adb")
 
@@ -683,7 +750,7 @@ class AndroidDialog:
 
     def _show_adb_button(self, visible: bool) -> None:
         try:
-            if visible and self._current_step == "adb":
+            if visible and self._current_step == "prepare":
                 self._adb_row.pack(anchor="w", pady=(PAD_SMALL, 0))
                 self._adb_button.configure(state="disabled" if self._busy else "normal")
             else:
@@ -946,7 +1013,10 @@ class AndroidDialog:
                 serial,
                 on_status=lambda key: self._post(self._show_run_status, key),
             )
-            self._post(self._install_run_done, ok, reason)
+            launcher_message = ""
+            if ok:
+                _, launcher_message = android.install_clipster_launcher(serial)
+            self._post(self._install_run_done, ok, reason, launcher_message)
 
         threading.Thread(target=work, name="clipster-android-install", daemon=True).start()
 
@@ -970,14 +1040,17 @@ class AndroidDialog:
         self._refresh_wizard()
         self._arm_watch(True)
 
-    def _install_run_done(self, ok: bool, reason: str) -> None:
+    def _install_run_done(self, ok: bool, reason: str, launcher_message: str = "") -> None:
         self._busy = False
         try:
             self._run_button.configure(state="normal")
         except tk.TclError:  # pragma: no cover
             pass
         if ok:
-            self._set("finish", self.messages["android_run_started"], "Panel.Success.TLabel")
+            text = self.messages["android_run_started"]
+            if launcher_message and "grant" in launcher_message.lower():
+                text = "{0}\n\n{1}".format(text, self.messages["android_launcher_grant_hint"])
+            self._set("finish", text, "Panel.Success.TLabel")
             if "setup" not in self._completed:
                 self._completed.add("setup")
             self._current_step = "done"

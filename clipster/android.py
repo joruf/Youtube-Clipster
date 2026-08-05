@@ -19,8 +19,10 @@ Nothing here touches the interface; the wizard does the talking.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -91,6 +93,26 @@ _VERSION_NAME = re.compile(r"versionName=(\S+)")
 
 #: The app that has to be on screen before anything is typed into it.
 TERMUX_PACKAGE = "com.termux"
+
+#: Clipster launcher APK (built by ``tools/android/launcher/build-debug.sh``).
+LAUNCHER_APK = "tools/android/clipster-launcher.apk"
+
+#: Android package name of the Clipster launcher app.
+LAUNCHER_PACKAGE = "de.loresoft.youtubeclipster"
+
+#: Where the PC writes the phone UI URL for the launcher (shared storage).
+LAUNCHER_OPEN_URL = (
+    "/sdcard/Android/data/{0}/files/open.url".format(LAUNCHER_PACKAGE)
+)
+
+#: Termux permission the launcher needs for ``RUN_COMMAND``.
+TERMUX_RUN_COMMAND_PERMISSION = "com.termux.permission.RUN_COMMAND"
+
+#: Termux config that must allow external apps to invoke ``RUN_COMMAND``.
+TERMUX_PROPERTIES = "{0}/.termux/termux.properties".format(TERMUX_HOME)
+
+#: Config path inside Termux (``run-as`` readable when debuggable).
+TERMUX_CONFIG = "{0}/.local/share/YoutubeClipster/config.json".format(TERMUX_HOME)
 
 #: Pulls ``com.termux/com.termux.app.TermuxActivity`` out of a dumpsys line.
 _PACKAGE = re.compile(r"([a-zA-Z][\w.]*\.[\w.]+)/[\w.$]+")
@@ -1145,6 +1167,153 @@ def install_official_termux(serial: str = "",
                     root.rmdir()
                 except OSError:  # pragma: no cover
                     pass
+
+
+def launcher_apk_path() -> Path:
+    """Return the built Clipster launcher APK inside the checkout.
+
+    :return: Absolute path to ``tools/android/clipster-launcher.apk``.
+    """
+    return paths.PROJECT_ROOT / LAUNCHER_APK
+
+
+def termux_phone_url(serial: str = "") -> str:
+    """Read the phone UI URL from Termux's configuration via ``run-as``.
+
+    :param serial: Which device, when several are plugged in.
+    :return: ``http://127.0.0.1:…/?token=…`` or an empty string.
+    """
+    code, output = _adb_shell(
+        ["run-as", TERMUX_PACKAGE, "cat", TERMUX_CONFIG],
+        serial=serial, timeout=20.0,
+    )
+    if code != 0 or not (output or "").strip():
+        return ""
+    try:
+        data = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    from .webserver import phone_url
+
+    bind = str(data.get("remote_bind") or "127.0.0.1")
+    try:
+        port = int(data.get("remote_port") or 8733)
+    except (TypeError, ValueError):
+        port = 8733
+    token = str(data.get("remote_token") or "")
+    return phone_url(bind, port, token)
+
+
+def ensure_termux_allow_external_apps(serial: str = "") -> Tuple[bool, str]:
+    """Ensure ``allow-external-apps = true`` in Termux's ``termux.properties``.
+
+    Required for the Clipster launcher to start Clipster via ``RUN_COMMAND``.
+    Termux reads this file when its process starts.
+
+    :param serial: Which device, when several are plugged in.
+    :return: ``(success, message)``.
+    """
+    script = (
+        "PROP=/data/data/com.termux/files/home/.termux/termux.properties; "
+        "mkdir -p /data/data/com.termux/files/home/.termux; "
+        "if [ -f \"$PROP\" ] && grep -qE "
+        "'^allow-external-apps[[:space:]]*=[[:space:]]*true' \"$PROP\"; then "
+        "echo already; "
+        "else "
+        "if [ -f \"$PROP\" ]; then grep -v allow-external-apps \"$PROP\" > \"$PROP.tmp\" || true; "
+        "mv \"$PROP.tmp\" \"$PROP\"; fi; "
+        "printf '%s\\n' 'allow-external-apps = true' >> \"$PROP\"; echo added; "
+        "fi"
+    )
+    adb = adb_path()
+    if not adb:
+        return False, "adb is not installed"
+    # Quote the whole remote command so adb's shell does not expand $PROP.
+    remote = "run-as {0} sh -c {1}".format(TERMUX_PACKAGE, shlex.quote(script))
+    command = [adb]
+    if serial:
+        command += ["-s", serial]
+    command += ["shell", remote]
+    try:
+        finished = subprocess.run(command, capture_output=True, text=True, timeout=20,
+                                  **_no_window())
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+    output = ((finished.stdout or "") + "\n" + (finished.stderr or "")).strip()
+    if finished.returncode != 0:
+        return False, output or "could not update termux.properties"
+    return True, (output or "ok").splitlines()[-1]
+
+
+
+def install_clipster_launcher(serial: str = "", url: str = "") -> Tuple[bool, str]:
+    """Install the Clipster launcher APK and seed the UI URL on the phone.
+
+    Grants ``com.termux.permission.RUN_COMMAND`` when ``pm grant`` succeeds.
+    Writes ``open.url`` under the launcher's external files directory and
+    optionally starts the launcher once with the URL intent.
+
+    When Xiaomi blocks USB installs (``USER_RESTRICTED`` / verification), the
+    APK is copied to Downloads as ``clipster-launcher.apk`` for a manual tap.
+
+    :param serial: Which device, when several are plugged in.
+    :param url: Phone UI URL; when empty, read from Termux config if possible.
+    :return: ``(success, message)``.
+    """
+    apk = launcher_apk_path()
+    if not apk.is_file():
+        return False, "launcher APK missing: {0}".format(apk)
+
+    ensure_termux_allow_external_apps(serial)
+    # Termux only reloads termux.properties when its process restarts.
+    _adb_shell(["am", "force-stop", TERMUX_PACKAGE], serial=serial, timeout=15.0)
+
+    ok, message = install_apk(apk, serial=serial)
+    if not ok:
+        restricted = (
+            "USER_RESTRICTED" in (message or "").upper()
+            or is_verification_failure(message)
+        )
+        if restricted:
+            pushed, remote = push_apk_for_manual_install(
+                apk, serial=serial, remote_name="clipster-launcher.apk")
+            open_file_manager(serial)
+            if pushed:
+                return False, (
+                    "launcher_usb_blocked:{0} — enable Install via USB, then "
+                    "install clipster-launcher.apk from Downloads (or retry)."
+                ).format(remote)
+        return False, message
+
+    code, grant_output = _adb_shell(
+        ["pm", "grant", LAUNCHER_PACKAGE, TERMUX_RUN_COMMAND_PERMISSION],
+        serial=serial, timeout=20.0,
+    )
+    grant_ok = code == 0
+
+    target_url = (url or "").strip() or termux_phone_url(serial)
+    if target_url:
+        remote_dir = "/sdcard/Android/data/{0}/files".format(LAUNCHER_PACKAGE)
+        _adb_shell(["mkdir", "-p", remote_dir], serial=serial, timeout=10.0)
+        escaped = target_url.replace("'", "'\''")
+        _adb_shell(
+            ["sh", "-c", "printf '%s' '{0}' > {1}".format(escaped, LAUNCHER_OPEN_URL)],
+            serial=serial, timeout=15.0,
+        )
+        _adb_shell(
+            ["am", "start", "-n", "{0}/.MainActivity".format(LAUNCHER_PACKAGE),
+             "-d", target_url],
+            serial=serial, timeout=15.0,
+        )
+
+    if grant_ok:
+        return True, "Clipster app icon installed"
+    detail = grant_output.strip() if grant_output else "pm grant failed"
+    return True, (
+        "Clipster app icon installed; grant \"Run commands in Termux\" manually "
+        "({0})".format(detail)
+    )
+
 
 
 def wait_for_device(timeout: float = 60.0, poll: float = 1.0,
