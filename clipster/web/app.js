@@ -51,6 +51,9 @@ const elements = {
     queue: document.getElementById("queue"),
     queueEmpty: document.getElementById("queue-empty"),
     queueCard: document.getElementById("queue-card"),
+    votes: document.getElementById("votes"),
+    votesEmpty: document.getElementById("votes-empty"),
+    votesCard: document.getElementById("votes-card"),
     nowPlaying: document.getElementById("now-playing"),
     streamEmptyHint: document.getElementById("stream-empty-hint"),
     search: document.getElementById("search"),
@@ -119,6 +122,12 @@ let guestVideoId = "";
 
 /** Its position in the queue, or -1 while the queue has not caught up. */
 let guestIndex = -1;
+/** Current track vote from the last poll (``up`` / ``down`` / ``""``). */
+let lastVote = "";
+/** Vote by YouTube id — refreshed from each ``/api/discover`` state. */
+let voteById = {};
+/** YouTube id whose 👍/👎 buttons are currently shown. */
+let ratedVideoId = "";
 /** Whether the Streaming queue had tracks on the last render (for auto-play). */
 let hadQueueTracks = false;
 /** Video ids that failed to play this session — skipped instead of retried. */
@@ -1293,9 +1302,21 @@ function renderStream(state) {
         : (tracks[state.index] || {}).video_id || "";
     // Always refresh the red marker — even when the list DOM was not rebuilt.
     markQueueCurrent(playingId);
-    const playing = tracks.find((track) => track.video_id === playingId) || current;
-    updateVoteButtons(playing && playing.vote ? playing.vote : (state.vote || ""));
+    // Rebuild per-id votes: never reuse the previous title's thumbs on a new one.
+    voteById = {};
+    (state.votes || []).forEach((entry) => {
+        if (entry && entry.video_id) {
+            voteById[entry.video_id] = entry.vote === "up" || entry.vote === "down" ? entry.vote : "";
+        }
+    });
+    tracks.forEach((track) => {
+        if (track && track.video_id) {
+            voteById[track.video_id] = track.vote === "up" || track.vote === "down" ? track.vote : "";
+        }
+    });
+    syncVoteDisplay(playingId);
     centreQueue(playingId);
+    renderVotes(state.votes || []);
 
     // First songs just arrived — start playback when nothing is on yet.
     if (tracks.length > 0 && !hadQueueTracks) {
@@ -1342,6 +1363,166 @@ function updateVoteButtons(vote) {
     }
     if (elements.streamDislike) {
         elements.streamDislike.classList.toggle("voted", vote === "down");
+    }
+}
+
+/**
+ * Resolve the stored vote for one YouTube id (empty when unknown / unrated).
+ *
+ * @param {string} videoId The current track.
+ * @returns {string} ``up``, ``down``, or ``""``.
+ */
+function voteForId(videoId) {
+    if (!videoId) {
+        return "";
+    }
+    if (Object.prototype.hasOwnProperty.call(voteById, videoId)) {
+        return voteById[videoId] || "";
+    }
+    const track = queueTracks.find((item) => item.video_id === videoId);
+    return track && track.vote ? track.vote : "";
+}
+
+/**
+ * Refresh 👍/👎 for the track that is actually playing now.
+ *
+ * @param {string} videoId The current YouTube id.
+ * @returns {void}
+ */
+function syncVoteDisplay(videoId) {
+    ratedVideoId = videoId || "";
+    const vote = voteForId(ratedVideoId);
+    updateVoteButtons(vote);
+    lastVote = vote;
+}
+
+/**
+ * Show every stored thumbs-up / thumbs-down with play and clear actions.
+ *
+ * @param {Array<object>} votes Rows from ``/api/discover``.
+ * @returns {void}
+ */
+function renderVotes(votes) {
+    if (!elements.votes || !elements.votesCard) {
+        return;
+    }
+    const rows = Array.isArray(votes) ? votes : [];
+    elements.votesCard.hidden = rows.length === 0;
+    if (elements.votesEmpty) {
+        elements.votesEmpty.hidden = rows.length > 0;
+    }
+    elements.votes.innerHTML = "";
+    rows.forEach((entry) => {
+        const row = document.createElement("li");
+        row.className = "queue-row vote-row";
+        row.dataset.video = entry.video_id || "";
+
+        const badge = document.createElement("span");
+        badge.className = "badge " + (entry.vote === "down" ? "failed" : "ok");
+        badge.textContent = entry.vote === "down" ? "👎" : "👍";
+
+        const body = document.createElement("div");
+        body.className = "body";
+        const name = document.createElement("div");
+        name.className = "name";
+        name.textContent = entry.title || entry.video_id || "";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = entry.uploader || "";
+        body.appendChild(name);
+        body.appendChild(meta);
+
+        const actions = document.createElement("div");
+        actions.className = "row";
+        const playBtn = document.createElement("button");
+        playBtn.type = "button";
+        playBtn.className = "icon";
+        playBtn.title = "Play";
+        playBtn.setAttribute("aria-label", "Play");
+        playBtn.textContent = "▶";
+        playBtn.addEventListener("click", (event) => {
+            event.stopPropagation();
+            playVote(entry);
+        });
+        const clearBtn = document.createElement("button");
+        clearBtn.type = "button";
+        clearBtn.className = "icon";
+        clearBtn.title = "Clear rating";
+        clearBtn.setAttribute("aria-label", "Clear rating");
+        clearBtn.textContent = "✕";
+        clearBtn.addEventListener("click", (event) => {
+            event.stopPropagation();
+            stream("clear_vote", {video_id: entry.video_id});
+        });
+        actions.appendChild(playBtn);
+        actions.appendChild(clearBtn);
+
+        row.appendChild(badge);
+        row.appendChild(body);
+        row.appendChild(actions);
+        elements.votes.appendChild(row);
+    });
+}
+
+/**
+ * Play a rated track: enqueue on the host, or play locally in guest mode.
+ *
+ * @param {object} entry Vote row with ``video_id`` / ``title`` / ``uploader``.
+ * @returns {Promise<void>}
+ */
+async function playVote(entry) {
+    const videoId = entry && entry.video_id;
+    if (!videoId) {
+        return;
+    }
+    const inQueue = queueTracks.find((track) => track.video_id === videoId);
+    if (target === "guest") {
+        if (inQueue) {
+            playHere(videoId);
+            return;
+        }
+        try {
+            const answer = await api("/api/discover/queue", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    video_id: videoId,
+                    title: entry.title || videoId,
+                    uploader: entry.uploader || "",
+                    duration: 0,
+                    play: false,
+                }),
+            });
+            if (answer.body && answer.body.state) {
+                renderStream(answer.body.state);
+            }
+            playHere(videoId);
+        } catch (error) {
+            sayStream(standalone ? "Clipster cannot be reached." : "The PC cannot be reached.", "bad");
+        }
+        return;
+    }
+    if (inQueue) {
+        stream("play", {index: inQueue.index});
+        return;
+    }
+    try {
+        const answer = await api("/api/discover/queue", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                video_id: videoId,
+                title: entry.title || videoId,
+                uploader: entry.uploader || "",
+                duration: 0,
+                play: true,
+            }),
+        });
+        if (answer.body && answer.body.state) {
+            renderStream(answer.body.state);
+        }
+    } catch (error) {
+        sayStream(standalone ? "Clipster cannot be reached." : "The PC cannot be reached.", "bad");
     }
 }
 
@@ -1562,6 +1743,8 @@ function playHere(videoId) {
     // renderStream fills it in as soon as the queue arrives.
     guestIndex = queueTracks.findIndex((track) => track.video_id === videoId);
     markQueueCurrent(videoId);
+    // New title → show that title's own rating, not the previous one's.
+    syncVoteDisplay(videoId);
     elements.player.hidden = false;
     elements.player.src = "/stream/" + encodeURIComponent(videoId);
     window.clearTimeout(playWatchTimer);
@@ -1788,9 +1971,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 extra.index = guestIndex;
             }
             if (command === "like") {
-                updateVoteButtons("up");
+                const next = lastVote === "up" ? "" : "up";
+                if (ratedVideoId) {
+                    voteById[ratedVideoId] = next;
+                }
+                updateVoteButtons(next);
+                lastVote = next;
             } else if (command === "dislike") {
-                updateVoteButtons("down");
+                const next = lastVote === "down" ? "" : "down";
+                if (ratedVideoId) {
+                    voteById[ratedVideoId] = next;
+                }
+                updateVoteButtons(next);
+                lastVote = next;
             }
             stream(command, extra);
         });

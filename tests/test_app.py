@@ -918,6 +918,62 @@ def test_every_command_reaches_the_page(app, streaming, command: str, method: st
     assert calls == [method], calls
 
 
+def test_like_toggles_off_on_second_click(app, streaming) -> None:
+    from clipster.discover_taste import VOTE_UP
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    page.set_tracks(_tracks(1))
+    page.player.set_playlist(page._tracks)
+    page._selected = 0
+    app._discover_like(page._tracks[0])
+    assert app.taste.vote_for("aaaaaaaaaa0") == VOTE_UP
+    app._discover_like(page._tracks[0])
+    assert app.taste.vote_for("aaaaaaaaaa0") is None
+
+
+def test_dislike_toggles_off_without_dropping_again(app, streaming) -> None:
+    from clipster.discover_taste import VOTE_DOWN
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    page.set_tracks(_tracks(2))
+    page.player.set_playlist(page._tracks)
+    page._selected = 0
+    track = page._tracks[0]
+    app._discover_dislike(track)
+    assert app.taste.vote_for(track.video_id) == VOTE_DOWN
+    assert track.video_id not in [t.video_id for t in page._tracks]
+    # Second toggle clears the stored dislike even though the row is gone.
+    app._discover_dislike(track)
+    assert app.taste.vote_for(track.video_id) is None
+
+
+def test_votes_are_published_in_streaming_state(app, streaming) -> None:
+    page, _, _ = streaming
+    page.set_tracks(_tracks(1))
+    app.taste.like(page._tracks[0])
+    state = app.discover_remote_state()
+    assert state["votes"]
+    assert state["votes"][0]["video_id"] == "aaaaaaaaaa0"
+    assert state["votes"][0]["vote"] == "up"
+
+
+def test_clear_vote_command_removes_rating(app, streaming) -> None:
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    page.set_tracks(_tracks(1))
+    app.taste.like(page._tracks[0])
+    result = app.discover_remote_command("clear_vote", video_id="aaaaaaaaaa0")
+    assert result["ok"] is True
+    assert app.taste.vote_for("aaaaaaaaaa0") is None
+    assert result["state"]["votes"] == []
+
+
 def test_playing_a_queue_position(app, streaming) -> None:
     from clipster.terms import accept_streaming_terms
 
@@ -1179,6 +1235,73 @@ def test_the_running_track_keeps_playing_when_one_is_inserted(app, streaming) ->
     app.discover_remote_enqueue("bbbbbbbbbbb", "Picked", play=False)
     assert stopped == [], "the player was stopped"
     assert page.player.current.title == "Song 1", "it lost track of what is playing"
+
+
+def test_find_similar_keeps_the_queue_and_playback(app, streaming) -> None:
+    """Find similar must append unique hits — never clear or stop what is playing."""
+    from clipster.discover import DiscoverOutcome, DiscoverTrack
+    from clipster.terms import accept_streaming_terms
+
+    page, _, _ = streaming
+    accept_streaming_terms(app.config)
+    existing = _tracks(3)
+    page.set_tracks(existing)
+    page.player.set_playlist(page._tracks)
+    page.player._index = 1
+    page.player._playing = True
+    page._selected = 1
+    stopped: list = []
+    page.player.stop = lambda *a, **k: stopped.append(True)
+
+    page.begin_discover()
+    assert [t.video_id for t in page._tracks] == [t.video_id for t in existing]
+    assert page._selected == 1
+    assert stopped == []
+    assert page.player._playing is True
+
+    # Duplicate of Song 0 plus two fresh ids — only the fresh ones append.
+    batch = [
+        existing[0],
+        DiscoverTrack(
+            url="https://youtu.be/nnnnnnnnnn1",
+            video_id="nnnnnnnnnn1",
+            title="Alpha Horizon Live",
+            uploader="X",
+            duration=200,
+        ),
+        DiscoverTrack(
+            url="https://youtu.be/nnnnnnnnnn2",
+            video_id="nnnnnnnnnn2",
+            title="Beta Midnight Drive",
+            uploader="Y",
+            duration=201,
+        ),
+    ]
+    app._discover_busy = True
+    app._discover_batch(batch)
+    assert [t.video_id for t in page._tracks] == [
+        "aaaaaaaaaa0", "aaaaaaaaaa1", "aaaaaaaaaa2", "nnnnnnnnnn1", "nnnnnnnnnn2",
+    ]
+    assert page._selected == 1
+    assert stopped == []
+
+    outcome = DiscoverOutcome(tracks=list(batch), seeds_tried=1)
+    app._discover_ready(outcome)
+    assert len(page._tracks) == 5
+    assert page.player._playing is True
+    assert page._selected == 1
+
+
+def test_find_similar_without_seeds_keeps_an_existing_queue(app, streaming) -> None:
+    page, _, _ = streaming
+    page.set_tracks(_tracks(2))
+    page.player.set_playlist(page._tracks)
+    page.player._playing = True
+    stopped: list = []
+    page.player.stop = lambda *a, **k: stopped.append(True)
+    app._discover_no_seeds()
+    assert len(page._tracks) == 2
+    assert stopped == []
 
 
 def test_an_already_queued_pick_is_played_where_it_is(app, streaming) -> None:

@@ -85,10 +85,11 @@ fi
 step "Shared download folder (Download/clipster)"
 # ---------------------------------------------------------------------------
 # termux-setup-storage links ~/storage/downloads → the phone's public Download.
+# Config stores the public path (visible in file managers); writes use the link.
 info "termux-setup-storage (allow storage access if Android asks)"
 termux-setup-storage || true
 DOWNLOAD_TARGET=""
-if [ -d "$HOME/storage/downloads" ]; then
+if [ -L "$HOME/storage/downloads" ] || [ -d "$HOME/storage/downloads" ]; then
     DOWNLOAD_TARGET="$HOME/storage/downloads/clipster"
 elif [ -d /sdcard/Download ]; then
     DOWNLOAD_TARGET="/sdcard/Download/clipster"
@@ -96,10 +97,10 @@ elif [ -d /storage/emulated/0/Download ]; then
     DOWNLOAD_TARGET="/storage/emulated/0/Download/clipster"
 fi
 if [ -n "$DOWNLOAD_TARGET" ]; then
-    mkdir -p "$DOWNLOAD_TARGET" && info "Downloads go to: $DOWNLOAD_TARGET" \
+    mkdir -p "$DOWNLOAD_TARGET" && info "Downloads go to Download/clipster ($DOWNLOAD_TARGET)" \
         || warn "Could not create $DOWNLOAD_TARGET — set Download folder in Settings."
 else
-    warn "Shared Download folder not visible yet. Allow storage for Termux, then set Download folder to Download/clipster in Settings."
+    warn "Shared Download folder not visible yet. Allow storage for Termux, then set Download folder to /storage/emulated/0/Download/clipster in Settings."
 fi
 
 # ---------------------------------------------------------------------------

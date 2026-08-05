@@ -64,23 +64,23 @@ class HeadlessDiscoverSession:
         self._busy = bool(busy)
 
     def begin_discover(self) -> None:
-        """Mark the start of a Find-Similar run."""
+        """Mark the start of a Find-Similar run without clearing the playlist."""
         self._extend_requested = False
-        self._tracks = []
-        self.player.set_playlist([])
-        self._selected = -1
-        self._notify_queue_changed()
 
     def show_progress(self, current: int, total: int, title: str) -> None:
         """Log progress; there is no on-device status line for the PC page."""
         log.debug("Discover progress %s/%s: %s", current, total, title)
 
     def show_empty(self, key: str) -> None:
-        """Clear the queue and log an empty-result key."""
+        """Clear the queue only when it is already empty; otherwise keep it."""
+        self._busy = False
+        if self._tracks:
+            log.info("Discover empty (%s) — keeping %s queued tracks", key, len(self._tracks))
+            self._notify_queue_changed()
+            return
         self._tracks = []
         self.player.set_playlist([])
         self._selected = -1
-        self._busy = False
         self._notify_queue_changed()
         log.info("Discover empty: %s", key)
 

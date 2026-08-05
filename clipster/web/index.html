@@ -100,6 +100,12 @@
         <ul id="queue" class="downloads"></ul>
         <p id="queue-empty" class="message" hidden>No songs yet — tap Find similar.</p>
     </section>
+
+    <section class="card" id="votes-card" hidden>
+        <h2>Ratings</h2>
+        <ul id="votes" class="downloads"></ul>
+        <p id="votes-empty" class="message" hidden>No likes or dislikes yet.</p>
+    </section>
 </main>
 
 <main id="view-downloads" hidden>
@@ -165,7 +171,9 @@
         </select>
 
         <label class="label" for="set-download-dir">Download folder</label>
-        <input id="set-download-dir" class="field" type="text" autocomplete="off" spellcheck="false">
+        <input id="set-download-dir" class="field" type="text" autocomplete="off" spellcheck="false"
+               placeholder="/storage/emulated/0/Download/clipster">
+        <p id="set-download-hint" class="meta">On Android: Download/clipster is visible in the file manager. You can change this path anytime.</p>
         <p id="set-download-resolved" class="meta"></p>
 
         <label class="label" for="set-history">History limit</label>

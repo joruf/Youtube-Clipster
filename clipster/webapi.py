@@ -201,17 +201,18 @@ class RemoteApi:
             return 503, {"available": False, "error": "closing"}
 
     def discover_command(self, command: str, index: int = -1,
-                         seconds: float = 0.0) -> Tuple[int, Dict[str, Any]]:
+                         seconds: float = 0.0, video_id: str = "") -> Tuple[int, Dict[str, Any]]:
         """Run one Streaming command for the phone.
 
         :param command: The command name.
         :param index: Queue position, for ``play``.
         :param seconds: Target position, for ``seek``.
+        :param video_id: Optional YouTube id for vote actions.
         :return: The HTTP status and the result including the new state.
         """
         self._record_contact()
         try:
-            result = self._app.discover_remote_command(command, index, seconds)
+            result = self._app.discover_remote_command(command, index, seconds, video_id)
         except RuntimeError as exc:
             log.debug("Streaming command refused: %s", exc)
             return 503, {"ok": False, "error": "closing"}

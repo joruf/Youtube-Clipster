@@ -45,7 +45,7 @@ from .discover import (
     resolve_discover_seeds,
     seed_from_track,
 )
-from .discover_taste import DiscoverTaste, VOTE_DOWN
+from .discover_taste import DiscoverTaste, VOTE_DOWN, VOTE_UP
 from .discover_queue import DiscoverQueueStore
 from .history import STATUS_CANCELED, STATUS_FAILED, STATUS_OK, History, HistoryEntry, format_size
 from .i18n import Messages
@@ -92,7 +92,7 @@ REMOTE_AUDIO_TTL = 1800.0
 #: Streaming commands a remote client may send.
 DISCOVER_COMMANDS = (
     "refresh", "extend", "play", "toggle", "stop", "next", "previous",
-    "like", "dislike", "hide", "download", "seek", "volume",
+    "like", "dislike", "hide", "download", "seek", "volume", "clear_vote",
 )
 
 #: Of those, the ones that reach YouTube and therefore need the Streaming terms.
@@ -261,7 +261,10 @@ class ClipsterApp:
             self.gui.view.discover.ensure_terms = self._ensure_streaming_terms
             self.gui.view.discover.vote_for = self.taste.vote_for
             self.gui.view.discover._on_hide = self._discover_hide
+            self.gui.view.discover._on_clear_vote = self._discover_clear_vote
+            self.gui.view.discover._on_play_vote = self._discover_play_vote
             self.gui.view.discover.on_queue_changed = self._schedule_queue_save
+            self.gui.view.discover.set_votes(self.taste.entries)
 
         self._discover_cancel = threading.Event()
         self._discover_busy = False
@@ -478,6 +481,18 @@ class ClipsterApp:
             state["vote"] = state["current"]["vote"]
         else:
             state["vote"] = ""
+        state["votes"] = [
+            {
+                "video_id": entry.video_id,
+                "title": entry.title,
+                "uploader": entry.uploader,
+                "url": entry.url,
+                "vote": entry.vote,
+                "voted_at": entry.voted_at,
+            }
+            for entry in self.taste.entries
+            if entry.video_id
+        ]
         return state
 
     def discover_remote_audio(self, video_id: str) -> Tuple[str, Dict[str, str]]:
@@ -628,7 +643,7 @@ class ClipsterApp:
         return {"ok": True, "error": "", "state": self.discover_remote_state()}
 
     def discover_remote_command(self, command: str, index: int = -1,
-                               seconds: float = 0.0) -> Dict[str, Any]:
+                               seconds: float = 0.0, video_id: str = "") -> Dict[str, Any]:
         """Run one Streaming command asked for by a remote client.
 
         Marshals itself onto the GUI thread like :meth:`submit_remote`.
@@ -641,11 +656,14 @@ class ClipsterApp:
         :param command: One of the commands in :data:`DISCOVER_COMMANDS`.
         :param index: Queue position, for ``play``.
         :param seconds: Target position, for ``seek``.
+        :param video_id: Optional YouTube id (``clear_vote``, play helpers).
         :return: ``{"ok": bool, "error": str, "state": {...}}``.
         :raises RuntimeError: When the GUI bridge is no longer running.
         """
         if not self.bridge.on_gui_thread():
-            return dict(self.bridge.call(self.discover_remote_command, command, index, seconds))
+            return dict(self.bridge.call(
+                self.discover_remote_command, command, index, seconds, video_id,
+            ))
         if command not in DISCOVER_COMMANDS:
             return {"ok": False, "error": "unknown_command", "state": self.discover_remote_state()}
         page = self._discover_page()
@@ -656,19 +674,28 @@ class ClipsterApp:
 
         log.info("Streaming command from a remote client: %s", command)
         try:
-            self._run_discover_command(page, command, index, seconds)
+            self._run_discover_command(page, command, index, seconds, video_id=video_id)
         except Exception as exc:  # pragma: no cover - a page error must not kill the request
             log.exception("Streaming command %s failed", command)
             return {"ok": False, "error": str(exc), "state": self.discover_remote_state()}
         return {"ok": True, "error": "", "state": self.discover_remote_state()}
 
-    def _run_discover_command(self, page: Any, command: str, index: int, seconds: float) -> None:
+    def _run_discover_command(
+        self,
+        page: Any,
+        command: str,
+        index: int,
+        seconds: float,
+        *,
+        video_id: str = "",
+    ) -> None:
         """Carry out one Streaming command on the page.
 
         :param page: The Streaming page.
         :param command: The validated command name.
         :param index: Queue position, for ``play``.
         :param seconds: Target position, for ``seek``.
+        :param video_id: Optional YouTube id for vote actions.
         :return: None
         """
         if command == "refresh":
@@ -695,6 +722,7 @@ class ClipsterApp:
             page.like_current()
             if hasattr(page, "sync_vote_buttons"):
                 page.sync_vote_buttons()
+            self._sync_votes_ui(page)
         elif command == "dislike":
             if 0 <= index < len(getattr(page, "_tracks", ())):
                 if hasattr(page, "select_at"):
@@ -702,6 +730,15 @@ class ClipsterApp:
             page.dislike_current()
             if hasattr(page, "sync_vote_buttons"):
                 page.sync_vote_buttons()
+            self._sync_votes_ui(page)
+        elif command == "clear_vote":
+            target = str(video_id or "").strip()
+            if not target and 0 <= index < len(getattr(page, "_tracks", ())):
+                target = page._tracks[index].video_id
+            self._discover_clear_vote(target)
+            if hasattr(page, "sync_vote_buttons"):
+                page.sync_vote_buttons()
+            self._sync_votes_ui(page)
         elif command == "hide":
             if 0 <= index < len(getattr(page, "_tracks", ())) and hasattr(page, "hide_at"):
                 page.hide_at(index)
@@ -709,6 +746,7 @@ class ClipsterApp:
                 page.hide_current()
             else:
                 page.dislike_current()
+            self._sync_votes_ui(page)
         elif command == "download":
             if 0 <= index < len(getattr(page, "_tracks", ())) and hasattr(page, "download_at"):
                 page.download_at(index)
@@ -1340,7 +1378,14 @@ class ClipsterApp:
         page = self._discover_page()
         if page is None:
             return
-        page.set_busy(False)
+        # Never wipe a playlist that is already playing / queued.
+        if getattr(page, "_tracks", None):
+            if hasattr(page, "finish_discover"):
+                page.finish_discover(status=self.messages["discover_no_seeds"], level="warn")
+            else:
+                page.set_busy(False)
+                page.set_status(self.messages["discover_no_seeds"], "warn")
+            return
         page.show_empty("discover_no_seeds")
 
     def _discover_batch(self, tracks: List[DiscoverTrack]) -> None:
@@ -1373,22 +1418,84 @@ class ClipsterApp:
         page.finish_discover(status=status, level=level)
 
     def _discover_like(self, track: DiscoverTrack) -> None:
-        """Remember a thumbs-up and load more songs like this one."""
-        self.taste.like(track)
+        """Toggle thumbs-up: second click clears; first click likes and extends."""
         page = self._discover_page()
+        if self.taste.vote_for(track.video_id) == VOTE_UP:
+            self.taste.clear_vote(track.video_id)
+            if page is not None:
+                page.set_status(self.messages["discover_vote_cleared"], "info")
+                if hasattr(page, "sync_vote_buttons"):
+                    page.sync_vote_buttons()
+            self._sync_votes_ui(page)
+            return
+        self.taste.like(track)
         if page is not None:
             page.set_status(self.messages["discover_liked"], "ok")
+            if hasattr(page, "sync_vote_buttons"):
+                page.sync_vote_buttons()
+        self._sync_votes_ui(page)
         if self._discover_busy or self._discover_extending:
             return
         self._discover_extend(track)
 
     def _discover_dislike(self, track: DiscoverTrack) -> None:
-        """Remember a thumbs-down, drop the track, and skip ahead if it was playing."""
+        """Toggle thumbs-down: second click clears; first click dislikes and drops."""
+        if self.taste.vote_for(track.video_id) == VOTE_DOWN:
+            self.taste.clear_vote(track.video_id)
+            page = self._discover_page()
+            if page is not None:
+                page.set_status(self.messages["discover_vote_cleared"], "info")
+                if hasattr(page, "sync_vote_buttons"):
+                    page.sync_vote_buttons()
+            self._sync_votes_ui(page)
+            return
         self._exclude_and_drop(track, status_key="discover_disliked", play_if_current=True)
+        self._sync_votes_ui(self._discover_page())
+
+    def _discover_clear_vote(self, video_id: str) -> None:
+        """Remove a stored like/dislike without changing the queue."""
+        if not video_id:
+            return
+        if self.taste.clear_vote(video_id):
+            page = self._discover_page()
+            if page is not None:
+                page.set_status(self.messages["discover_vote_cleared"], "info")
+                if hasattr(page, "sync_vote_buttons"):
+                    page.sync_vote_buttons()
+            self._sync_votes_ui(page)
+
+    def _sync_votes_ui(self, page: Any) -> None:
+        """Refresh the desktop votes list when the page exposes one."""
+        if page is not None and hasattr(page, "set_votes"):
+            try:
+                page.set_votes(self.taste.entries)
+            except Exception:
+                log.debug("Votes UI refresh failed", exc_info=True)
 
     def _discover_hide(self, track: DiscoverTrack) -> None:
         """Remove a queue row the user does not want — also blocked for Find similar."""
         self._exclude_and_drop(track, status_key="discover_hidden", play_if_current=True)
+        self._sync_votes_ui(self._discover_page())
+
+    def _discover_play_vote(self, video_id: str, title: str = "", uploader: str = "") -> None:
+        """Play a voted track: reuse the queue row or enqueue it."""
+        if not video_id:
+            return
+        page = self._discover_page()
+        if page is None:
+            return
+        ids = [track.video_id for track in getattr(page, "_tracks", [])]
+        if video_id in ids:
+            page.play_at(ids.index(video_id))
+            return
+        entry = self.taste.entry_for(video_id)
+        self.discover_remote_enqueue(
+            video_id,
+            title or (entry.title if entry else video_id),
+            uploader or (entry.uploader if entry else ""),
+            0,
+            True,
+        )
 
     def _exclude_and_drop(
         self,
@@ -2053,7 +2160,7 @@ class ClipsterApp:
                 "config": str(paths.config_file()),
                 "history": str(paths.history_file()),
                 "log": str(paths.log_file()),
-                "download_dir": str(self.download_dir),
+                "download_dir": paths.friendly_download_path(self.download_dir),
             },
         }
 
@@ -2062,7 +2169,7 @@ class ClipsterApp:
         data: Dict[str, Any] = {}
         for key in self._REMOTE_SETTING_KEYS:
             data[key] = getattr(self.config, key)
-        data["download_dir_resolved"] = str(self.download_dir)
+        data["download_dir_resolved"] = paths.friendly_download_path(self.download_dir)
         data["languages"] = ["de", "en"]
         data["discover_modes"] = ["search", "related", "deezer", "listenbrainz"]
         return data
@@ -2085,7 +2192,11 @@ class ClipsterApp:
             if fmt in MEDIA_FORMATS:
                 config.default_format = fmt
         if "download_dir" in updates:
-            config.download_dir = str(updates["download_dir"] or "").strip()
+            raw = str(updates["download_dir"] or "").strip()
+            if paths.is_termux():
+                config.download_dir = paths.normalize_android_download_setting(raw)
+            else:
+                config.download_dir = raw
         if "history_limit" in updates:
             try:
                 config.history_limit = max(1, int(updates["history_limit"]))

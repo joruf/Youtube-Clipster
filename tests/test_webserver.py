@@ -148,7 +148,7 @@ class FakeApp:
             "index": 0, "playing": True, "position": 12.0, "duration": 214.0,
             "can_seek": True, "busy": False, "extending": False, "mode": "related", "level": 0.4,
             "volume": 42, "volume_controllable": True, "search_delay_ms": 1500,
-            "search_results": 12}
+            "search_results": 12, "votes": []}
 
     def discover_remote_search(self, query: str) -> Dict[str, Any]:
         self.searches.append(query)
@@ -173,10 +173,10 @@ class FakeApp:
         return "", {}
 
     def discover_remote_command(self, command: str, index: int = -1,
-                                seconds: float = 0.0) -> Dict[str, Any]:
+                                seconds: float = 0.0, video_id: str = "") -> Dict[str, Any]:
         if self.raise_on_submit:
             raise RuntimeError("GUI bridge is not running")
-        self.commands.append((command, index, seconds))
+        self.commands.append((command, index, seconds, video_id))
         if command == "nope":
             return {"ok": False, "error": "unknown_command", "state": {}}
         if command == "refresh" and self.terms_missing:
@@ -1025,7 +1025,7 @@ def test_the_streaming_state_needs_the_token(served) -> None:
 
 
 @pytest.mark.parametrize("command", ["toggle", "next", "previous", "like", "dislike",
-                                     "download", "stop", "refresh", "extend"])
+                                     "download", "stop", "refresh", "extend", "clear_vote"])
 def test_a_command_is_passed_on(served, command: str) -> None:
     app, base, _ = served
     status, _, raw = _request(base + "/api/discover", method="POST",
@@ -1038,9 +1038,9 @@ def test_a_command_is_passed_on(served, command: str) -> None:
 def test_a_queue_position_and_a_seek_are_passed_on(served) -> None:
     app, base, _ = served
     _request(base + "/api/discover", method="POST", body={"command": "play", "index": 2})
-    assert app.commands[-1] == ("play", 2, 0.0)
+    assert app.commands[-1] == ("play", 2, 0.0, "")
     _request(base + "/api/discover", method="POST", body={"command": "seek", "seconds": 30.5})
-    assert app.commands[-1] == ("seek", -1, 30.5)
+    assert app.commands[-1] == ("seek", -1, 30.5, "")
 
 
 @pytest.mark.parametrize("index,seconds", [("abc", "x"), (None, None), ([], {}), ("NaN", "NaN")])
@@ -1049,7 +1049,7 @@ def test_unusable_numbers_fall_back_instead_of_crashing(served, index, seconds) 
     status, _, _ = _request(base + "/api/discover", method="POST",
                             body={"command": "play", "index": index, "seconds": seconds})
     assert status == 200
-    assert app.commands[-1] == ("play", -1, 0.0)
+    assert app.commands[-1] == ("play", -1, 0.0, "")
 
 
 def test_an_unknown_command_is_a_400(served) -> None:
@@ -1093,7 +1093,8 @@ def test_the_streaming_view_has_transport_controls(real_web) -> None:
     _, base = real_web
     page = _request(base + "/")[2].decode("utf-8")
     for control in ("stream-toggle", "stream-next", "stream-previous", "stream-like",
-                    "stream-dislike", "stream-download", "stream-refresh", "queue"):
+                    "stream-dislike", "stream-download", "stream-refresh", "queue",
+                    "votes", "votes-card"):
         assert 'id="{0}"'.format(control) in page, control
 
 
@@ -1136,7 +1137,7 @@ def test_the_volume_is_part_of_the_state(served) -> None:
 def test_a_volume_command_carries_its_value(served) -> None:
     app, base, _ = served
     _request(base + "/api/discover", method="POST", body={"command": "volume", "seconds": 35})
-    assert app.commands[-1] == ("volume", -1, 35.0)
+    assert app.commands[-1] == ("volume", -1, 35.0, "")
 
 
 def test_a_search_is_passed_on(served) -> None:

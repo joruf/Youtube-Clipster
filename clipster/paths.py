@@ -237,7 +237,7 @@ def default_download_dir() -> Path:
     ``Download/clipster``, not Termux's private ``~/Downloads``.
     """
     if is_termux():
-        return android_download_dir()
+        return android_public_download_dir()
     if IS_WINDOWS:
         folder = _windows_shell_folder("{374DE290-123F-4565-9164-39C4925E467B}")
         if folder is not None:
@@ -249,25 +249,105 @@ def default_download_dir() -> Path:
     return Path.home() / "Downloads"
 
 
-def android_download_dir() -> Path:
-    """Return shared ``Download/clipster`` for Termux on Android.
+#: Public Android path shown in Settings / About and stored in config.
+ANDROID_PUBLIC_DOWNLOAD = Path("/storage/emulated/0/Download/clipster")
 
-    Prefers the Termux shared-storage link (``~/storage/downloads``), then the
-    usual public paths. The directory may not exist yet — callers create it.
+
+def android_public_download_dir() -> Path:
+    """Return the phone's shared ``Download/clipster`` path (for config / UI)."""
+    return ANDROID_PUBLIC_DOWNLOAD
+
+
+def android_download_dir() -> Path:
+    """Return a writable shared ``Download/clipster`` path for Termux.
+
+    Prefers the Termux shared-storage link (``~/storage/downloads``), which is
+    what actually works for I/O after ``termux-setup-storage``. The public
+    ``/storage/emulated/0/Download/clipster`` form is used for display and
+    config; :func:`android_writable_download_dir` maps between them.
 
     :return: Absolute path under the phone's public Download folder.
     """
-    candidates = (
-        Path.home() / "storage" / "downloads" / "clipster",
+    link_root = _android_storage_link_root()
+    link = link_root / "clipster"
+    if link_root.is_symlink() or _path_present(link_root):
+        return link
+    for path in (
+        ANDROID_PUBLIC_DOWNLOAD,
         Path("/sdcard/Download/clipster"),
-        Path("/storage/emulated/0/Download/clipster"),
-    )
-    for path in candidates:
-        # Parent "downloads" / "Download" must already be visible; clipster is created later.
-        if path.parent.is_dir():
+    ):
+        if _path_present(path.parent):
             return path
-    # Storage not linked yet — still aim at the Termux shared downloads path.
-    return Path.home() / "storage" / "downloads" / "clipster"
+    return link
+
+
+def _android_storage_link_root() -> Path:
+    """Return Termux ``~/storage/downloads`` (symlink to public Download)."""
+    return Path.home() / "storage" / "downloads"
+
+
+def _path_present(path: Path) -> bool:
+    """Return whether ``path`` exists or is a symlink (even if the target is blocked)."""
+    try:
+        return path.is_symlink() or path.exists()
+    except OSError:
+        return False
+
+
+def android_writable_download_dir(configured: Path | str) -> Path:
+    """Map a public ``Download/...`` config path to the Termux-writable link.
+
+    Termux often cannot create ``/storage/emulated/0/...`` directly, but can
+    write the same place through ``~/storage/downloads/...``.
+
+    :param configured: Path from config or the UI.
+    :return: Path to use for mkdir / yt-dlp output.
+    """
+    path = Path(str(configured or "")).expanduser()
+    if not is_termux():
+        return path
+    text = str(path)
+    link_root = _android_storage_link_root()
+    public_roots = (
+        "/storage/emulated/0/Download",
+        "/sdcard/Download",
+        "/storage/self/primary/Download",
+    )
+    for root in public_roots:
+        if text == root or text.startswith(root + "/"):
+            rest = text[len(root) :].lstrip("/") or "clipster"
+            if _path_present(link_root):
+                return link_root / rest
+            return Path(root) / rest
+    return path
+
+
+def friendly_download_path(path: Path | str) -> str:
+    """Return a path that file managers recognise (public Download/...).
+
+    :param path: Internal or public download directory.
+    :return: Display string for About / Settings.
+    """
+    text = str(path or "").strip()
+    if not text:
+        return str(ANDROID_PUBLIC_DOWNLOAD)
+    link_root = str(_android_storage_link_root())
+    normalized = str(Path(text).expanduser())
+    if normalized == link_root or normalized.startswith(link_root + os.sep):
+        rest = normalized[len(link_root) :].lstrip("/") or "clipster"
+        return str(Path("/storage/emulated/0/Download") / rest)
+    # /data/data/.../home/storage/downloads/...
+    marker = "/home/storage/downloads"
+    if marker in normalized.replace("\\", "/"):
+        rest = normalized.split(marker, 1)[-1].lstrip("/") or "clipster"
+        return str(Path("/storage/emulated/0/Download") / rest)
+    try:
+        resolved = str(Path(normalized).resolve())
+        if "/Download/" in resolved or resolved.endswith("/Download"):
+            return resolved
+    except OSError:
+        pass
+    return normalized
 
 
 def is_private_termux_download_dir(path: Path | str) -> bool:
@@ -280,8 +360,14 @@ def is_private_termux_download_dir(path: Path | str) -> bool:
     if not text:
         return False
     resolved = str(Path(text).expanduser())
-    # Shared storage is never "private".
-    if "/storage/" in resolved or resolved.startswith("/sdcard/"):
+    # Shared storage (public or Termux link) is never "private".
+    if resolved.startswith("/sdcard/") or "/storage/emulated/" in resolved:
+        return False
+    if "/home/storage/downloads" in resolved.replace("\\", "/"):
+        return False
+    if resolved == str(_android_storage_link_root()) or resolved.startswith(
+        str(_android_storage_link_root()) + os.sep
+    ):
         return False
     home_downloads = str(Path.home() / "Downloads")
     if resolved == home_downloads or resolved.startswith(home_downloads + os.sep):
@@ -289,18 +375,69 @@ def is_private_termux_download_dir(path: Path | str) -> bool:
     return "/data/data/com.termux/files/home/Downloads" in resolved
 
 
+def is_termux_link_download_dir(path: Path | str) -> bool:
+    """Return whether ``path`` is the Termux ``~/storage/downloads`` form."""
+    text = str(Path(str(path or "")).expanduser())
+    link = str(_android_storage_link_root())
+    return text == link or text.startswith(link + os.sep) or "/home/storage/downloads" in text.replace(
+        "\\", "/"
+    )
+
+
+def normalize_android_download_setting(value: str) -> str:
+    """Turn a user-entered download folder into a stored absolute path.
+
+    Accepts short forms such as ``Download/clipster`` or ``~/storage/downloads/clipster``.
+
+    :param value: Text from Settings.
+    :return: Absolute path string (may be empty when input is empty).
+    """
+    text = (value or "").strip()
+    if not text:
+        return ""
+    lowered = text.replace("\\", "/").lstrip("./")
+    aliases = {
+        "download/clipster": str(ANDROID_PUBLIC_DOWNLOAD),
+        "downloads/clipster": str(ANDROID_PUBLIC_DOWNLOAD),
+        "download": str(ANDROID_PUBLIC_DOWNLOAD.parent),
+        "downloads": str(ANDROID_PUBLIC_DOWNLOAD.parent),
+    }
+    if lowered.lower() in aliases:
+        return aliases[lowered.lower()]
+    if lowered.lower().startswith("download/"):
+        return str(Path("/storage/emulated/0") / lowered)
+    if lowered.lower().startswith("downloads/"):
+        rest = lowered.split("/", 1)[1]
+        return str(Path("/storage/emulated/0/Download") / rest)
+    expanded = Path(text).expanduser()
+    if is_termux_link_download_dir(expanded):
+        return friendly_download_path(expanded)
+    return str(expanded)
+
+
 def ensure_android_download_dir(config: object) -> bool:
-    """Point an Android config at shared ``Download/clipster`` when still private.
+    """Point an Android config at shared ``Download/clipster`` when needed.
+
+    Rewrites private Termux ``~/Downloads`` and the opaque
+    ``~/storage/downloads/clipster`` form to the public path that Android file
+    managers show. Actual writes still go through the Termux storage link via
+    :func:`android_writable_download_dir`.
 
     :param config: Live config object with a ``download_dir`` attribute.
     :return: ``True`` when ``config.download_dir`` was changed.
     """
     if not is_termux():
         return False
-    wanted = android_download_dir()
+    wanted = str(android_public_download_dir())
     current = str(getattr(config, "download_dir", "") or "").strip()
-    if not current or is_private_termux_download_dir(current):
-        setattr(config, "download_dir", str(wanted))
+    if (
+        not current
+        or is_private_termux_download_dir(current)
+        or is_termux_link_download_dir(current)
+    ):
+        if current == wanted:
+            return False
+        setattr(config, "download_dir", wanted)
         return True
     return False
 

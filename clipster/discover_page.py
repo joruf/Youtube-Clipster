@@ -7,7 +7,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import ttk
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from . import theme
 from .config import Config
@@ -270,6 +270,10 @@ class DiscoverPage(ttk.Frame):
         self._on_mode_changed = on_mode_changed
         #: Optional hide-from-queue (defaults to dislike when unset).
         self._on_hide: Optional[Callable[[DiscoverTrack], None]] = None
+        #: Clear a stored like/dislike by video id.
+        self._on_clear_vote: Optional[Callable[[str], None]] = None
+        #: Play a voted track (enqueue if needed).
+        self._on_play_vote: Optional[Callable[[str, str, str], None]] = None
         #: Optional gate: return ``False`` to block Streaming actions (terms declined).
         self.ensure_terms: Optional[Callable[[], bool]] = None
         #: Optional lookup of stored taste vote for a video id (``up`` / ``down``).
@@ -637,12 +641,23 @@ class DiscoverPage(ttk.Frame):
                 pass
         player.bind("<Configure>", self._sync_player_wraplengths, add="+")
 
+        votes = ttk.LabelFrame(
+            self, text=self.messages["discover_votes"], style="Card.TLabelframe", padding=PAD_SMALL
+        )
+        self._votes_frame = votes
+        self._votes_body = ttk.Frame(votes, style="Panel.TFrame")
+        self._votes_body.pack(fill="both", expand=True)
+        self._votes_empty = ttk.Label(
+            votes, text=self.messages["discover_votes_empty"], style="Panel.Muted.TLabel"
+        )
+        self._vote_rows: List[ttk.Frame] = []
+
         self.reload_from_config()
 
     def _sync_queue_visibility(self) -> None:
         """Show only the toolbar + hint until songs are available to play."""
-        # Keep the player/queue visible while a search is running so the empty
-        # hint does not flash when Find similar clears the list briefly.
+        # Keep the player/queue visible while a search is running so an empty
+        # first Find-similar does not flash the idle hint before rows arrive.
         show_player = bool(self._tracks) or self._busy
         try:
             if show_player:
@@ -655,8 +670,87 @@ class DiscoverPage(ttk.Frame):
                     self._split.pack_forget()
                 if self._empty_hint.winfo_manager() != "pack":
                     self._empty_hint.pack(fill="x", padx=PAD, pady=(0, PAD))
+            # Votes list stays available even with an empty queue.
+            if self._vote_rows:
+                if self._votes_frame.winfo_manager() != "pack":
+                    self._votes_frame.pack(fill="x", padx=PAD, pady=(0, PAD))
+            elif self._votes_frame.winfo_manager():
+                self._votes_frame.pack_forget()
         except tk.TclError:
             pass
+
+    def set_votes(self, entries: Sequence[Any]) -> None:
+        """Render the persistent like/dislike list.
+
+        :param entries: ``TasteEntry`` rows (newest first).
+        """
+        for child in list(self._votes_body.winfo_children()):
+            try:
+                child.destroy()
+            except tk.TclError:
+                pass
+        self._vote_rows = []
+        tip_bg = self.palette.elevated
+        tip_fg = self.palette.text
+        for entry in entries:
+            video_id = getattr(entry, "video_id", "") or ""
+            if not video_id:
+                continue
+            vote = getattr(entry, "vote", "") or ""
+            title = getattr(entry, "title", "") or video_id
+            uploader = getattr(entry, "uploader", "") or ""
+            row = ttk.Frame(self._votes_body, style="Panel.TFrame")
+            row.pack(fill="x", pady=1)
+            mark = "👍" if vote == "up" else "👎"
+            ttk.Label(row, text=mark, style="Panel.Accent.TLabel" if vote == "up" else "Panel.Danger.TLabel", width=3).pack(
+                side="left"
+            )
+            text = ttk.Frame(row, style="Panel.TFrame")
+            text.pack(side="left", fill="x", expand=True, padx=(PAD_SMALL, 0))
+            ttk.Label(text, text=_shorten(title, 80), style="Panel.TLabel").pack(anchor="w")
+            if uploader:
+                ttk.Label(text, text=_shorten(uploader, 60), style="Panel.Muted.TLabel").pack(anchor="w")
+            clear_btn = ttk.Button(
+                row,
+                text="✕",
+                style="Player.TButton",
+                width=3,
+                command=lambda vid=video_id: self._clear_vote_clicked(vid),
+            )
+            clear_btn.pack(side="right")
+            _attach_tooltip(clear_btn, self.messages["discover_votes_clear"], background=tip_bg, foreground=tip_fg)
+            play_btn = ttk.Button(
+                row,
+                text="▶",
+                style="Player.TButton",
+                width=3,
+                command=lambda vid=video_id, t=title, u=uploader: self._play_vote_clicked(vid, t, u),
+            )
+            play_btn.pack(side="right", padx=(0, PAD_SMALL))
+            _attach_tooltip(play_btn, self.messages["discover_votes_play"], background=tip_bg, foreground=tip_fg)
+            self._vote_rows.append(row)
+        if self._vote_rows:
+            try:
+                self._votes_empty.pack_forget()
+            except tk.TclError:
+                pass
+        else:
+            try:
+                if self._votes_empty.winfo_manager() != "pack":
+                    self._votes_empty.pack(fill="x", pady=PAD_SMALL)
+            except tk.TclError:
+                pass
+        self._sync_queue_visibility()
+
+    def _clear_vote_clicked(self, video_id: str) -> None:
+        if self._on_clear_vote is not None:
+            self._on_clear_vote(video_id)
+
+    def _play_vote_clicked(self, video_id: str, title: str, uploader: str) -> None:
+        if self.ensure_terms is not None and not self.ensure_terms():
+            return
+        if self._on_play_vote is not None:
+            self._on_play_vote(video_id, title, uploader)
 
     def sync_vote_buttons(self) -> None:
         """Highlight like / dislike for the current track's stored vote."""
@@ -890,9 +984,15 @@ class DiscoverPage(ttk.Frame):
                 log.debug("on_queue_changed failed", exc_info=True)
 
     def show_empty(self, message_key: str = "discover_empty") -> None:
-        """Clear the list and show an empty-state message."""
+        """Clear the list only when there is nothing worth keeping."""
         self.set_busy(False)
         self.set_loading(False)
+        if self._tracks:
+            # Find similar found nothing new — leave playback and the playlist alone.
+            level = "warn" if message_key in ("discover_no_seeds", "discover_blocked") else "info"
+            self.set_status(self.messages[message_key], level)
+            self._sync_queue_visibility()
+            return
         self._tracks = []
         self.player.set_playlist([])
         self._selected = -1
@@ -985,22 +1085,14 @@ class DiscoverPage(ttk.Frame):
         self._notify_queue_changed()
 
     def begin_discover(self) -> None:
-        """Clear the queue for a new Find-Similar run while search stays busy."""
+        """Mark a Find-Similar run as started without touching the playlist.
+
+        Playback and existing rows stay put; new hits are appended by
+        :meth:`append_tracks` as batches arrive.
+        """
         self._extend_requested = False
         self._resume_after_extend = False
-        self._tracks = []
-        self.player.set_playlist([])
-        self._selected = -1
-        self._unplayable_ids.clear()
-        self._render_rows()
         self._sync_queue_visibility()
-        self._now_title.configure(text=self.messages["discover_idle"])
-        self._now_meta.configure(text="")
-        self._up_next.configure(text="")
-        self._show_stage_idle()
-        self._set_play_icon(False)
-        self.sync_vote_buttons()
-        self._notify_queue_changed()
 
     def finish_discover(self, status: str = "", level: str = "ok") -> None:
         """End the Find-Similar busy state and show the final status text."""

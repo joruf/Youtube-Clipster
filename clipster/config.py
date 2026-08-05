@@ -132,10 +132,18 @@ class Config:
     # Derived values
     # ------------------------------------------------------------------
     def resolved_download_dir(self) -> Path:
-        """Return the effective download directory as an absolute path."""
+        """Return the effective download directory as an absolute path.
+
+        On Termux, a public ``/storage/emulated/0/Download/...`` setting is
+        mapped to the writable ``~/storage/downloads/...`` link.
+        """
         if self.download_dir.strip():
-            return Path(self.download_dir).expanduser()
-        return paths.default_download_dir()
+            path = Path(self.download_dir).expanduser()
+        else:
+            path = paths.default_download_dir()
+        if paths.is_termux():
+            return paths.android_writable_download_dir(path)
+        return path
 
     def poll_interval_ms(self) -> int:
         """Return the clipboard polling interval in milliseconds (>= 250 ms)."""

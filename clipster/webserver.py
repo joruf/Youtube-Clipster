@@ -546,6 +546,7 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
                     str(payload.get("command") or ""),
                     _as_int(payload.get("index"), -1),
                     _as_float(payload.get("seconds"), 0.0),
+                    str(payload.get("video_id") or ""),
                 ))
                 return
             self._answer(*api.submit(

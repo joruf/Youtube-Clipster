@@ -135,6 +135,30 @@ class DiscoverTaste:
         """Record a thumbs-down for ``track`` (replaces any prior vote)."""
         return self._record(track, VOTE_DOWN)
 
+    def clear_vote(self, video_id: str) -> bool:
+        """Remove any stored vote for ``video_id``.
+
+        :param video_id: YouTube id to clear.
+        :return: ``True`` when an entry was removed.
+        """
+        if not video_id:
+            return False
+        before = len(self._entries)
+        self._entries = [item for item in self._entries if item.video_id != video_id]
+        if len(self._entries) == before:
+            return False
+        self.save()
+        return True
+
+    def entry_for(self, video_id: str) -> Optional[TasteEntry]:
+        """Return the vote row for ``video_id``, or ``None``."""
+        if not video_id:
+            return None
+        for entry in self._entries:
+            if entry.video_id == video_id:
+                return entry
+        return None
+
     def _record(self, track: DiscoverTrack, vote: str) -> TasteEntry:
         """Insert or replace the vote for ``track.video_id``."""
         entry = TasteEntry.from_track(track, vote)

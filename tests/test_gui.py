@@ -251,10 +251,15 @@ def test_audio_play_ready_maps_stage_and_starts_generator(gui, messages) -> None
     )
     page._tracks = [track]
     page._selected = 0
+    page._sync_queue_visibility()
     page.player._playing = True
     page.player._backend = BACKEND_AUDIO
     page.player._stream_url = "http://example/stream.m4a"
-    page.player._process = type("Alive", (), {"poll": lambda self: None})()
+    page.player._process = type(
+        "Alive",
+        (),
+        {"poll": lambda self: None, "stdin": None, "terminate": lambda self: None, "kill": lambda self: None, "wait": lambda self, timeout=None: 0},
+    )()
 
     page._on_play_ready(page._play_token, PlayStartResult(track=track, backend=BACKEND_AUDIO))
     gui.root.update_idletasks()

@@ -80,3 +80,15 @@ def test_replacing_vote_updates_side(tmp_path: Path) -> None:
     taste.dislike(track)
     assert taste.vote_for("aaaaaaaaaaa") == VOTE_DOWN
     assert taste.liked_seeds() == []
+
+
+def test_clear_vote_removes_entry(tmp_path: Path) -> None:
+    path = tmp_path / "taste.json"
+    taste = DiscoverTaste(path=path).load()
+    track = _track("aaaaaaaaaaa", "Toggle Me")
+    taste.like(track)
+    assert taste.clear_vote("aaaaaaaaaaa") is True
+    assert taste.vote_for("aaaaaaaaaaa") is None
+    again = DiscoverTaste(path=path).load()
+    assert again.vote_for("aaaaaaaaaaa") is None
+    assert again.clear_vote("missingxxxxx") is False
