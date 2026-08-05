@@ -34,12 +34,23 @@ class HeadlessDiscoverSession:
         self.ensure_terms: Optional[Callable[[], bool]] = None
         self._on_like: Optional[Callable[[DiscoverTrack], None]] = None
         self._on_dislike: Optional[Callable[[DiscoverTrack], None]] = None
+        self._on_hide: Optional[Callable[[DiscoverTrack], None]] = None
         self._on_download: Optional[Callable[[DiscoverTrack], None]] = None
         self._on_extend: Optional[Callable[[DiscoverTrack], None]] = None
+        #: Fired after the playlist changes so the app can persist it.
+        self.on_queue_changed: Optional[Callable[[], None]] = None
 
     # ------------------------------------------------------------------
     # Surface used by ClipsterApp remote / discover helpers
     # ------------------------------------------------------------------
+    def _notify_queue_changed(self) -> None:
+        """Tell the application the playlist should be saved."""
+        if self.on_queue_changed is not None:
+            try:
+                self.on_queue_changed()
+            except Exception:
+                log.debug("on_queue_changed failed", exc_info=True)
+
     def selected_mode(self) -> str:
         """Return the configured Discover mode."""
         return str(self.config.discover_mode or "related")
@@ -55,14 +66,32 @@ class HeadlessDiscoverSession:
     def begin_discover(self) -> None:
         """Mark the start of a Find-Similar run."""
         self._extend_requested = False
+        self._tracks = []
+        self.player.set_playlist([])
+        self._selected = -1
+        self._notify_queue_changed()
 
     def show_progress(self, current: int, total: int, title: str) -> None:
         """Log progress; there is no on-device status line for the PC page."""
         log.debug("Discover progress %s/%s: %s", current, total, title)
 
     def show_empty(self, key: str) -> None:
-        """Log an empty-result key."""
+        """Clear the queue and log an empty-result key."""
+        self._tracks = []
+        self.player.set_playlist([])
+        self._selected = -1
+        self._busy = False
+        self._notify_queue_changed()
         log.info("Discover empty: %s", key)
+
+    def finish_discover(self, status: str = "", level: str = "ok") -> None:
+        """End a Find-Similar run; guest playback is started by the web UI."""
+        del status, level
+        self._busy = False
+        self._extend_requested = False
+        if self._tracks and self._selected < 0:
+            self._selected = 0
+        self._notify_queue_changed()
 
     def set_status(self, text: str, _kind: str = "info") -> None:
         """Log a status line."""
@@ -71,6 +100,30 @@ class HeadlessDiscoverSession:
 
     def set_loading(self, *_args: Any, **_kwargs: Any) -> None:
         """No loading indicator without a window."""
+
+    def select_at(self, index: int) -> None:
+        """Mark a queue index as current without starting local playback."""
+        if 0 <= index < len(self._tracks):
+            self._selected = index
+            self._notify_queue_changed()
+
+    def restore_tracks(
+        self,
+        tracks: List[DiscoverTrack],
+        *,
+        index: int = 0,
+        status: str = "",
+        level: str = "ok",
+    ) -> None:
+        """Load a saved playlist without starting local playback."""
+        del status, level
+        self._tracks = dedupe_tracks(tracks)
+        self.player.set_playlist(self._tracks)
+        if self._tracks:
+            self._selected = max(0, min(int(index), len(self._tracks) - 1))
+        else:
+            self._selected = -1
+        self._notify_queue_changed()
 
     def append_tracks(self, tracks: List[DiscoverTrack], update_status: bool = True) -> int:
         """Append songs to the queue.
@@ -87,6 +140,7 @@ class HeadlessDiscoverSession:
         self.player.append_tracks(fresh)
         if self._selected < 0 and self._tracks:
             self._selected = 0
+        self._notify_queue_changed()
         return len(fresh)
 
     def insert_tracks(self, position: int, tracks: List[DiscoverTrack]) -> int:
@@ -99,6 +153,7 @@ class HeadlessDiscoverSession:
         self.player.insert_tracks(where, fresh)
         if self._selected >= where:
             self._selected += len(fresh)
+        self._notify_queue_changed()
         return len(fresh)
 
     def play_at(self, index: int) -> None:
@@ -111,6 +166,7 @@ class HeadlessDiscoverSession:
         if self.ensure_terms is not None and not self.ensure_terms():
             return
         self._selected = index
+        self._notify_queue_changed()
         self.maybe_extend("play")
 
         def _done(result: Any) -> None:
@@ -174,11 +230,36 @@ class HeadlessDiscoverSession:
         if track is not None and self._on_dislike is not None:
             self._on_dislike(track)
 
+    def hide_at(self, index: int) -> None:
+        """Remove the track at ``index`` and exclude it from Find similar."""
+        if index < 0 or index >= len(self._tracks):
+            return
+        track = self._tracks[index]
+        if self._on_hide is not None:
+            self._on_hide(track)
+        elif self._on_dislike is not None:
+            self._on_dislike(track)
+
+    def hide_current(self) -> None:
+        """Hide the current track when a callback is wired."""
+        track = self.current_track()
+        if track is None:
+            return
+        if self._on_hide is not None:
+            self._on_hide(track)
+        elif self._on_dislike is not None:
+            self._on_dislike(track)
+
     def download_current(self) -> None:
         """Start a download when a callback is wired."""
         track = self.current_track()
         if track is not None and self._on_download is not None:
             self._on_download(track)
+
+    def download_at(self, index: int) -> None:
+        """Download the track at ``index`` without changing selection."""
+        if 0 <= index < len(self._tracks) and self._on_download is not None:
+            self._on_download(self._tracks[index])
 
     def maybe_extend(self, reason: str = "play") -> None:
         """Ask the application to fetch more related songs when the queue is short."""
@@ -223,6 +304,9 @@ class HeadlessDiscoverSession:
                 self.play_at(self._selected)
             else:
                 self.player.stop()
+                self._notify_queue_changed()
+        else:
+            self._notify_queue_changed()
         return True
 
     def destroy_player(self) -> None:

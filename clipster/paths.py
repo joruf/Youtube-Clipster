@@ -150,6 +150,14 @@ def discover_taste_file() -> Path:
     return config_file().with_name("discover_taste.json")
 
 
+def discover_queue_file() -> Path:
+    """Return the JSON file holding the last Streaming playlist.
+
+    Stored beside the active configuration so a restart can restore the queue.
+    """
+    return config_file().with_name("discover_queue.json")
+
+
 #: Locations searched for the application icon, most specific first.
 _ICON_CANDIDATES = (
     ("assets", "icons", "youtube-clipster.png"),
@@ -223,7 +231,13 @@ def _windows_shell_folder(guid: str) -> Path | None:
 
 
 def default_download_dir() -> Path:
-    """Return the user's download folder, honouring OS specific settings."""
+    """Return the user's download folder, honouring OS specific settings.
+
+    On Termux / Android this is the shared phone Downloads tree under
+    ``Download/clipster``, not Termux's private ``~/Downloads``.
+    """
+    if is_termux():
+        return android_download_dir()
     if IS_WINDOWS:
         folder = _windows_shell_folder("{374DE290-123F-4565-9164-39C4925E467B}")
         if folder is not None:
@@ -233,6 +247,62 @@ def default_download_dir() -> Path:
         if folder is not None:
             return folder
     return Path.home() / "Downloads"
+
+
+def android_download_dir() -> Path:
+    """Return shared ``Download/clipster`` for Termux on Android.
+
+    Prefers the Termux shared-storage link (``~/storage/downloads``), then the
+    usual public paths. The directory may not exist yet — callers create it.
+
+    :return: Absolute path under the phone's public Download folder.
+    """
+    candidates = (
+        Path.home() / "storage" / "downloads" / "clipster",
+        Path("/sdcard/Download/clipster"),
+        Path("/storage/emulated/0/Download/clipster"),
+    )
+    for path in candidates:
+        # Parent "downloads" / "Download" must already be visible; clipster is created later.
+        if path.parent.is_dir():
+            return path
+    # Storage not linked yet — still aim at the Termux shared downloads path.
+    return Path.home() / "storage" / "downloads" / "clipster"
+
+
+def is_private_termux_download_dir(path: Path | str) -> bool:
+    """Return whether ``path`` is Termux's private home Downloads (not shared).
+
+    :param path: Candidate download directory.
+    :return: ``True`` when files would stay inside the Termux app sandbox.
+    """
+    text = str(path or "").strip()
+    if not text:
+        return False
+    resolved = str(Path(text).expanduser())
+    # Shared storage is never "private".
+    if "/storage/" in resolved or resolved.startswith("/sdcard/"):
+        return False
+    home_downloads = str(Path.home() / "Downloads")
+    if resolved == home_downloads or resolved.startswith(home_downloads + os.sep):
+        return True
+    return "/data/data/com.termux/files/home/Downloads" in resolved
+
+
+def ensure_android_download_dir(config: object) -> bool:
+    """Point an Android config at shared ``Download/clipster`` when still private.
+
+    :param config: Live config object with a ``download_dir`` attribute.
+    :return: ``True`` when ``config.download_dir`` was changed.
+    """
+    if not is_termux():
+        return False
+    wanted = android_download_dir()
+    current = str(getattr(config, "download_dir", "") or "").strip()
+    if not current or is_private_termux_download_dir(current):
+        setattr(config, "download_dir", str(wanted))
+        return True
+    return False
 
 
 def default_music_dir() -> Path | None:

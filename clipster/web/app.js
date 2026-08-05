@@ -46,12 +46,18 @@ const elements = {
     streamStop: document.getElementById("stream-stop"),
     streamMessage: document.getElementById("stream-message"),
     streamRefresh: document.getElementById("stream-refresh"),
+    streamLike: document.getElementById("stream-like"),
+    streamDislike: document.getElementById("stream-dislike"),
     queue: document.getElementById("queue"),
     queueEmpty: document.getElementById("queue-empty"),
+    queueCard: document.getElementById("queue-card"),
+    nowPlaying: document.getElementById("now-playing"),
+    streamEmptyHint: document.getElementById("stream-empty-hint"),
     search: document.getElementById("search"),
     searchNote: document.getElementById("search-note"),
     results: document.getElementById("results"),
     resultsToggle: document.getElementById("results-toggle"),
+    targetCard: document.getElementById("target-card"),
     targetNote: document.getElementById("target-note"),
     targetHostChip: document.getElementById("target-host-chip"),
     targetGuestLabel: document.getElementById("target-guest-label"),
@@ -113,6 +119,14 @@ let guestVideoId = "";
 
 /** Its position in the queue, or -1 while the queue has not caught up. */
 let guestIndex = -1;
+/** Whether the Streaming queue had tracks on the last render (for auto-play). */
+let hadQueueTracks = false;
+/** Video ids that failed to play this session — skipped instead of retried. */
+let unplayableIds = {};
+/** Bumped on every ``playHere`` so a late error from an old src is ignored. */
+let playGeneration = 0;
+/** Watchdog: skip when the stream never becomes playable. */
+let playWatchTimer = null;
 
 /** The track the queue was last centred on, so scrolling only follows changes. */
 let centredOn = "";
@@ -634,6 +648,10 @@ function applyStandalone(on) {
         return;
     }
     standalone = on;
+    // Android is always this device — "Play on" only matters when remoting a PC.
+    if (elements.targetCard && on) {
+        elements.targetCard.hidden = true;
+    }
     if (elements.targetHostChip) {
         elements.targetHostChip.hidden = on;
     }
@@ -1121,7 +1139,11 @@ function queueRow(track, current) {
 
     const actions = document.createElement("div");
     actions.className = "actions";
-    actions.appendChild(button("▶", "Play", () => playTrack(track)));
+    actions.appendChild(button("✕", "Hide from queue", () => {
+        unplayableIds[track.video_id] = true;
+        stream("hide", {index: track.index});
+    }));
+    actions.appendChild(button("⬇", "Download", () => stream("download", {index: track.index})));
     row.appendChild(actions);
     return row;
 }
@@ -1191,10 +1213,14 @@ function renderStream(state) {
         }
     }
 
+    const tracks = state.tracks || [];
+    queueTracks = tracks;
+    syncStreamingLayout(tracks.length > 0 || Boolean(state.busy));
+
     let current = state.current;
     if (target === "guest") {
         // In guest mode the PC is stopped, so its "current" says nothing.
-        const mine = (state.tracks || []).find((track) => track.video_id === guestVideoId);
+        const mine = tracks.find((track) => track.video_id === guestVideoId);
         current = mine || current;
     }
     elements.streamTitle.textContent = current ? current.title : "Nothing yet.";
@@ -1228,19 +1254,35 @@ function renderStream(state) {
     }
     updateVolumeRow();
 
-    const tracks = state.tracks || [];
-    queueTracks = tracks;
     if (guestVideoId) {
         // Recovered from the id, not remembered as a number: the queue shifts
         // whenever something is inserted in front of the current track.
         guestIndex = tracks.findIndex((track) => track.video_id === guestVideoId);
+        // Dislike (or refresh) removed the song this device was on — continue.
+        if (guestIndex < 0 && tracks.length > 0) {
+            const fallback = tracks[Math.max(0, Math.min(state.index, tracks.length - 1))];
+            if (fallback) {
+                playHere(fallback.video_id);
+            }
+        } else if (guestIndex < 0) {
+            guestVideoId = "";
+            try {
+                elements.player.pause();
+                elements.player.removeAttribute("src");
+            } catch (error) {
+                // ignore
+            }
+        }
     }
-    const signature = JSON.stringify([tracks.map((t) => t.video_id), state.index]);
+    const signature = JSON.stringify([tracks.map((t) => t.video_id), state.index, guestVideoId]);
     if (signature !== lastQueue) {
         lastQueue = signature;
         elements.queue.textContent = "";
+        const currentId = target === "guest"
+            ? guestVideoId
+            : (tracks[state.index] || {}).video_id || "";
         tracks.forEach((track) => elements.queue.appendChild(
-            queueRow(track, track.index === state.index)));
+            queueRow(track, track.video_id === currentId)));
         elements.queueEmpty.hidden = tracks.length > 0;
     }
     elements.streamRefresh.textContent = state.busy ? "Searching..." : "Find similar";
@@ -1249,7 +1291,58 @@ function renderStream(state) {
     const playingId = target === "guest"
         ? guestVideoId
         : (tracks[state.index] || {}).video_id || "";
+    // Always refresh the red marker — even when the list DOM was not rebuilt.
+    markQueueCurrent(playingId);
+    const playing = tracks.find((track) => track.video_id === playingId) || current;
+    updateVoteButtons(playing && playing.vote ? playing.vote : (state.vote || ""));
     centreQueue(playingId);
+
+    // First songs just arrived — start playback when nothing is on yet.
+    if (tracks.length > 0 && !hadQueueTracks) {
+        if (target === "guest" && !guestVideoId) {
+            playHere(tracks[0].video_id);
+        } else if (target === "host" && !state.playing && state.index < 0) {
+            stream("play", {index: 0});
+        }
+    }
+    hadQueueTracks = tracks.length > 0;
+}
+
+/**
+ * Show only Search YouTube until the queue has something to play.
+ *
+ * @param {boolean} hasTracks Whether any songs are queued.
+ * @returns {void}
+ */
+function syncStreamingLayout(hasTracks) {
+    if (elements.streamEmptyHint) {
+        elements.streamEmptyHint.hidden = hasTracks;
+    }
+    if (elements.nowPlaying) {
+        elements.nowPlaying.hidden = !hasTracks;
+    }
+    if (elements.queueCard) {
+        elements.queueCard.hidden = !hasTracks;
+    }
+    // Play on is remote-only; Android hides it entirely.
+    if (elements.targetCard) {
+        elements.targetCard.hidden = standalone || !hasTracks;
+    }
+}
+
+/**
+ * Highlight like / dislike to match the vote stored for the playing track.
+ *
+ * @param {string} vote ``up``, ``down``, or empty.
+ * @returns {void}
+ */
+function updateVoteButtons(vote) {
+    if (elements.streamLike) {
+        elements.streamLike.classList.toggle("voted", vote === "up");
+    }
+    if (elements.streamDislike) {
+        elements.streamDislike.classList.toggle("voted", vote === "down");
+    }
 }
 
 /**
@@ -1423,6 +1516,8 @@ async function pick(found) {
         if (answer.body.state) {
             renderStream(answer.body.state);
         }
+        // A freshly picked seed deserves a clean skip list.
+        delete unplayableIds[found.video_id];
     } catch (error) {
         setConnection(false);
         elements.searchNote.textContent = "The PC cannot be reached.";
@@ -1461,15 +1556,99 @@ async function setTarget(name) {
  * @returns {void}
  */
 function playHere(videoId) {
+    const generation = ++playGeneration;
     guestVideoId = videoId;
     // May be -1 for a fresh search hit the queue has not caught up with yet;
     // renderStream fills it in as soon as the queue arrives.
     guestIndex = queueTracks.findIndex((track) => track.video_id === videoId);
+    markQueueCurrent(videoId);
     elements.player.hidden = false;
     elements.player.src = "/stream/" + encodeURIComponent(videoId);
-    elements.player.play().catch(() => {
-        sayStream("Tap play in the player — the phone wants a tap first.", "");
+    window.clearTimeout(playWatchTimer);
+    playWatchTimer = window.setTimeout(() => {
+        if (generation !== playGeneration || guestVideoId !== videoId) {
+            return;
+        }
+        // Never got past metadata / still silent → treat as unplayable.
+        if (elements.player.readyState < 2 && elements.player.currentTime < 0.25) {
+            skipUnplayable(videoId, "timeout");
+        }
+    }, 12000);
+    elements.player.play().catch((error) => {
+        if (generation !== playGeneration) {
+            return;
+        }
+        // Phone autoplay gate — ask for a tap, do not burn through the queue.
+        if (error && error.name === "NotAllowedError") {
+            sayStream("Tap play in the player — the phone wants a tap first.", "");
+            return;
+        }
+        skipUnplayable(videoId, "play");
     });
+}
+
+/**
+ * Mark the playing queue row in red without waiting for the next poll.
+ *
+ * @param {string} videoId The track that is playing.
+ * @returns {void}
+ */
+function markQueueCurrent(videoId) {
+    if (!elements.queue) {
+        return;
+    }
+    elements.queue.querySelectorAll(".queue-row").forEach((row) => {
+        const on = Boolean(videoId) && row.dataset.video === videoId;
+        row.classList.toggle("current", on);
+        const badge = row.querySelector(".badge");
+        if (badge) {
+            badge.classList.toggle("ok", on);
+            if (on) {
+                badge.textContent = "▶";
+            } else if (badge.textContent === "▶") {
+                const track = queueTracks.find((item) => item.video_id === row.dataset.video);
+                badge.textContent = track ? String(track.index + 1) : "";
+            }
+        }
+    });
+}
+
+/**
+ * Skip a track that could not be played and continue with the next usable one.
+ *
+ * @param {string} videoId The failed track.
+ * @param {string} [reason] Why it failed (for the status line).
+ * @returns {void}
+ */
+function skipUnplayable(videoId, reason) {
+    if (!videoId || target !== "guest") {
+        return;
+    }
+    unplayableIds[videoId] = true;
+    window.clearTimeout(playWatchTimer);
+    const title = ((queueTracks.find((track) => track.video_id === videoId) || {}).title) || "track";
+    sayStream("Could not play “" + title + "” — skipping.", "bad");
+    const start = queueTracks.findIndex((track) => track.video_id === videoId);
+    for (let index = Math.max(0, start + 1); index < queueTracks.length; index += 1) {
+        const next = queueTracks[index];
+        if (next && next.video_id && !unplayableIds[next.video_id]) {
+            playHere(next.video_id);
+            return;
+        }
+    }
+    // Nothing left after this failure.
+    guestVideoId = "";
+    guestIndex = -1;
+    markQueueCurrent("");
+    try {
+        elements.player.pause();
+        elements.player.removeAttribute("src");
+        elements.player.load();
+    } catch (error) {
+        // ignore
+    }
+    sayStream("No further playable tracks in the queue.", "bad");
+    void reason;
 }
 
 /**
@@ -1481,7 +1660,14 @@ function playNextHere() {
     if (guestIndex < 0 || guestIndex + 1 >= queueTracks.length) {
         return;
     }
-    playHere(queueTracks[guestIndex + 1].video_id);
+    // Prefer the next id that has not already failed this session.
+    for (let index = guestIndex + 1; index < queueTracks.length; index += 1) {
+        const next = queueTracks[index];
+        if (next && next.video_id && !unplayableIds[next.video_id]) {
+            playHere(next.video_id);
+            return;
+        }
+    }
 }
 
 /**
@@ -1592,10 +1778,22 @@ document.addEventListener("DOMContentLoaded", () => {
     elements.tabSettings.addEventListener("click", () => showView("settings"));
     elements.tabAbout.addEventListener("click", () => showView("about"));
     // Likes, dislikes and downloads always belong to the PC; the transport
-    // follows whichever side is playing.
+    // follows whichever side is playing. Guest mode must pass the local index
+    // so the vote hits the song this device is hearing, not a silent host index.
     [["stream-like", "like"], ["stream-dislike", "dislike"],
      ["stream-download", "download"]].forEach(([id, command]) => {
-        document.getElementById(id).addEventListener("click", () => stream(command));
+        document.getElementById(id).addEventListener("click", () => {
+            const extra = {};
+            if (target === "guest" && guestIndex >= 0) {
+                extra.index = guestIndex;
+            }
+            if (command === "like") {
+                updateVoteButtons("up");
+            } else if (command === "dislike") {
+                updateVoteButtons("down");
+            }
+            stream(command, extra);
+        });
     });
     [["stream-previous", "previous"], ["stream-next", "next"]].forEach(([id, command]) => {
         document.getElementById(id).addEventListener("click", () => transport(command));
@@ -1620,8 +1818,18 @@ document.addEventListener("DOMContentLoaded", () => {
             playNextHere();
         }
     });
+    elements.player.addEventListener("error", () => {
+        const relayed = (elements.player.currentSrc || "").indexOf("/stream/") !== -1;
+        if (target === "guest" && relayed && guestVideoId) {
+            skipUnplayable(guestVideoId, "error");
+        }
+    });
+    elements.player.addEventListener("playing", () => {
+        window.clearTimeout(playWatchTimer);
+    });
     elements.streamRefresh.addEventListener("click", () => {
         sayStream("Looking for similar songs...");
+        unplayableIds = {};
         stream("refresh");
     });
     elements.streamTrack.addEventListener("click", seekFromClick);

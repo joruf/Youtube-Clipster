@@ -2,7 +2,9 @@ package de.loresoft.youtubeclipster
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -40,6 +42,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        applyTaskBranding()
 
         root = FrameLayout(this)
         webView = WebView(this)
@@ -47,6 +50,8 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             text = getString(R.string.starting_hint)
             setPadding(48, 48, 48, 48)
+            setTextColor(0xFFE9EAEE.toInt())
+            setBackgroundColor(0xFF15161A.toInt())
         }
         root.addView(
             webView,
@@ -70,6 +75,34 @@ class MainActivity : Activity() {
         openUrl = resolveUrl(intent)
         wakeTermuxThenStart()
         scheduleAttempt()
+    }
+
+    /**
+     * Recents / overview must show the Clipster mark, not the generic Android
+     * robot. HyperOS often ignores adaptive XML icons for TaskDescription.
+     */
+    private fun applyTaskBranding() {
+        val label = getString(R.string.app_name)
+        val color = 0xFF15161A.toInt()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            setTaskDescription(
+                ActivityManager.TaskDescription.Builder()
+                    .setLabel(label)
+                    .setIcon(R.mipmap.ic_launcher)
+                    .setPrimaryColor(color)
+                    .build(),
+            )
+            return
+        }
+        val bitmap = BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher)
+        @Suppress("DEPRECATION")
+        if (bitmap != null) {
+            setTaskDescription(ActivityManager.TaskDescription(label, bitmap, color))
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            setTaskDescription(ActivityManager.TaskDescription(label, R.mipmap.ic_launcher, color))
+        } else {
+            setTaskDescription(ActivityManager.TaskDescription(label))
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")

@@ -116,3 +116,33 @@ def test_every_path_helper_stays_inside_the_install_directory() -> None:
 def test_the_configuration_is_isolated_during_tests() -> None:
     """Guards the autouse fixture itself - a regression here would be nasty."""
     assert str(paths.config_file()).startswith(os.environ[paths.HOME_ENV_VAR])
+
+
+def test_android_download_dir_prefers_shared_storage(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    shared = tmp_path / "storage" / "downloads"
+    shared.mkdir(parents=True)
+    monkeypatch.setattr(paths, "is_termux", lambda: True)
+    monkeypatch.setattr(paths.Path, "home", lambda: tmp_path)
+    assert paths.android_download_dir() == shared / "clipster"
+
+
+def test_ensure_android_download_dir_migrates_private_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    shared = tmp_path / "storage" / "downloads"
+    shared.mkdir(parents=True)
+    monkeypatch.setattr(paths, "is_termux", lambda: True)
+    monkeypatch.setattr(paths.Path, "home", lambda: tmp_path)
+
+    class Cfg:
+        download_dir = str(tmp_path / "Downloads")
+
+    cfg = Cfg()
+    assert paths.ensure_android_download_dir(cfg) is True
+    assert cfg.download_dir == str(shared / "clipster")
+    assert paths.ensure_android_download_dir(cfg) is False
+
+
+def test_private_termux_download_detection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(paths.Path, "home", lambda: tmp_path)
+    assert paths.is_private_termux_download_dir(tmp_path / "Downloads")
+    assert not paths.is_private_termux_download_dir(tmp_path / "storage" / "downloads" / "clipster")
+    assert not paths.is_private_termux_download_dir("/sdcard/Download/clipster")

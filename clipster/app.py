@@ -46,6 +46,7 @@ from .discover import (
     seed_from_track,
 )
 from .discover_taste import DiscoverTaste, VOTE_DOWN
+from .discover_queue import DiscoverQueueStore
 from .history import STATUS_CANCELED, STATUS_FAILED, STATUS_OK, History, HistoryEntry, format_size
 from .i18n import Messages
 from .logging_setup import get_logger
@@ -91,7 +92,7 @@ REMOTE_AUDIO_TTL = 1800.0
 #: Streaming commands a remote client may send.
 DISCOVER_COMMANDS = (
     "refresh", "extend", "play", "toggle", "stop", "next", "previous",
-    "like", "dislike", "download", "seek", "volume",
+    "like", "dislike", "hide", "download", "seek", "volume",
 )
 
 #: Of those, the ones that reach YouTube and therefore need the Streaming terms.
@@ -161,10 +162,18 @@ class ClipsterApp:
         self.config = config
         self.messages = messages
         self.headless = bool(headless)
+        if paths.ensure_android_download_dir(config):
+            try:
+                config.save()
+            except Exception:
+                log.debug("Could not save Android download_dir", exc_info=True)
         self.download_dir = config.resolved_download_dir()
 
         self.history = History(limit=config.history_limit).load()
         self.taste = DiscoverTaste().load()
+        self.queue_store = DiscoverQueueStore()
+        #: Tk ``after`` id for a debounced Streaming-queue save.
+        self._queue_save_job: Optional[str] = None
         if self.headless:
             from .headless import HeadlessGui
 
@@ -250,6 +259,9 @@ class ClipsterApp:
         if self.gui.view is not None and self.gui.view.discover is not None:
             self.gui.view.discover.player.set_options_provider(self.downloader._base_options)
             self.gui.view.discover.ensure_terms = self._ensure_streaming_terms
+            self.gui.view.discover.vote_for = self.taste.vote_for
+            self.gui.view.discover._on_hide = self._discover_hide
+            self.gui.view.discover.on_queue_changed = self._schedule_queue_save
 
         self._discover_cancel = threading.Event()
         self._discover_busy = False
@@ -268,8 +280,10 @@ class ClipsterApp:
             session.ensure_terms = self._ensure_streaming_terms
             session._on_like = self._discover_like
             session._on_dislike = self._discover_dislike
+            session._on_hide = self._discover_hide
             session._on_download = self._discover_download
             session._on_extend = self._discover_extend
+            session.on_queue_changed = self._schedule_queue_save
             self._headless_discover = session
         #: Ignore tray "show" callbacks until startup visibility has been applied
         #: (some backends fire activate while the icon is created).
@@ -434,6 +448,7 @@ class ClipsterApp:
                 "uploader": track.uploader,
                 "duration": track.duration,
                 "seed_title": track.seed_title,
+                "vote": self.taste.vote_for(track.video_id) or "",
             }
             for index, track in enumerate(player.tracks)
         ]
@@ -449,6 +464,8 @@ class ClipsterApp:
         except Exception:  # pragma: no cover - a player without a live process
             log.debug("The player state could not be read", exc_info=True)
         current = player.current
+        if current is None and 0 <= getattr(page, "_selected", -1) < len(player.tracks):
+            current = player.tracks[page._selected]
         if current is not None:
             state["current"] = {
                 "video_id": current.video_id,
@@ -456,7 +473,11 @@ class ClipsterApp:
                 "uploader": current.uploader,
                 "duration": current.duration,
                 "url": current.url,
+                "vote": self.taste.vote_for(current.video_id) or "",
             }
+            state["vote"] = state["current"]["vote"]
+        else:
+            state["vote"] = ""
         return state
 
     def discover_remote_audio(self, video_id: str) -> Tuple[str, Dict[str, str]]:
@@ -600,6 +621,10 @@ class ClipsterApp:
         log.info("A remote device queued '%s' at position %s.", track.title, position + 1)
         if play:
             page.play_at(position)
+        elif hasattr(page, "select_at"):
+            # Guest devices play locally; still mark the row so like/dislike
+            # and download know which track the phone is on.
+            page.select_at(position)
         return {"ok": True, "error": "", "state": self.discover_remote_state()}
 
     def discover_remote_command(self, command: str, index: int = -1,
@@ -664,11 +689,31 @@ class ClipsterApp:
         elif command == "previous":
             page.play_previous()
         elif command == "like":
+            if 0 <= index < len(getattr(page, "_tracks", ())):
+                if hasattr(page, "select_at"):
+                    page.select_at(index)
             page.like_current()
+            if hasattr(page, "sync_vote_buttons"):
+                page.sync_vote_buttons()
         elif command == "dislike":
+            if 0 <= index < len(getattr(page, "_tracks", ())):
+                if hasattr(page, "select_at"):
+                    page.select_at(index)
             page.dislike_current()
+            if hasattr(page, "sync_vote_buttons"):
+                page.sync_vote_buttons()
+        elif command == "hide":
+            if 0 <= index < len(getattr(page, "_tracks", ())) and hasattr(page, "hide_at"):
+                page.hide_at(index)
+            elif hasattr(page, "hide_current"):
+                page.hide_current()
+            else:
+                page.dislike_current()
         elif command == "download":
-            page.download_current()
+            if 0 <= index < len(getattr(page, "_tracks", ())) and hasattr(page, "download_at"):
+                page.download_at(index)
+            else:
+                page.download_current()
         elif command == "seek":
             page.player.seek(max(0.0, float(seconds)))
         elif command == "volume":
@@ -812,8 +857,77 @@ class ClipsterApp:
         if self.config.check_updates and updater.due(self.config.update_check_hours):
             self._check_updates(announce=False)
         # Auto Find Similar only when Streaming terms were already accepted —
-        # never force the Streaming terms modal at tray boot.
-        self._maybe_schedule_auto_discover()
+        # never force the Streaming terms modal at tray boot. Prefer the last
+        # saved queue over starting a fresh search.
+        if self._restore_discover_queue():
+            self._auto_discover_done = True
+        else:
+            self._maybe_schedule_auto_discover()
+
+    def _restore_discover_queue(self) -> bool:
+        """Load the last Streaming playlist into the page when one was saved.
+
+        :return: ``True`` when a non-empty queue was restored.
+        """
+        if not streaming_terms_accepted(self.config):
+            return False
+        page = self._discover_page()
+        if page is None:
+            return False
+        tracks, index = self.queue_store.load()
+        if not tracks:
+            return False
+        tracks = self.taste.filter_tracks(tracks)
+        if not tracks:
+            return False
+        if index < 0 or index >= len(tracks):
+            index = 0
+        if hasattr(page, "restore_tracks"):
+            page.restore_tracks(
+                tracks,
+                index=index,
+                status=self.messages.format("discover_queue_restored", count=len(tracks)),
+            )
+        else:
+            page.set_tracks(
+                tracks,
+                status=self.messages.format("discover_queue_restored", count=len(tracks)),
+            )
+            if hasattr(page, "select_at"):
+                page.select_at(index)
+        log.info("Restored Streaming queue with %s tracks (index %s).", len(tracks), index)
+        return True
+
+    def _schedule_queue_save(self) -> None:
+        """Debounce writing the Streaming queue so batch updates do not thrash disk."""
+        if self._quitting:
+            self._save_discover_queue()
+            return
+        root = getattr(self.gui, "root", None)
+        if root is None:
+            self._save_discover_queue()
+            return
+        job = self._queue_save_job
+        if job:
+            try:
+                root.after_cancel(job)
+            except Exception:
+                pass
+        try:
+            self._queue_save_job = root.after(400, self._save_discover_queue)
+        except Exception:
+            self._queue_save_job = None
+            self._save_discover_queue()
+
+    def _save_discover_queue(self) -> None:
+        """Persist the current Streaming playlist."""
+        self._queue_save_job = None
+        page = self._discover_page()
+        if page is None:
+            return
+        tracks = list(getattr(page, "_tracks", []) or [])
+        index = int(getattr(page, "_selected", -1))
+        self.queue_store.save(tracks, index)
 
     def _ensure_app_terms(self) -> bool:
         """Require acceptance of the general terms before normal startup continues."""
@@ -1038,6 +1152,7 @@ class ClipsterApp:
         # Before the bridge stops: a request still in flight has to be able to
         # get its answer, rather than blocking on a bridge that is already gone.
         self.stop_remote()
+        self._save_discover_queue()
         page = self._discover_page()
         if page is not None:
             page.destroy_player()
@@ -1268,17 +1383,46 @@ class ClipsterApp:
         self._discover_extend(track)
 
     def _discover_dislike(self, track: DiscoverTrack) -> None:
-        """Remember a thumbs-down, drop the track, and skip ahead."""
+        """Remember a thumbs-down, drop the track, and skip ahead if it was playing."""
+        self._exclude_and_drop(track, status_key="discover_disliked", play_if_current=True)
+
+    def _discover_hide(self, track: DiscoverTrack) -> None:
+        """Remove a queue row the user does not want — also blocked for Find similar."""
+        self._exclude_and_drop(track, status_key="discover_hidden", play_if_current=True)
+
+    def _exclude_and_drop(
+        self,
+        track: DiscoverTrack,
+        *,
+        status_key: str,
+        play_if_current: bool,
+    ) -> None:
+        """Record a dislike, remove the track (and near-duplicates), optionally advance.
+
+        :param track: Queue entry to drop.
+        :param status_key: Locale key for the status line.
+        :param play_if_current: When ``True``, start the next song if ``track`` was current.
+        """
         self.taste.dislike(track)
         page = self._discover_page()
         if page is None:
             return
+        was_current = False
+        current = page.current_track() if hasattr(page, "current_track") else None
+        if current is not None and current.video_id and current.video_id == track.video_id:
+            was_current = True
+        elif 0 <= getattr(page, "_selected", -1) < len(getattr(page, "_tracks", ())):
+            selected = page._tracks[page._selected]
+            if selected.video_id and selected.video_id == track.video_id:
+                was_current = True
         # Drop near-duplicates first so play_next does not land on another dislike.
         for item in list(page._tracks):
             if item.video_id and item.video_id != track.video_id and self.taste.is_blocked(item):
                 page.remove_track(item.video_id, play_next=False)
-        page.remove_track(track.video_id, play_next=True)
-        page.set_status(self.messages["discover_disliked"], "info")
+        page.remove_track(track.video_id, play_next=bool(play_if_current and was_current))
+        page.set_status(self.messages[status_key], "info")
+        if hasattr(page, "sync_vote_buttons"):
+            page.sync_vote_buttons()
 
     def _discover_extend(self, track: DiscoverTrack) -> None:
         """Fetch more related songs from ``track`` and append them to the list."""

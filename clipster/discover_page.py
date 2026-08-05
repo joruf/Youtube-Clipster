@@ -73,7 +73,7 @@ _WAVEFORM_POINTS = 96
 _QUEUE_COL_NUM = 36
 _QUEUE_COL_CHANNEL = 140
 _QUEUE_COL_DURATION = 56
-_QUEUE_COL_ACTION = 48
+_QUEUE_COL_ACTION = 36
 
 #: Media-control glyphs for the Streaming player bar.
 _ICON_PREV = "⏮"
@@ -268,8 +268,14 @@ class DiscoverPage(ttk.Frame):
         self._on_like = on_like
         self._on_dislike = on_dislike
         self._on_mode_changed = on_mode_changed
+        #: Optional hide-from-queue (defaults to dislike when unset).
+        self._on_hide: Optional[Callable[[DiscoverTrack], None]] = None
         #: Optional gate: return ``False`` to block Streaming actions (terms declined).
         self.ensure_terms: Optional[Callable[[], bool]] = None
+        #: Optional lookup of stored taste vote for a video id (``up`` / ``down``).
+        self.vote_for: Optional[Callable[[str], Optional[str]]] = None
+        #: Fired after the playlist changes so the app can persist it.
+        self.on_queue_changed: Optional[Callable[[], None]] = None
 
         self.player = DiscoverPlayer()
         self._tracks: List[DiscoverTrack] = []
@@ -298,8 +304,11 @@ class DiscoverPage(ttk.Frame):
         self._viz_mpv_tried = False
         self._title_labels: List[ttk.Label] = []
         self._title_full: List[str] = []
+        #: Video ids that failed to start this session — skipped on auto-advance.
+        self._unplayable_ids: set = set()
 
         self._build()
+        self._sync_queue_visibility()
 
     def _build(self) -> None:
         """Create the toolbar, player panes and footer status."""
@@ -357,8 +366,17 @@ class DiscoverPage(ttk.Frame):
         mode_box.bind("<<ComboboxSelected>>", lambda _e: self._mode_selected())
         self._mode_box = mode_box
 
+        self._empty_hint = ttk.Label(
+            self,
+            text=self.messages.get("discover_search_hint", self.messages["discover_empty"]),
+            style="Panel.Muted.TLabel",
+            wraplength=720,
+            justify="left",
+        )
+        # Packed only while the queue is empty (see _sync_queue_visibility).
+
         split = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
-        split.pack(fill="both", expand=True, padx=PAD, pady=(0, PAD_SMALL))
+        # Packed when tracks exist; hidden for the empty Streaming state.
         self._split = split
 
         player = ttk.LabelFrame(
@@ -533,6 +551,7 @@ class DiscoverPage(ttk.Frame):
         )
         dislike_btn.pack(side="left", padx=(PAD_SMALL, 0))
         _attach_tooltip(dislike_btn, self.messages["discover_dislike"], background=tip_bg, foreground=tip_fg)
+        self._dislike_btn = dislike_btn
         like_btn = ttk.Button(
             controls,
             text=self.messages["discover_like"],
@@ -542,6 +561,7 @@ class DiscoverPage(ttk.Frame):
         )
         like_btn.pack(side="left", padx=(PAD_SMALL, 0))
         _attach_tooltip(like_btn, self.messages["discover_like"], background=tip_bg, foreground=tip_fg)
+        self._like_btn = like_btn
         download_btn = ttk.Button(
             controls,
             text=self.messages["discover_download"],
@@ -574,10 +594,16 @@ class DiscoverPage(ttk.Frame):
         ).grid(row=0, column=3, sticky="ew", padx=(PAD_SMALL, 0))
         ttk.Label(
             self._queue_header,
-            text=self.messages["discover_queue_col_download"],
+            text=self.messages["discover_queue_col_hide"],
             style="Panel.Muted.TLabel",
             anchor="e",
         ).grid(row=0, column=4, sticky="ew", padx=(PAD_SMALL, 0))
+        ttk.Label(
+            self._queue_header,
+            text=self.messages["discover_queue_col_download"],
+            style="Panel.Muted.TLabel",
+            anchor="e",
+        ).grid(row=0, column=5, sticky="ew", padx=(PAD_SMALL, 0))
         ttk.Separator(queue, orient="horizontal").pack(fill="x", pady=(2, 0))
 
         list_wrap = ttk.Frame(queue, style="Panel.TFrame")
@@ -612,6 +638,42 @@ class DiscoverPage(ttk.Frame):
         player.bind("<Configure>", self._sync_player_wraplengths, add="+")
 
         self.reload_from_config()
+
+    def _sync_queue_visibility(self) -> None:
+        """Show only the toolbar + hint until songs are available to play."""
+        # Keep the player/queue visible while a search is running so the empty
+        # hint does not flash when Find similar clears the list briefly.
+        show_player = bool(self._tracks) or self._busy
+        try:
+            if show_player:
+                if self._empty_hint.winfo_manager():
+                    self._empty_hint.pack_forget()
+                if self._split.winfo_manager() != "pack":
+                    self._split.pack(fill="both", expand=True, padx=PAD, pady=(0, PAD_SMALL))
+            else:
+                if self._split.winfo_manager():
+                    self._split.pack_forget()
+                if self._empty_hint.winfo_manager() != "pack":
+                    self._empty_hint.pack(fill="x", padx=PAD, pady=(0, PAD))
+        except tk.TclError:
+            pass
+
+    def sync_vote_buttons(self) -> None:
+        """Highlight like / dislike for the current track's stored vote."""
+        vote = ""
+        track = self.current_track()
+        if track is not None and self.vote_for is not None:
+            try:
+                vote = self.vote_for(track.video_id) or ""
+            except Exception:
+                vote = ""
+        like_style = "PlayerAccent.TButton" if vote == "up" else "Player.TButton"
+        dislike_style = "PlayerAccent.TButton" if vote == "down" else "Player.TButton"
+        try:
+            self._like_btn.configure(style=like_style)
+            self._dislike_btn.configure(style=dislike_style)
+        except (tk.TclError, AttributeError):
+            pass
 
     def _set_play_icon(self, playing: bool) -> None:
         """Show the play or pause glyph on the main transport button."""
@@ -787,6 +849,7 @@ class DiscoverPage(ttk.Frame):
         self._busy = busy
         state = "disabled" if busy else "normal"
         self._refresh_btn.configure(state=state)
+        self._sync_queue_visibility()
         if busy:
             self.set_loading(True, message or self.messages["discover_loading"])
         elif not self._playback_check_job:
@@ -818,13 +881,23 @@ class DiscoverPage(ttk.Frame):
         )
         self.set_status(text, "error")
 
+    def _notify_queue_changed(self) -> None:
+        """Tell the application the playlist should be saved."""
+        if self.on_queue_changed is not None:
+            try:
+                self.on_queue_changed()
+            except Exception:
+                log.debug("on_queue_changed failed", exc_info=True)
+
     def show_empty(self, message_key: str = "discover_empty") -> None:
         """Clear the list and show an empty-state message."""
         self.set_busy(False)
         self.set_loading(False)
         self._tracks = []
         self.player.set_playlist([])
+        self._selected = -1
         self._render_rows()
+        self._sync_queue_visibility()
         level = "warn" if message_key in ("discover_no_seeds", "discover_blocked") else "info"
         self.set_status(self.messages[message_key], level)
         self._now_title.configure(text=self.messages["discover_idle"])
@@ -832,6 +905,8 @@ class DiscoverPage(ttk.Frame):
         self._up_next.configure(text="")
         self._show_stage_idle()
         self._set_play_icon(False)
+        self.sync_vote_buttons()
+        self._notify_queue_changed()
 
     def set_tracks(self, tracks: List[DiscoverTrack], status: str = "", level: str = "ok") -> None:
         """Replace the result list and playlist.
@@ -844,10 +919,12 @@ class DiscoverPage(ttk.Frame):
         self.set_loading(False)
         self._extend_requested = False
         self._resume_after_extend = False
+        was_empty = not self._tracks
         self._tracks = dedupe_tracks(tracks)
         self.player.set_playlist(self._tracks)
         self._selected = 0 if self._tracks else -1
         self._render_rows()
+        self._sync_queue_visibility()
         if status:
             self.set_status(status, level)
         elif self._tracks:
@@ -856,7 +933,56 @@ class DiscoverPage(ttk.Frame):
             self.set_status(self.messages["discover_empty"], "warn")
         if self._tracks:
             self._highlight(self._selected)
+            if was_empty and not (self.player.playing or self.player.process_running):
+                self.after(0, lambda: self.play_at(0))
         self._update_up_next()
+        self.sync_vote_buttons()
+        self._notify_queue_changed()
+
+    def restore_tracks(
+        self,
+        tracks: List[DiscoverTrack],
+        *,
+        index: int = 0,
+        status: str = "",
+        level: str = "ok",
+    ) -> None:
+        """Load a previously saved playlist without auto-starting playback.
+
+        :param tracks: Rows to show.
+        :param index: Selected row.
+        :param status: Status line text.
+        :param level: Status colour level.
+        """
+        self.set_busy(False)
+        self.set_loading(False)
+        self._extend_requested = False
+        self._resume_after_extend = False
+        self._tracks = dedupe_tracks(tracks)
+        self.player.set_playlist(self._tracks)
+        if self._tracks:
+            self._selected = max(0, min(int(index), len(self._tracks) - 1))
+        else:
+            self._selected = -1
+        self._render_rows()
+        self._sync_queue_visibility()
+        if status:
+            self.set_status(status, level)
+        elif self._tracks:
+            self.set_status(self.messages.format("discover_results", count=len(self._tracks)), "ok")
+        else:
+            self.set_status(self.messages["discover_empty"], "warn")
+        if self._tracks:
+            self._highlight(self._selected)
+            track = self._tracks[self._selected]
+            self._now_title.configure(text=_shorten(track.title, 120))
+            self._now_meta.configure(text=track.uploader or "")
+        else:
+            self._now_title.configure(text=self.messages["discover_idle"])
+            self._now_meta.configure(text="")
+        self._update_up_next()
+        self.sync_vote_buttons()
+        self._notify_queue_changed()
 
     def begin_discover(self) -> None:
         """Clear the queue for a new Find-Similar run while search stays busy."""
@@ -865,12 +991,16 @@ class DiscoverPage(ttk.Frame):
         self._tracks = []
         self.player.set_playlist([])
         self._selected = -1
+        self._unplayable_ids.clear()
         self._render_rows()
+        self._sync_queue_visibility()
         self._now_title.configure(text=self.messages["discover_idle"])
         self._now_meta.configure(text="")
         self._up_next.configure(text="")
         self._show_stage_idle()
         self._set_play_icon(False)
+        self.sync_vote_buttons()
+        self._notify_queue_changed()
 
     def finish_discover(self, status: str = "", level: str = "ok") -> None:
         """End the Find-Similar busy state and show the final status text."""
@@ -886,7 +1016,14 @@ class DiscoverPage(ttk.Frame):
         if self._tracks and self._selected < 0:
             self._selected = 0
             self._highlight(0)
+        self._sync_queue_visibility()
+        # Auto-play when songs are ready and nothing is already playing.
+        if self._tracks and not (self.player.playing or self.player.process_running):
+            index = self._selected if self._selected >= 0 else 0
+            self.after(0, lambda i=index: self.play_at(i))
         self._update_up_next()
+        self.sync_vote_buttons()
+        self._notify_queue_changed()
 
     def append_tracks(
         self,
@@ -917,11 +1054,15 @@ class DiscoverPage(ttk.Frame):
             if 0 <= self._selected < len(self._tracks):
                 self._highlight(self._selected)
             self._update_up_next()
-            if self._resume_after_extend:
+            self._sync_queue_visibility()
+            if before == 0 and not (self.player.playing or self.player.process_running):
+                self.after(0, lambda: self.play_at(0))
+            elif self._resume_after_extend:
                 self._resume_after_extend = False
                 self.after(0, lambda index=before: self.play_at(index))
             elif self.player.playing or self.player.process_running:
                 self._prefetch_upcoming()
+            self._notify_queue_changed()
         if update_status:
             if status:
                 self.set_status(status, level)
@@ -952,8 +1093,10 @@ class DiscoverPage(ttk.Frame):
         if 0 <= self._selected < len(self._tracks):
             self._highlight(self._selected)
         self._update_up_next()
+        self._sync_queue_visibility()
         if self.player.playing or self.player.process_running:
             self._prefetch_upcoming()
+        self._notify_queue_changed()
         return len(fresh)
 
     def video_ids(self) -> set:
@@ -1435,6 +1578,7 @@ class DiscoverPage(ttk.Frame):
         frame.columnconfigure(2, minsize=_QUEUE_COL_CHANNEL, weight=0)
         frame.columnconfigure(3, minsize=_QUEUE_COL_DURATION, weight=0)
         frame.columnconfigure(4, minsize=_QUEUE_COL_ACTION, weight=0)
+        frame.columnconfigure(5, minsize=_QUEUE_COL_ACTION, weight=0)
 
     def _on_queue_canvas_configure(self, event: tk.Event) -> None:
         """Keep the scroll body as wide as the canvas and refresh title ellipsis."""
@@ -1542,6 +1686,21 @@ class DiscoverPage(ttk.Frame):
         duration_label.grid(row=0, column=3, sticky="ew", padx=(PAD_SMALL, 0))
         duration_label.bind("<Button-1>", lambda _e, i=index: self.play_at(i))
 
+        hide_btn = ttk.Button(
+            row,
+            text=self.messages["discover_hide_icon"],
+            style="Row.TButton",
+            width=3,
+            command=lambda t=track: self.hide_track(t),
+        )
+        hide_btn.grid(row=0, column=4, sticky="e", padx=(PAD_SMALL, 0))
+        _attach_tooltip(
+            hide_btn,
+            self.messages["discover_hide"],
+            background=self.palette.elevated,
+            foreground=self.palette.text,
+        )
+
         download_btn = ttk.Button(
             row,
             text=self.messages["discover_download_icon"],
@@ -1549,7 +1708,7 @@ class DiscoverPage(ttk.Frame):
             width=3,
             command=lambda t=track: self._on_download(t),
         )
-        download_btn.grid(row=0, column=4, sticky="e", padx=(PAD_SMALL, 0))
+        download_btn.grid(row=0, column=5, sticky="e", padx=(PAD_SMALL, 0))
         _attach_tooltip(
             download_btn,
             watch_url(track),
@@ -1592,6 +1751,8 @@ class DiscoverPage(ttk.Frame):
         self._selected = index
         self._highlight(index)
         self._update_up_next()
+        self.sync_vote_buttons()
+        self._notify_queue_changed()
 
     def _highlight(self, index: int) -> None:
         """Visually mark the active row title (number stays muted)."""
@@ -1731,6 +1892,8 @@ class DiscoverPage(ttk.Frame):
         track = self._tracks[index]
         self._selected = index
         self._highlight(index)
+        self.sync_vote_buttons()
+        self._notify_queue_changed()
         # A new track: bring it back to the middle even if the user had scrolled
         # somewhere else while the previous one played.
         self.centre_on(index)
@@ -1788,6 +1951,14 @@ class DiscoverPage(ttk.Frame):
                 )
             self._set_play_icon(False)
             self._reset_seek_ui()
+            if detail in ("no_player", "canceled", "invalid index", "empty playlist"):
+                return
+            failed = result.track
+            if failed is None and 0 <= self._selected < len(self._tracks):
+                failed = self._tracks[self._selected]
+            if failed is not None and failed.video_id:
+                self._unplayable_ids.add(failed.video_id)
+                self._skip_to_next_playable()
             return
         if result.backend in (BACKEND_MPV, BACKEND_FFPLAY):
             self._set_stage_placeholder(self.messages["discover_video_placeholder"])
@@ -1818,6 +1989,26 @@ class DiscoverPage(ttk.Frame):
         self.set_status(self.messages["discover_playback_failed"], "error")
         self._set_play_icon(False)
         self._reset_seek_ui()
+        if 0 <= self._selected < len(self._tracks):
+            failed = self._tracks[self._selected]
+            if failed.video_id:
+                self._unplayable_ids.add(failed.video_id)
+                self._skip_to_next_playable()
+
+    def _skip_to_next_playable(self) -> None:
+        """Advance past tracks that already failed to start this session."""
+        start = max(self._selected, -1) + 1
+        for index in range(start, len(self._tracks)):
+            track = self._tracks[index]
+            if track.video_id and track.video_id in self._unplayable_ids:
+                continue
+            title = _shorten(track.title, 60) if track.title else "?"
+            self.set_status(
+                "{0} → {1}".format(self.messages["discover_playback_skip"], title),
+                "warn",
+            )
+            self.after(200, lambda i=index: self.play_at(i))
+            return
 
     def _set_stage_placeholder(self, text: str) -> None:
         """Update the text shown on the idle / fallback video stage."""
@@ -1977,6 +2168,7 @@ class DiscoverPage(ttk.Frame):
             self.set_status(self.messages["discover_rate_need_track"], "warn")
             return
         self._on_like(track)
+        self.sync_vote_buttons()
 
     def dislike_current(self) -> None:
         """Thumbs-down the current track so similar songs are avoided."""
@@ -1985,6 +2177,35 @@ class DiscoverPage(ttk.Frame):
             self.set_status(self.messages["discover_rate_need_track"], "warn")
             return
         self._on_dislike(track)
+        self.sync_vote_buttons()
+
+    def hide_track(self, track: DiscoverTrack) -> None:
+        """Remove ``track`` from the queue and exclude it from Find similar."""
+        if self._on_hide is not None:
+            self._on_hide(track)
+        else:
+            self._on_dislike(track)
+        self.sync_vote_buttons()
+
+    def hide_at(self, index: int) -> None:
+        """Hide the queue row at ``index``."""
+        if index < 0 or index >= len(self._tracks):
+            return
+        self.hide_track(self._tracks[index])
+
+    def hide_current(self) -> None:
+        """Hide the track that is currently selected / playing."""
+        track = self.current_track()
+        if track is None:
+            self.set_status(self.messages["discover_rate_need_track"], "warn")
+            return
+        self.hide_track(track)
+
+    def download_at(self, index: int) -> None:
+        """Download the track at ``index`` without changing playback."""
+        if index < 0 or index >= len(self._tracks):
+            return
+        self._on_download(self._tracks[index])
 
     def remove_track(self, video_id: str, *, play_next: bool = True) -> bool:
         """Remove a track from the queue after a dislike.
@@ -2006,9 +2227,12 @@ class DiscoverPage(ttk.Frame):
         elif self._selected == index:
             self._selected = min(index, len(self._tracks) - 1) if self._tracks else -1
         self._render_rows()
+        self._sync_queue_visibility()
         if self._tracks and 0 <= self._selected < len(self._tracks):
             self._highlight(self._selected)
         self._update_up_next()
+        self.sync_vote_buttons()
+        self._notify_queue_changed()
         if play_next and was_playing:
             if 0 <= self._selected < len(self._tracks):
                 self.play_at(self._selected)

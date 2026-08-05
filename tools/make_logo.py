@@ -187,7 +187,9 @@ def _write_android_launcher(master: Image.Image) -> None:
         img.save(out_dir / "ic_launcher_round.png")
         print("wrote", (out_dir / "ic_launcher.png").relative_to(ROOT))
 
-    # Adaptive foreground: glyph only (launcher supplies the dark tile).
+    # Adaptive foreground kept for tools that still reference it; the launcher
+    # APK uses density mipmap PNGs (full tile) so HyperOS/MIUI recents do not
+    # fall back to the generic Android robot when adaptive XML fails to rasterise.
     size = 432
     big = size * SCALE
     fg = Image.new("RGBA", (big, big), (0, 0, 0, 0))
@@ -219,6 +221,14 @@ def _write_android_launcher(master: Image.Image) -> None:
     target = drawable / "ic_launcher_foreground.png"
     fg.save(target)
     print("wrote", target.relative_to(ROOT))
+
+    # Drop adaptive XML if present — PNGs alone are what Xiaomi/HyperOS need.
+    anydpi = res / "mipmap-anydpi-v26"
+    for name in ("ic_launcher.xml", "ic_launcher_round.xml"):
+        path = anydpi / name
+        if path.is_file():
+            path.unlink()
+            print("removed", path.relative_to(ROOT))
 
 
 if __name__ == "__main__":

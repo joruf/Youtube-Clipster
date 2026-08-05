@@ -844,7 +844,8 @@ def streaming(app):
     assert page is not None
     calls: list = []
     for name in ("play_at", "toggle_play", "stop_playback", "play_next", "play_previous",
-                 "like_current", "dislike_current", "download_current", "maybe_extend"):
+                 "like_current", "dislike_current", "hide_current", "download_current",
+                 "maybe_extend"):
         setattr(page, name, (lambda n: (lambda *a, **k: calls.append(n)))(name))
     seeks: list = []
     page.player.seek = lambda seconds: seeks.append(seconds) or True
@@ -903,6 +904,7 @@ def test_the_player_shape_is_read_correctly(app, streaming) -> None:
     ("previous", "play_previous"),
     ("like", "like_current"),
     ("dislike", "dislike_current"),
+    ("hide", "hide_current"),
     ("download", "download_current"),
     ("extend", "maybe_extend"),
 ])

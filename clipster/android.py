@@ -83,7 +83,7 @@ _SKIP_DIRS = frozenset({".git", ".venv", "venv", "__pycache__", ".pytest_cache",
 
 #: Files that must never travel - the configuration holds the remote token.
 _SKIP_FILES = frozenset({"config.json", "history.json", "discover_taste.json",
-                         "youtube-clipster.log"})
+                         "discover_queue.json", "youtube-clipster.log"})
 
 #: ``adb push`` prints its progress like ``[ 42%] /sdcard/Download/...``.
 _PROGRESS = re.compile(r"\[\s*(\d{1,3})%\]")

@@ -315,7 +315,17 @@ button {
     letter-spacing: 0.04em;
 }
 
-.badge.ok { color: var(--success); }
+.badge.ok { color: var(--accent); }
+
+.queue-row.current .name {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.queue-row.current .badge {
+    color: var(--accent);
+    font-weight: 700;
+}
 .badge.failed { color: var(--danger); }
 .badge.canceled { color: var(--warning); }
 
@@ -365,6 +375,22 @@ button {
 
 .icon.danger {
     color: var(--danger);
+}
+
+.icon.voted {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+.stream-empty-hint {
+    margin: 0 0 16px;
+    padding: 12px 14px;
+    display: block;
+}
+
+.stream-empty-hint[hidden] {
+    display: none;
 }
 
 #player {
@@ -539,11 +565,6 @@ h2.section {
     height: 44px;
     padding: 0;
     font-size: 1.1rem;
-}
-
-.queue-row.current .name {
-    color: var(--accent);
-    font-weight: 600;
 }
 
 #stream-track {

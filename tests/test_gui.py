@@ -132,7 +132,8 @@ def test_discover_queue_single_click_plays_without_download(gui) -> None:
     title = page._title_labels[0]
     channel = row.grid_slaves(row=0, column=2)[0]
     duration = row.grid_slaves(row=0, column=3)[0]
-    download_btn = row.grid_slaves(row=0, column=4)[0]
+    download_btn = row.grid_slaves(row=0, column=5)[0]
+    hide_btn = row.grid_slaves(row=0, column=4)[0]
 
     for widget in (row, number, title, channel, duration):
         assert widget.bind("<Button-1>")
@@ -144,6 +145,12 @@ def test_discover_queue_single_click_plays_without_download(gui) -> None:
     assert not download_btn.bind("<Double-Button-1>")
     download_btn.invoke()
     assert len(downloads) == 1
+    assert played == [0]
+
+    hidden: list = []
+    page._on_hide = lambda track: hidden.append(track)  # type: ignore[method-assign]
+    hide_btn.invoke()
+    assert len(hidden) == 1
     assert played == [0]
 
 

@@ -34,7 +34,7 @@
 </nav>
 
 <main id="view-streaming">
-    <section class="card">
+    <section class="card" id="search-card">
         <div class="row between">
             <label class="label" for="search">Search YouTube</label>
             <button id="results-toggle" type="button" class="quiet" hidden
@@ -46,7 +46,11 @@
         <ul id="results" class="downloads"></ul>
     </section>
 
-    <section class="card" id="target-card">
+    <p id="stream-empty-hint" class="message stream-empty-hint">
+        Bitte zuerst etwas auf YouTube auswählen, was dir gefällt. Danach werden anhand dieses Titels neue passende Titel gesucht.
+    </p>
+
+    <section class="card" id="target-card" hidden>
         <h2>Play on</h2>
         <div class="formats" role="radiogroup" aria-label="Playback target">
             <label class="chip" id="target-host-chip">
@@ -67,7 +71,7 @@
         </div>
     </section>
 
-    <section class="card" id="now-playing">
+    <section class="card" id="now-playing" hidden>
         <h2>Now playing</h2>
         <p id="stream-title" class="stream-title">Nothing yet.</p>
         <p id="stream-uploader" class="meta"></p>
@@ -88,7 +92,7 @@
         <p id="stream-message" class="message" hidden></p>
     </section>
 
-    <section class="card">
+    <section class="card" id="queue-card" hidden>
         <div class="row between">
             <h2>Queue</h2>
             <button id="stream-refresh" type="button" class="quiet">Find similar</button>

@@ -82,6 +82,27 @@ if ! python "$SCRIPT_DIR/run.py" --check --headless; then
 fi
 
 # ---------------------------------------------------------------------------
+step "Shared download folder (Download/clipster)"
+# ---------------------------------------------------------------------------
+# termux-setup-storage links ~/storage/downloads → the phone's public Download.
+info "termux-setup-storage (allow storage access if Android asks)"
+termux-setup-storage || true
+DOWNLOAD_TARGET=""
+if [ -d "$HOME/storage/downloads" ]; then
+    DOWNLOAD_TARGET="$HOME/storage/downloads/clipster"
+elif [ -d /sdcard/Download ]; then
+    DOWNLOAD_TARGET="/sdcard/Download/clipster"
+elif [ -d /storage/emulated/0/Download ]; then
+    DOWNLOAD_TARGET="/storage/emulated/0/Download/clipster"
+fi
+if [ -n "$DOWNLOAD_TARGET" ]; then
+    mkdir -p "$DOWNLOAD_TARGET" && info "Downloads go to: $DOWNLOAD_TARGET" \
+        || warn "Could not create $DOWNLOAD_TARGET — set Download folder in Settings."
+else
+    warn "Shared Download folder not visible yet. Allow storage for Termux, then set Download folder to Download/clipster in Settings."
+fi
+
+# ---------------------------------------------------------------------------
 step "Switching on the interface, for this device only"
 # ---------------------------------------------------------------------------
 python - "$SCRIPT_DIR" <<'PYTHON'
@@ -93,6 +114,7 @@ sys.path.insert(0, sys.argv[1])
 
 from clipster.config import Config
 from clipster.webserver import new_token
+from clipster import paths
 
 config = Config.load()
 config.remote_enabled = True
@@ -101,6 +123,9 @@ config.remote_bind = "127.0.0.1"
 config.use_tray = False
 if not config.remote_token:
     config.remote_token = new_token()
+# Shared phone Downloads — not Termux's long private home path.
+if paths.ensure_android_download_dir(config):
+    print("Download folder: {0}".format(config.download_dir))
 config.save()
 print("Configuration: {0}".format(config.path))
 print("Interface:     http://127.0.0.1:{0}/".format(config.remote_port))

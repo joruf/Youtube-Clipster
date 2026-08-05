@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Clipster" parent="@android:style/Theme.Material.Light.NoActionBar">
+    <style name="Theme.Clipster" parent="@android:style/Theme.Material.NoActionBar">
         <item name="android:windowFullscreen">true</item>
+        <item name="android:statusBarColor">#15161A</item>
+        <item name="android:navigationBarColor">#15161A</item>
+        <item name="android:windowBackground">#15161A</item>
+        <item name="android:colorPrimary">#E5322D</item>
+        <item name="android:colorPrimaryDark">#15161A</item>
     </style>
 </resources>
