@@ -37,6 +37,14 @@ REMOTE_DIR = "/sdcard/Download"
 #: Name of the archive handed to the phone.
 BUNDLE_NAME = "youtube-clipster-android.tar.gz"
 
+#: What winget calls Google's Android SDK platform tools, which contain adb.
+#: Windows has no distribution repository to take adb from, so this is the only
+#: automatic route there - and it comes with Google's own licence.
+WINGET_PACKAGE = "Google.PlatformTools"
+
+#: Where those terms can be read before accepting them.
+SDK_TERMS_URL = "https://developer.android.com/studio/terms"
+
 #: Directories that must never travel: private data, build leftovers, history.
 _SKIP_DIRS = frozenset({".git", ".venv", "venv", "__pycache__", ".pytest_cache",
                         ".mypy_cache", "node_modules", ".idea", ".vscode"})
@@ -94,7 +102,108 @@ def adb_path() -> Optional[str]:
                           Path(os.environ.get("PROGRAMFILES", "")) / "platform-tools" / "adb.exe"):
             if candidate.is_file():
                 return str(candidate)
+        # Freshly installed by winget: on PATH for new processes, not for this one.
+        for installed in _winget_locations():
+            if installed.is_file():
+                return str(installed)
     return None
+
+
+def _winget_locations() -> List[Path]:
+    """Return where winget puts the platform tools.
+
+    Portable packages land in winget's own package directory and are reached
+    through a links folder that is added to ``PATH`` - but not to the ``PATH``
+    this already-running process inherited. So after an install the executable
+    has to be looked for where it actually is.
+
+    :return: Candidate ``adb.exe`` paths, newest-looking last.
+    """
+    local = os.environ.get("LOCALAPPDATA", "")
+    if not local:
+        return []
+    packages = Path(local) / "Microsoft" / "WinGet" / "Packages"
+    try:
+        found = sorted(packages.glob("Google.PlatformTools*/**/adb.exe"))
+    except OSError:  # pragma: no cover - unreadable directory
+        return []
+    return found
+
+
+def adb_install_plan() -> Tuple[str, str]:
+    """Return how ``adb`` would be installed on this system.
+
+    Kept free of side effects so the wizard can show the exact command before
+    anything happens, and so every platform's answer is testable.
+
+    :return: ``(kind, command)``. ``kind`` is ``package`` for a distribution
+        package, ``winget`` for Google's platform tools on Windows, or
+        ``manual`` when nothing can do it automatically.
+    """
+    if paths.IS_WINDOWS:
+        if shutil.which("winget"):
+            return "winget", "winget install --exact --id {0}".format(WINGET_PACKAGE)
+        return "manual", ""
+    from .installer import detect_package_manager
+
+    manager = detect_package_manager()
+    if manager is None:
+        return "manual", ""
+    package = manager.package_for("adb")
+    if not package:
+        return "manual", ""
+    return "package", "{0} {1}".format(" ".join(manager.install), package)
+
+
+def install_adb(accept_licence: bool = False,
+                on_output: Optional[Callable[[str], None]] = None) -> Tuple[bool, str]:
+    """Install ``adb``, after the caller has asked the user.
+
+    This does not ask - the window does, because it has to show what will be run
+    before it runs. Two very different things happen depending on the platform:
+
+    * On Linux, macOS and Termux ``adb`` comes from the distribution's own
+      repository, which already redistributes it under the Apache 2.0 licence.
+      Nothing extra has to be agreed to.
+    * On Windows there is no such repository, so winget fetches Google's Android
+      SDK platform tools. Those carry Google's own licence agreement, and
+      accepting it silently on someone's behalf is not this program's business -
+      hence ``accept_licence``, which the window only sets once the user has
+      seen the terms and clicked.
+
+    :param accept_licence: Whether the user accepted Google's SDK terms. Required
+        on Windows, irrelevant everywhere else.
+    :param on_output: Called with each output line while the install runs.
+    :return: ``(success, message)``.
+    """
+    kind, command = adb_install_plan()
+    if kind == "manual":
+        return False, "No package manager on this system can install adb."
+
+    if kind == "winget":
+        if not accept_licence:
+            return False, "Google's SDK terms were not accepted."
+        argv = ["winget", "install", "--exact", "--id", WINGET_PACKAGE,
+                "--source", "winget", "--accept-source-agreements",
+                # The user accepted this in the window; see the note above.
+                "--accept-package-agreements", "--disable-interactivity"]
+        from .installer import run_command
+
+        result = run_command(argv, echo=False, on_output=on_output, timeout=1800.0)
+        if result.ok:
+            return True, adb_path() or WINGET_PACKAGE
+        return False, result.tail() or "winget failed"
+
+    from .installer import install_system_packages
+
+    # The window already asked; the hook must not ask a second time.
+    result = install_system_packages(["adb"], graphical=True, on_output=on_output,
+                                     confirm=lambda packages, shown: True)
+    if result.ok:
+        return True, adb_path() or "adb"
+    if result.declined:  # pragma: no cover - the window never declines here
+        return False, "Declined."
+    return False, result.tail() or "The package manager failed."
 
 
 def parse_devices(output: str) -> List[Device]:

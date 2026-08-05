@@ -5,6 +5,7 @@ A fake ``adb`` on PATH reports a ready phone, so the screenshot shows the state
 that matters without a phone being plugged in - and nothing real is touched.
 
     python3 tools/capture_android_dialog.py
+    python3 tools/capture_android_dialog.py --missing-adb
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 OUT_FILE = ROOT / "docs" / "images" / "android-install.png"
+OUT_FILE_NO_ADB = ROOT / "docs" / "images" / "android-install-adb.png"
 
 #: What the fake adb reports; a plausible phone, nothing personal.
 _FAKE_DEVICE = "R58M12ABCDE            device usb:1-3 product:a52q model:SM_A525F"
@@ -48,11 +50,20 @@ def main() -> int:
 
     :return: The process exit code.
     """
+    missing_adb = "--missing-adb" in sys.argv
+    target = OUT_FILE_NO_ADB if missing_adb else OUT_FILE
     workspace = Path(tempfile.mkdtemp(prefix="clipster-android-shot-"))
     _fake_adb(workspace / "bin")
 
-    from clipster import i18n, theme
+    from clipster import android, i18n, theme
     from clipster.android_dialog import AndroidDialog
+
+    if missing_adb:
+        # Show the offer to install adb, on a system that has a package manager
+        # for it. Nothing is installed - the window only ever offers.
+        android.adb_path = lambda: None
+        android.devices = lambda: []
+        android.adb_install_plan = lambda: ("package", "apt-get install -y adb")
 
     root = tk.Tk()
     theme.apply(root)
@@ -76,8 +87,8 @@ def main() -> int:
 
         x, y = window.winfo_rootx(), window.winfo_rooty()
         width, height = window.winfo_width(), window.winfo_height()
-        OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-        ImageGrab.grab(bbox=(x, y, x + width, y + height)).save(str(OUT_FILE))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        ImageGrab.grab(bbox=(x, y, x + width, y + height)).save(str(target))
         root.after(0, root.quit)
 
     root.after(200, lambda: threading.Thread(target=shoot, daemon=True).start())
@@ -87,10 +98,10 @@ def main() -> int:
     except tk.TclError:
         pass
 
-    if not OUT_FILE.is_file():
+    if not target.is_file():
         print("No screenshot was written.")
         return 1
-    print("wrote {0} ({1} bytes)".format(OUT_FILE, OUT_FILE.stat().st_size))
+    print("wrote {0} ({1} bytes)".format(target, target.stat().st_size))
     return 0
 
 

@@ -25,6 +25,7 @@ JS runtime    Linux only, optional: ``quickjs`` (helps some yt-dlp extractors).
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -46,6 +47,10 @@ from .shortcuts import _no_window
 log = get_logger(__name__)
 
 MIN_PYTHON = dependencies.MINIMUM_PYTHON
+
+#: Exit code for "the user said no". Distinct from any real failure, so a
+#: declined install is never reported as something that went wrong.
+DECLINED = 125
 
 FFMPEG_WINDOWS_URLS = (
     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
@@ -151,6 +156,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
         packages={
             "ffmpeg": "ffmpeg",
             "mpv": "mpv",
+            "adb": "android-tools",
             "tk": "python-tkinter",
             # venv and pip ship with Termux's python package.
             "venv": "python",
@@ -171,6 +177,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
         packages={
             "ffmpeg": "ffmpeg",
             "mpv": "mpv",
+            "adb": "adb",
             "tk": "python3-tk",
             "venv": "python3-venv",
             "pip": "python3-pip",
@@ -188,6 +195,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
         packages={
             "ffmpeg": "ffmpeg-free",
             "mpv": "mpv",
+            "adb": "android-tools",
             "tk": "python3-tkinter",
             "venv": "python3-libs",
             "pip": "python3-pip",
@@ -205,6 +213,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
         packages={
             "ffmpeg": "ffmpeg",
             "mpv": "mpv",
+            "adb": "android-tools",
             "tk": "tk",
             "venv": "python",
             "pip": "python-pip",
@@ -222,6 +231,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
         packages={
             "ffmpeg": "ffmpeg",
             "mpv": "mpv",
+            "adb": "android-tools",
             "tk": "python3-tk",
             "venv": "python3-venv",
             "pip": "python3-pip",
@@ -239,6 +249,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
         packages={
             "ffmpeg": "ffmpeg",
             "mpv": "mpv",
+            "adb": "android-tools",
             "tk": "python3-tkinter",
             "venv": "python3",
             "pip": "py3-pip",
@@ -256,6 +267,7 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
         packages={
             "ffmpeg": "ffmpeg",
             "mpv": "mpv",
+            "adb": "android-platform-tools",
             "tk": "python-tk",
             "venv": "python",
             "pip": "python",
@@ -307,12 +319,90 @@ def _privileged(command: Sequence[str]) -> Optional[List[str]]:
     return None
 
 
-def run_command(command: Sequence[str], echo: bool = True, timeout: Optional[float] = 1800.0) -> "CommandResult":
+def _has_display() -> bool:
+    """Return whether a graphical session is available to ask for a password in."""
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def _sudo_without_password() -> bool:
+    """Return whether ``sudo`` would run right now without asking anything.
+
+    True for root-less setups with ``NOPASSWD`` and for a still-valid timestamp
+    from an earlier authentication.
+
+    :return: Whether ``sudo -n`` succeeds.
+    """
+    if not shutil.which("sudo"):
+        return False
+    try:
+        finished = subprocess.run(["sudo", "-n", "true"], capture_output=True,
+                                  timeout=15, **_no_window())
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return finished.returncode == 0
+
+
+def privileged_script(commands: Sequence[Sequence[str]], graphical: bool = False) -> Optional[List[str]]:
+    """Return one command that runs several commands as administrator.
+
+    Authenticating once for the whole batch matters for the graphical path: a
+    password prompt per package manager call would mean two dialogs for one
+    button. The commands run in order, each best effort, and the exit status is
+    the last one's - which is what "refresh the index, then install" needs.
+
+    ``graphical`` picks a way to ask for the password that does not need a
+    terminal. ``sudo -p`` writes its prompt to the tty; with no tty it simply
+    fails, so a window must use ``pkexec`` (which brings its own dialog) or an
+    authentication that needs no password at all.
+
+    :param commands: The argument vectors to run, in order.
+    :param graphical: Whether there is no terminal to type a password into.
+    :return: The runnable command, or ``None`` when privileges are unreachable.
+    """
+    vectors = [list(command) for command in commands if command]
+    if not vectors:
+        return None
+
+    if len(vectors) == 1 and (_is_root() or vectors[0][0] in ("brew", "pkg")):
+        return vectors[0]
+
+    script = "; ".join(" ".join(shlex.quote(part) for part in vector) for vector in vectors)
+    shell = shutil.which("sh") or "/bin/sh"
+
+    # Termux installs into the user's own prefix, Homebrew likewise - no
+    # escalation needed, and asking for one would fail on Android.
+    if _is_root() or all(vector[0] in ("brew", "pkg") for vector in vectors):
+        return [shell, "-c", script]
+
+    if not graphical:
+        if shutil.which("sudo"):
+            return ["sudo", "-p", "[sudo] password for %u (YouTube Clipster setup): ",
+                    shell, "-c", script]
+        return None
+
+    # A window has no tty, so a package that decides to ask something would wait
+    # for an answer that can never come - with the button greyed out and no way
+    # out. On a terminal such a question is answerable, so this is only done here.
+    script = "export DEBIAN_FRONTEND=noninteractive; " + script
+
+    # Cheapest first: an already-valid sudo timestamp needs no dialog at all.
+    if _sudo_without_password():
+        return ["sudo", "-n", shell, "-c", script]
+    pkexec = shutil.which("pkexec")
+    if pkexec and _has_display():
+        return [pkexec, shell, "-c", script]
+    return None
+
+
+def run_command(command: Sequence[str], echo: bool = True, timeout: Optional[float] = 1800.0,
+                on_output: Optional[Callable[[str], None]] = None) -> "CommandResult":
     """Run a command, stream its output and capture it.
 
     :param command: The argument vector to execute.
     :param echo: Mirror the child output on this process' stderr.
     :param timeout: Abort after this many seconds.
+    :param on_output: Called with every non-empty output line, as it arrives, so
+        a window can show what the package manager is doing.
     :return: Exit code and combined output.
     """
     printable = " ".join(str(part) for part in command)
@@ -341,6 +431,11 @@ def run_command(command: Sequence[str], echo: bool = True, timeout: Optional[flo
             lines.append(line)
             if echo and line:
                 print("    {0}".format(line), file=sys.stderr, flush=True)
+            if on_output is not None and line.strip():
+                try:
+                    on_output(line)
+                except Exception:  # pragma: no cover - a listener must not kill the install
+                    log.debug("An output listener raised", exc_info=True)
             if deadline is not None and time.monotonic() > deadline:
                 process.kill()
                 lines.append("Timed out after {0:.0f}s".format(timeout or 0))
@@ -363,6 +458,11 @@ class CommandResult:
     def ok(self) -> bool:
         """Return ``True`` when the command exited with status 0."""
         return self.returncode == 0
+
+    @property
+    def declined(self) -> bool:
+        """Return ``True`` when the user refused the install, rather than it failing."""
+        return self.returncode == DECLINED
 
     def tail(self, lines: int = 4) -> str:
         """Return the last ``lines`` non-empty output lines."""
@@ -392,11 +492,85 @@ def _package_names(manager: PackageManager, keys: Sequence[str]) -> List[str]:
     return names
 
 
-def install_system_packages(keys: Sequence[str], refresh: bool = True) -> CommandResult:
+#: Signature of a "may I install this?" question: it is handed the package names
+#: and the exact command, and answers whether to go ahead.
+InstallConfirm = Callable[[List[str], str], bool]
+
+#: Asked before every system package install that does not bring its own
+#: question. A module-level hook rather than an argument on all fifteen
+#: ``ensure_*`` functions: they all end up in one place anyway, and the setup
+#: scripts must keep working untouched. ``None`` means install without asking.
+_confirm_hook: Optional[InstallConfirm] = None
+
+
+def set_install_confirm(hook: Optional[InstallConfirm]) -> None:
+    """Install the question asked before system packages are installed.
+
+    :param hook: What to ask, or ``None`` to install without asking.
+    :return: None
+    """
+    global _confirm_hook
+    _confirm_hook = hook
+
+
+def _interactive() -> bool:
+    """Return whether there is a terminal a question could be answered on.
+
+    Under ``pythonw.exe`` the standard streams are ``None``, which is why this
+    checks for the object before asking it anything.
+
+    :return: Whether stdin and stdout are both a tty.
+    """
+    for stream in (sys.stdin, sys.stdout):
+        if stream is None:
+            return False
+        try:
+            if not stream.isatty():
+                return False
+        except (AttributeError, ValueError):    # closed or a dummy stream
+            return False
+    return True
+
+
+def console_confirm(packages: List[str], command: str) -> bool:
+    """Ask on the terminal whether these packages may be installed.
+
+    Unattended runs cannot answer, and they were started precisely to install
+    things - so with no terminal this says yes rather than hanging on a question
+    nobody will ever see. Pass ``assume_yes`` through instead of relying on that
+    when a script wants to be explicit.
+
+    :param packages: The package names about to be installed.
+    :param command: The command that would run, for the user to judge.
+    :return: Whether to install.
+    """
+    if not _interactive():
+        log.info("No terminal to ask on; installing %s unattended.", " ".join(packages))
+        return True
+    print("\n  The following has to be installed: {0}".format(" ".join(packages)), file=sys.stderr)
+    print("  Command: {0}".format(command), file=sys.stderr)
+    try:
+        answer = input("  Install it now? [y/N] ")
+    except (EOFError, KeyboardInterrupt):
+        print(file=sys.stderr)
+        return False
+    return answer.strip().lower() in ("y", "yes", "j", "ja")
+
+
+def install_system_packages(keys: Sequence[str], refresh: bool = True,
+                            graphical: bool = False,
+                            on_output: Optional[Callable[[str], None]] = None,
+                            confirm: Optional[InstallConfirm] = None) -> CommandResult:
     """Install one or more logical components via the distribution package manager.
 
     :param keys: Logical component names such as ``ffmpeg`` or ``tk``.
     :param refresh: Update the package index first (``apt-get update``, ...).
+    :param graphical: Set when no terminal is attached, so the password is asked
+        for in a window instead of on a tty that does not exist.
+    :param on_output: Called with every output line, for a live log in a window.
+    :param confirm: Asked before anything is installed; nothing happens unless it
+        answers yes. ``None`` installs without asking, which is what the
+        unattended setup scripts rely on.
     :return: The result of the install command.
     """
     manager = detect_package_manager()
@@ -407,19 +581,26 @@ def install_system_packages(keys: Sequence[str], refresh: bool = True) -> Comman
     if not packages:
         return CommandResult(returncode=1, output="No package mapping for {0}".format(", ".join(keys)))
 
-    if refresh and manager.refresh:
-        refresh_cmd = _privileged(manager.refresh)
-        if refresh_cmd is not None:
-            run_command(refresh_cmd, timeout=600.0)
+    install = manager.install + packages
+    confirm = confirm or _confirm_hook
+    if confirm is not None and not confirm(packages, " ".join(install)):
+        log.info("The user declined to install: %s", " ".join(packages))
+        return CommandResult(returncode=DECLINED,
+                             output="Declined - nothing was installed.")
 
-    install_cmd = _privileged(manager.install + packages)
-    if install_cmd is None:
+    batch: List[Sequence[str]] = []
+    if refresh and manager.refresh:
+        batch.append(manager.refresh)
+    batch.append(install)
+
+    command = privileged_script(batch, graphical=graphical)
+    if command is None:
         return CommandResult(
             returncode=1,
-            output="'sudo' is not available - please run: {0}".format(" ".join(manager.install + packages)),
+            output="Administrator rights are unavailable - please run: {0}".format(" ".join(install)),
         )
     log.info("Installing system package(s): %s", " ".join(packages))
-    return run_command(install_cmd)
+    return run_command(command, echo=not graphical, on_output=on_output)
 
 
 def manual_install_hint(keys: Sequence[str]) -> str:
@@ -1160,6 +1341,7 @@ def bootstrap(
     update_check_hours: int = 24,
     on_progress: Optional[Callable[[str], None]] = None,
     need_gui: bool = True,
+    ask: bool = False,
 ) -> InstallReport:
     """Run every dependency check and install what is missing.
 
@@ -1172,10 +1354,21 @@ def bootstrap(
     :param need_gui: Whether windows will be opened. Without them tkinter, the
         tray and the clipboard helpers are not needed - which is what makes a
         server, a Raspberry Pi or Termux on Android workable.
+    :param ask: Ask on the terminal before installing a system package. Without a
+        terminal the question cannot be answered, so it installs as before -
+        otherwise the unattended setup scripts would stall on it.
     :return: The collected report.
     """
     report = InstallReport()
     paths.ensure_install_dir()
+    if ask:
+        set_install_confirm(console_confirm)
+
+    def finish(collected: InstallReport) -> InstallReport:
+        """Drop the question hook again - it is process wide."""
+        if ask:
+            set_install_confirm(None)
+        return collected
 
     def note(message: str) -> None:
         log.info("%s", message)
@@ -1187,7 +1380,7 @@ def bootstrap(
 
     note("Checking Python...")
     if not report.add(check_python()).ok:
-        return report
+        return finish(report)
 
     if need_gui:
         note("Checking tkinter...")
@@ -1200,7 +1393,7 @@ def bootstrap(
         note("Preparing private virtual environment...")
         venv_step = report.add(ensure_venv(recreate=recreate_venv))
         if not venv_step.ok:
-            return report
+            return finish(report)
         interpreter = paths.venv_python()
 
     note("Checking yt-dlp...")
@@ -1230,4 +1423,4 @@ def bootstrap(
     note("Checking JavaScript runtime...")
     report.add(ensure_js_runtime(auto_install=auto_install))
     note("Dependency check finished.")
-    return report
+    return finish(report)

@@ -100,9 +100,14 @@ chmod +x install.sh run.py
 `install.sh` looks for a suitable Python 3, installs it through your package manager if it is
 missing, and then hands over to `run.py`.
 
-Installing system packages (`ffmpeg`, `python3-tk`, `xclip`, …) needs **root**, so you will be asked
-for your `sudo` password **in the terminal**. Everything else is installed into your user profile
-without root.
+Before a system package (`ffmpeg`, `python3-tk`, `xclip`, …) is installed, you are **asked in the
+terminal** — the question names the packages and the exact command, and nothing happens unless you
+answer `y`. Those installs need **root**, so `sudo` then asks for your password. Everything else goes
+into your user profile without root.
+
+Started without a terminal — by double-clicking, or from `run.bat` — there is nobody to answer, so
+the setup installs as it always did rather than stalling on a question no one can see. Pass `--yes`
+to skip the questions on purpose in scripts and unattended runs.
 
 > Prefer to do it yourself? `python3 run.py` works exactly the same way, and
 > `--no-auto-install` only reports what is missing instead of installing it.
@@ -386,6 +391,7 @@ The log file lives next to the configuration:
 --reinstall           rebuild the virtual environment from scratch
 --no-venv             use the current interpreter instead of a private venv
 --no-auto-install     report missing components instead of installing them
+-y, --yes             install missing system packages without asking first
 
 --phone-setup         guided setup that connects your phone, then exit
 --create-shortcut     create a desktop shortcut and exit
@@ -717,8 +723,17 @@ The program can hand itself to a plugged-in phone. Open the view window, go to *
 
 Four steps, each saying what it is waiting for:
 
-1. **Android tools** — `adb` has to be installed. Missing, the window shows the exact command for your
-   system.
+1. **Android tools** — `adb` has to be installed. Missing, the window offers to do it for you:
+
+   ![adb is missing](docs/images/android-install-adb.png)
+
+   Nothing is installed until you say yes — the question names the exact command that will run, and on
+   Linux/macOS it says that administrator rights are needed (asked for in a proper password dialog,
+   since a window has no terminal to type into). On Windows there is no distribution repository to take
+   `adb` from, so winget fetches Google's Android SDK platform tools: the question names
+   [Google's licence](https://developer.android.com/studio/terms) and your Yes is what accepts it.
+   Nothing is accepted on your behalf. Where nothing can install it automatically, no button is
+   offered — only the command to run yourself.
 2. **The phone** — plug it in with a cable that carries data, and switch on USB debugging (Settings →
    About phone → tap *Build number* seven times → Developer options → USB debugging). The phone then
    asks whether to allow this computer; the window says so and waits, and notices the tap by itself.

@@ -64,6 +64,10 @@ class AndroidDialog:
         self._pump_job: Optional[str] = None
         self._busy = False
         self._closed = False
+        #: Why the last install attempt failed. Kept because the rescan that
+        #: follows would otherwise replace the reason with a generic "adb is
+        #: missing" a moment later, and that reason is the whole point.
+        self._adb_error = ""
         #: Filled by the worker threads, drained on the Tk thread only.
         self._results: "queue.Queue" = queue.Queue()
 
@@ -98,6 +102,12 @@ class AndroidDialog:
         self._adb_hint = ttk.Label(card, text="", style="Panel.Muted.TLabel",
                                    wraplength=520, justify="left")
         self._adb_hint.pack(anchor="w", pady=(2, 0))
+        # Only shown while adb is missing, and only when something on this system
+        # can actually install it.
+        self._adb_row = ttk.Frame(card, style="Panel.TFrame")
+        self._adb_button = ttk.Button(self._adb_row, text=self.messages["android_adb_install"],
+                                      style="Row.TButton", command=self._install_adb)
+        self._adb_button.pack(side="left")
 
         # 2 - the phone
         card = self._card(frame, "android_step_device")
@@ -195,14 +205,22 @@ class AndroidDialog:
         """Render what the scan found and arm the next look."""
         self._device = device
         if state == "no_adb":
-            self._set("adb", self.messages["android_adb_missing"], "Panel.Danger.TLabel")
+            if self._adb_error:
+                self._set("adb", self.messages.format("android_adb_install_failed",
+                                                      details=self._adb_error),
+                          "Panel.Danger.TLabel")
+            else:
+                self._set("adb", self.messages["android_adb_missing"], "Panel.Danger.TLabel")
             self._adb_hint.configure(text=self._adb_install_hint())
+            self._show_adb_button(android.adb_install_plan()[0] != "manual")
             self._set("device", self.messages["android_adb_first"], "Panel.Muted.TLabel")
         else:
+            self._adb_error = ""
             self._set("adb", self.messages.format("android_adb_found",
                                                   path=android.adb_path() or "adb"),
                       "Panel.Success.TLabel")
             self._adb_hint.configure(text="")
+            self._show_adb_button(False)
             if state == "ready" and device is not None:
                 self._set("device", self.messages.format("android_device_ready",
                                                          device=device.describe()),
@@ -242,15 +260,107 @@ class AndroidDialog:
 
     def _adb_install_hint(self) -> str:
         """Return how to install adb on this system."""
-        if paths.IS_WINDOWS:
-            return self.messages["android_adb_windows"]
-        from .installer import detect_package_manager
+        kind, command = android.adb_install_plan()
+        if kind == "manual":
+            return (self.messages["android_adb_windows"] if paths.IS_WINDOWS
+                    else self.messages["android_adb_manual"])
+        return self.messages.format("android_adb_command", command=command)
 
-        manager = detect_package_manager()
-        if manager is None:
-            return self.messages["android_adb_manual"]
-        return self.messages.format("android_adb_command",
-                                    command="{0} {1}".format(" ".join(manager.install), "adb"))
+    def _show_adb_button(self, visible: bool) -> None:
+        """Show or hide the install button."""
+        try:
+            if visible:
+                self._adb_row.pack(anchor="w", pady=(PAD_SMALL, 0))
+                self._adb_button.configure(state="disabled" if self._busy else "normal")
+            else:
+                self._adb_row.pack_forget()
+        except tk.TclError:  # pragma: no cover - window already gone
+            pass
+
+    def _install_adb(self) -> None:
+        """Ask whether adb may be installed, and install it on yes."""
+        if self._busy:
+            return
+        kind, command = android.adb_install_plan()
+        if kind == "manual":
+            self._set("adb", self.messages["android_adb_manual"], "Panel.Warning.TLabel")
+            self._show_adb_button(False)
+            return
+        if not self._ask_install(kind, command):
+            self._adb_hint.configure(text=self.messages["android_adb_declined"])
+            return
+
+        self._busy = True
+        self._adb_error = ""
+        self._arm_watch(False)
+        try:
+            self._adb_button.configure(state="disabled")
+        except tk.TclError:  # pragma: no cover
+            pass
+        self._set("adb", self.messages["android_adb_installing"], "Panel.TLabel")
+        self._adb_hint.configure(text=command)
+        # Only true once the question above has been answered with yes, and that
+        # question is the one that shows Google's terms.
+        accepted = kind == "winget"
+
+        def work() -> None:
+            ok, message = android.install_adb(
+                accept_licence=accepted,
+                on_output=lambda line: self._post(self._adb_output, line),
+            )
+            self._post(self._adb_installed, ok, message)
+
+        threading.Thread(target=work, name="clipster-adb-install", daemon=True).start()
+
+    def _ask_install(self, kind: str, command: str) -> bool:
+        """Ask before touching the system, showing exactly what would run.
+
+        On Windows the packaged tools are Google's and carry Google's licence, so
+        the question names it and links the terms - clicking yes is what accepts
+        them. Nothing is accepted on the user's behalf.
+
+        :param kind: ``package`` or ``winget``.
+        :param command: The command that would run.
+        :return: Whether the user agreed.
+        """
+        from tkinter import messagebox
+
+        if kind == "winget":
+            question = self.messages.format("android_adb_ask_windows", command=command,
+                                            url=android.SDK_TERMS_URL)
+        else:
+            question = self.messages.format("android_adb_ask", command=command)
+        try:
+            return bool(messagebox.askyesno(self.messages["android_adb_install"], question,
+                                            parent=self.window))
+        except tk.TclError:  # pragma: no cover - window already gone
+            return False
+
+    def _adb_output(self, line: str) -> None:
+        """Show the package manager's current line, shortened to one row."""
+        text = line.strip()
+        if len(text) > 90:
+            text = text[:89] + "…"
+        self._adb_hint.configure(text=text)
+
+    def _adb_installed(self, ok: bool, message: str) -> None:
+        """Report the outcome and look for the phone again."""
+        self._busy = False
+        if ok:
+            self._set("adb", self.messages.format("android_adb_installed", path=message),
+                      "Panel.Success.TLabel")
+            self._adb_hint.configure(text="")
+            self._show_adb_button(False)
+        else:
+            # Sticky, so the rescan below does not replace it with "adb is missing".
+            self._adb_error = message
+            self._set("adb", self.messages.format("android_adb_install_failed", details=message),
+                      "Panel.Danger.TLabel")
+            self._adb_hint.configure(text=self._adb_install_hint())
+            self._show_adb_button(True)
+        # Either way: check what is actually there now rather than trusting the
+        # exit code - on Windows the new adb is not on this process' PATH.
+        self.refresh_device()
 
     # ------------------------------------------------------------------
     # Doing it

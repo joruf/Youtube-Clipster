@@ -115,6 +115,44 @@ The archive goes to `/sdcard/Download` and Termux picks it up.
 their result and the Tk thread drains it on a timer. `widget.after()` from another thread appears to
 work and then raises "main thread is not in main loop".
 
+#### Installing adb, and why Windows is the odd one out
+
+`adb_install_plan()` is side-effect free so the window can show the exact command before anything runs,
+and so every platform's answer is testable. It returns one of three kinds:
+
+* `package` - the distribution's own `adb` / `android-tools`, mapped per package manager in
+  `installer.py`. The distribution already redistributes it under Apache 2.0; nothing extra is agreed to.
+* `winget` - Windows has no such repository, so `Google.PlatformTools` is fetched. Those carry Google's
+  own SDK licence, which is why `install_adb()` takes `accept_licence` and refuses without it. The
+  window's question names the licence and links the terms; the Yes is the acceptance. Auto-accepting a
+  third party's licence on the user's behalf - or downloading and unpacking the SDK ZIP directly to dodge
+  the question - is the version this deliberately does not do.
+* `manual` - nothing here can do it, so no button is offered rather than one that cannot work.
+
+After a Windows install `adb` is on the `PATH` of *new* processes, not of this one, so `adb_path()` also
+looks inside winget's package directory. The wizard rescans instead of trusting the exit code, and the
+failure reason is kept in `_adb_error` because that rescan would otherwise replace it with a generic
+"adb is missing" a moment later.
+
+#### Asking before installing
+
+`install_system_packages` consults a confirm function and installs nothing on a no (exit code
+`DECLINED`, distinct from any real failure). It is a module-level hook (`set_install_confirm`) rather
+than an argument on all fifteen `ensure_*` functions - they all funnel through one place anyway, and the
+setup scripts had to keep working untouched. `bootstrap(ask=True)` sets `console_confirm` and drops it
+again on every exit path, including the aborted ones; the hook is process wide.
+
+`console_confirm` says yes when there is no terminal. That is the point: `run.bat` and a double-clicked
+`run.py` have no tty, and a question nobody can see must not stall the setup. Under `pythonw.exe` the
+streams are `None` rather than merely not a tty, which is why `_interactive()` checks for the object
+before asking it anything.
+
+Privilege escalation had to grow a second path for the window. `sudo -p` writes its prompt to a tty; with
+no tty it simply fails, so `privileged_script(..., graphical=True)` uses an already-valid sudo timestamp
+if there is one, then `pkexec` (which brings its own dialog), and returns `None` rather than a command
+that would hang. Commands are joined with `;`, not `&&`, so one broken third-party repository breaking
+`apt-get update` does not also cancel the install - the exit status is the install's.
+
 ### Headless
 
 `--headless` swaps two objects instead of touching the hundred places in `app.py` that reach for the

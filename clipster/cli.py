@@ -41,6 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--reinstall", action="store_true", help="rebuild the virtual environment from scratch")
     setup.add_argument("--no-venv", action="store_true", help="use the current interpreter instead of a private venv")
     setup.add_argument("--no-auto-install", action="store_true", help="report missing components instead of installing")
+    setup.add_argument("-y", "--yes", action="store_true",
+                       help="install missing system packages without asking first")
 
     integration = parser.add_argument_group("desktop integration")
     integration.add_argument("--phone-setup", action="store_true",
@@ -116,6 +118,10 @@ def bootstrap_main(argv: Optional[Sequence[str]] = None) -> int:
                 update_check_hours=_configured_update_hours(args.config),
                 on_progress=on_progress,
                 need_gui=not args.headless,
+                # Ask before touching the system with the package manager. With no
+                # terminal to answer on this installs as before, so a double-click
+                # start and the setup scripts never stall on an unseen question.
+                ask=not args.yes,
             )
             if report.ok and not (args.check or args.create_shortcut or args.autostart):
                 on_progress(messages.get("setup_starting", "Starting YouTube Clipster..."))
