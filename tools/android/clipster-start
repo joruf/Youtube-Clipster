@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/data/data/com.termux/files/usr/bin/bash
 #
 # Loresoft YouTube Clipster - start on Android, from a home screen icon.
 #
@@ -15,8 +15,17 @@ set -u
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
-PID_FILE="${TMPDIR:-/tmp}/youtube-clipster-android.pid"
+# Termux has no world-writable /tmp; keep the pid file in the Termux temp dir.
+: "${TMPDIR:=${PREFIX:-/data/data/com.termux/files/usr}/tmp}"
+mkdir -p "$TMPDIR" 2>/dev/null || true
+PID_FILE="$TMPDIR/youtube-clipster-android.pid"
 LOG_FILE="$HOME/.local/share/YoutubeClipster/android-start.log"
+VENV_PYTHON="$HOME/.local/share/YoutubeClipster/venv/bin/python"
+if [ -x "$VENV_PYTHON" ]; then
+    PYTHON="$VENV_PYTHON"
+else
+    PYTHON="python"
+fi
 OPEN=0
 ACTION="start"
 
@@ -78,7 +87,7 @@ else
     # Deliberately no --accept-terms: install-android.sh asks for that once,
     # with the text in front of the user. A launcher must not confirm terms on
     # every tap.
-    nohup python "$ROOT/run.py" --headless --skip-checks \
+    nohup "$PYTHON" "$ROOT/run.py" --headless --skip-checks \
         >>"$LOG_FILE" 2>&1 &
     printf '%s\n' "$!" > "$PID_FILE"
     printf 'Started (pid %s). Log: %s\n' "$!" "$LOG_FILE"
@@ -87,7 +96,7 @@ else
 fi
 
 if [ "$OPEN" -eq 1 ]; then
-    URL="$(python "$ROOT/tools/phone_link.py" --url 2>/dev/null || true)"
+    URL="$("$PYTHON" "$ROOT/tools/phone_link.py" --url 2>/dev/null || true)"
     if [ -z "$URL" ]; then
         printf 'The address could not be determined - is remote control switched on?\n' >&2
         exit 1

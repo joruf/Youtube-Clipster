@@ -75,6 +75,7 @@ def fake_adb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             "#!/usr/bin/env bash\n"
             "case \"$*\" in\n"
             "  *devices*) cat <<'OUT'\n{0}\nOUT\n    ;;\n"
+            "  *run-as*) exit 1 ;;\n"
             "  *push*) cat <<'OUT'\n{1}\nOUT\n    exit {2} ;;\n"
             "  *monkey*) echo 'Events injected: 1'; exit {2} ;;\n"
             "esac\n".format(devices_output, push_lines, exit_code),
@@ -231,18 +232,57 @@ def test_without_adb_termux_cannot_be_started(monkeypatch) -> None:
 # ----------------------------------------------------------------------
 # The step that cannot be done from here
 # ----------------------------------------------------------------------
-def test_the_last_step_is_one_command() -> None:
+def test_the_bootstrap_script_unpacks_and_installs() -> None:
     """adb may not enter Termux's storage, so Termux has to fetch it itself."""
-    command = android.install_command()
-    assert android.REMOTE_DIR in command
-    assert android.BUNDLE_NAME in command
-    assert "install-android.sh" in command
-    assert "\n" not in command, "it has to be one line to paste"
+    body = android.setup_script_body()
+    assert android.REMOTE_DIR in body
+    assert android.BUNDLE_NAME in body
+    assert "install-android.sh" in body
+    assert "--accept-terms" in body
 
 
-def test_the_command_follows_a_different_target() -> None:
+def test_the_home_bootstrap_script_avoids_sdcard() -> None:
+    body = android.setup_script_body(in_home=True)
+    assert "/sdcard" not in body
+    assert "termux-setup-storage" not in body
+    assert "$HOME/$BUNDLE" in body
+    assert "--accept-terms" in body
+
+
+def test_the_launch_command_is_short_and_typeable() -> None:
+    command = android.launch_command()
+    assert android.SETUP_SCRIPT_NAME in command
+    assert android.typeable(command)
+    assert "&&" not in command
+    assert ";" not in command
+    assert len(command) < 80
+
+
+def test_the_home_launch_command_is_short_and_typeable() -> None:
+    command = android.launch_command(in_home=True)
+    assert command.startswith("bash ~/")
+    assert android.SETUP_SCRIPT_NAME in command
+    assert android.typeable(command)
+    assert len(command) < 80
+    assert "/sdcard" not in command
+
+def test_the_fallback_one_liner_still_mentions_the_archive() -> None:
     command = android.install_command("other.tar.gz", "/sdcard/Documents")
     assert "/sdcard/Documents/other.tar.gz" in command
+    assert "--accept-terms" in command
+
+
+def test_write_setup_script_creates_the_file(tmp_path: Path) -> None:
+    target = tmp_path / android.SETUP_SCRIPT_NAME
+    written = android.write_setup_script(target, accept_terms=True)
+    assert written == target
+    text = target.read_text(encoding="utf-8")
+    assert text.startswith("#!")
+    assert "--accept-terms" in text
+
+
+def test_setup_script_can_omit_accept_terms() -> None:
+    assert "--accept-terms" not in android.setup_script_body(accept_terms=False)
 
 
 # ----------------------------------------------------------------------
@@ -279,11 +319,24 @@ def _settle(root, dialog_window, seconds: float = 2.0) -> None:
         time.sleep(0.02)
 
 
+def _goto_step(window, step: str) -> None:
+    """Jump the wizard to *step* without running side effects (for GUI tests)."""
+    from clipster.android_dialog import WIZARD_STEPS
+
+    idx = WIZARD_STEPS.index(step)
+    window._completed = set(WIZARD_STEPS[:idx])
+    window._current_step = step
+    window._terms_accepted = True
+    window._termux_ready = True
+    window._refresh_wizard()
+
+
 @pytest.mark.gui
 def test_a_ready_phone_unlocks_the_transfer(dialog) -> None:
     window, _, root = dialog
     _settle(root, window)
     assert "Pixel 7" in window._labels["device"].cget("text")
+    _goto_step(window, "setup")
     assert str(window._start_button.cget("state")) == "normal"
 
 
@@ -294,6 +347,7 @@ def test_an_unauthorised_phone_keeps_the_transfer_locked(dialog, messages) -> No
     window, _, root = dialog
     _settle(root, window)
     assert window._labels["device"].cget("text") == messages["android_device_unauthorised"]
+    _goto_step(window, "setup")
     assert str(window._start_button.cget("state")) == "disabled"
 
 
@@ -303,6 +357,7 @@ def test_no_phone_says_to_plug_one_in(dialog, messages) -> None:
     window, _, root = dialog
     _settle(root, window)
     assert window._labels["device"].cget("text") == messages["android_device_none"]
+    _goto_step(window, "setup")
     assert str(window._start_button.cget("state")) == "disabled"
 
 
@@ -311,7 +366,7 @@ def test_the_command_can_be_copied(dialog) -> None:
     window, copied, root = dialog
     _settle(root, window, 0.5)
     window._copy_command()
-    assert copied == [android.install_command()]
+    assert copied == [android.launch_command()]
 
 
 @pytest.mark.gui
@@ -319,7 +374,7 @@ def test_the_window_shows_the_command_that_has_to_run_on_the_phone(dialog) -> No
     window, _, root = dialog
     _settle(root, window, 0.5)
     shown = window._command.get("1.0", "end").strip()
-    assert "install-android.sh" in shown
+    assert android.SETUP_SCRIPT_NAME in shown
     assert android.REMOTE_DIR in shown
 
 
@@ -747,7 +802,7 @@ def test_nothing_is_typed_into_another_app(recording_adb) -> None:
     """The whole point of the check: keystrokes go wherever the focus is."""
     log_file = recording_adb(focus="com.whatsapp/com.whatsapp.HomeActivity")
 
-    ok, reason = android.run_on_phone("echo hello")
+    ok, reason = android.run_on_phone("echo hello", focus_pause=0, open_timeout=0.4)
 
     assert not ok
     assert reason == "termux_not_open"
@@ -758,19 +813,19 @@ def test_nothing_is_typed_into_another_app(recording_adb) -> None:
 def test_with_termux_in_front_the_command_is_typed_and_entered(recording_adb) -> None:
     log_file = recording_adb()
 
-    ok, reason = android.run_on_phone(android.install_command())
+    ok, reason = android.run_on_phone(android.launch_command(), focus_pause=0)
 
     assert ok and reason == ""
-    calls = log_file.read_text(encoding="utf-8")
+    calls = log_file.read_text(encoding="utf-8").replace("%s", " ")
     assert "input text" in calls
-    assert "install-android.sh" in calls
+    assert android.SETUP_SCRIPT_NAME in calls
     assert "keyevent 66" in calls, "the command was typed but never run"
 
 
 def test_the_command_is_reported_step_by_step(recording_adb) -> None:
     recording_adb()
     seen: list = []
-    android.run_on_phone("echo hello", on_status=seen.append)
+    android.run_on_phone("echo hello", on_status=seen.append, focus_pause=0)
     assert seen == ["opening", "typing"]
 
 
@@ -782,9 +837,9 @@ def test_spaces_survive_the_way_to_the_phone(recording_adb) -> None:
     assert "pkg%sinstall%s-y%star" in calls
 
 
-def test_the_real_install_command_can_be_typed() -> None:
+def test_the_real_launch_command_can_be_typed() -> None:
     """If this ever fails the command grew a character that cannot be sent."""
-    assert android.typeable(android.install_command())
+    assert android.typeable(android.launch_command())
 
 
 @pytest.mark.parametrize("text", ["it's", "100%", "two\nlines", ""])
@@ -812,6 +867,85 @@ def test_waiting_gives_up_rather_than_hanging(recording_adb) -> None:
     assert android.wait_for_termux(timeout=0.3, poll=0.1) is False
 
 
+def test_play_store_termux_is_recognised(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(android, "termux_version_name", lambda serial="": "googleplay.2026.06.21")
+    assert android.termux_is_play_store() is True
+
+
+def test_github_termux_is_not_flagged_as_play_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(android, "termux_version_name", lambda serial="": "0.118.3")
+    assert android.termux_is_play_store() is False
+
+
+def test_verification_failure_is_recognised() -> None:
+    assert android.is_verification_failure(
+        "Failure [INSTALL_FAILED_VERIFICATION_FAILURE: Install not allowed]"
+    )
+    assert android.is_verification_failure("INSTALL_CANCELED_BY_USER")
+    assert not android.is_verification_failure("Success")
+
+
+def test_transfer_pushes_archive_and_script(fake_adb, tmp_path: Path) -> None:
+    fake_adb(push_lines="[ 100%] /sdcard/Download/x")
+    bundle = tmp_path / android.BUNDLE_NAME
+    script = tmp_path / android.SETUP_SCRIPT_NAME
+    bundle.write_bytes(b"archive")
+    android.write_setup_script(script)
+    ok, message, in_home = android.transfer(bundle, script)
+    assert ok
+    assert android.SETUP_SCRIPT_NAME in message
+    assert in_home is False
+
+
+def test_transfer_into_termux_home_when_run_as_works(tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    directory = tmp_path / "bin"
+    directory.mkdir()
+    script = directory / "adb"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "case \"$*\" in\n"
+        "  *run-as*cp*) exit 0 ;;\n"
+        "  *run-as*) echo ok; exit 0 ;;\n"
+        "  *push*) echo '[100%] staged'; exit 0 ;;\n"
+        "  *rm*) exit 0 ;;\n"
+        "  *) exit 0 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(directory) + os.pathsep + os.environ["PATH"])
+    bundle = tmp_path / android.BUNDLE_NAME
+    setup = tmp_path / android.SETUP_SCRIPT_NAME
+    bundle.write_bytes(b"archive")
+    android.write_setup_script(setup, in_home=True)
+    assert android.termux_run_as_available()
+    ok, message, in_home = android.transfer(bundle, setup)
+    assert ok and in_home
+    assert android.TERMUX_HOME in message
+    assert android.SETUP_SCRIPT_NAME in message
+
+
+def test_install_apk_reports_success(fake_adb, tmp_path: Path) -> None:
+    """Reuse the fake adb; extend it to accept install."""
+    fake_adb()
+    directory = Path(android.adb_path()).parent
+    script = directory / "adb"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "case \"$*\" in\n"
+        "  *install*) echo Success; exit 0 ;;\n"
+        "  *) exit 0 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    apk = tmp_path / "app.apk"
+    apk.write_bytes(b"apk")
+    ok, message = android.install_apk(apk)
+    assert ok
+    assert "Success" in message
+
+
 @pytest.mark.gui
 def test_the_run_button_waits_for_a_ready_phone(dialog) -> None:
     window, _, root = dialog
@@ -830,9 +964,15 @@ def test_without_a_phone_nothing_can_be_typed(dialog) -> None:
 @pytest.mark.gui
 def test_the_window_reports_a_typed_command(dialog, messages,
                                             monkeypatch: pytest.MonkeyPatch) -> None:
+    import tkinter.messagebox
+
     window, _, root = dialog
     _settle(root, window)
+    window._terms_accepted = True
+    monkeypatch.setattr(tkinter.messagebox, "askyesno", lambda *a, **k: True)
     monkeypatch.setattr(android, "run_on_phone", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(android, "write_setup_script", lambda *a, **k: Path("/tmp/x"))
+    monkeypatch.setattr(android, "push", lambda *a, **k: (True, "ok"))
 
     window._run_on_phone()
     _settle(root, window, 1.0)
@@ -844,9 +984,15 @@ def test_the_window_reports_a_typed_command(dialog, messages,
 def test_a_refusal_to_type_names_the_reason(dialog, messages,
                                             monkeypatch: pytest.MonkeyPatch) -> None:
     """"Termux did not come up" and "adb refused" need different answers."""
+    import tkinter.messagebox
+
     window, _, root = dialog
     _settle(root, window)
+    window._terms_accepted = True
+    monkeypatch.setattr(tkinter.messagebox, "askyesno", lambda *a, **k: True)
     monkeypatch.setattr(android, "run_on_phone", lambda *a, **k: (False, "termux_not_open"))
+    monkeypatch.setattr(android, "write_setup_script", lambda *a, **k: Path("/tmp/x"))
+    monkeypatch.setattr(android, "push", lambda *a, **k: (True, "ok"))
 
     window._run_on_phone()
     _settle(root, window, 1.0)
@@ -857,9 +1003,15 @@ def test_a_refusal_to_type_names_the_reason(dialog, messages,
 @pytest.mark.gui
 def test_an_unknown_reason_still_says_something_useful(dialog, messages,
                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    import tkinter.messagebox
+
     window, _, root = dialog
     _settle(root, window)
+    window._terms_accepted = True
+    monkeypatch.setattr(tkinter.messagebox, "askyesno", lambda *a, **k: True)
     monkeypatch.setattr(android, "run_on_phone", lambda *a, **k: (False, "something-new"))
+    monkeypatch.setattr(android, "write_setup_script", lambda *a, **k: Path("/tmp/x"))
+    monkeypatch.setattr(android, "push", lambda *a, **k: (True, "ok"))
 
     window._run_on_phone()
     _settle(root, window, 1.0)

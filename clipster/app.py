@@ -46,7 +46,6 @@ from .discover import (
     seed_from_track,
 )
 from .discover_taste import DiscoverTaste, VOTE_DOWN
-from .gui import Gui
 from .history import STATUS_CANCELED, STATUS_FAILED, STATUS_OK, History, HistoryEntry, format_size
 from .i18n import Messages
 from .logging_setup import get_logger
@@ -170,6 +169,8 @@ class ClipsterApp:
             self.gui: Any = HeadlessGui(messages, config, self.download_dir,
                                         accept_terms=accept_terms)
         else:
+            from .gui import Gui
+
             self.gui = Gui(messages, config, self.download_dir)
         self.bridge = TkBridge(self.gui.root)
         # No Tk fallback backend without Tk, and no clipboard watching either:

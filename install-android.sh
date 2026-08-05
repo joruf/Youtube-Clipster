@@ -11,7 +11,10 @@
 # device can. The token still matters - every app on the phone can reach
 # localhost too.
 #
-# Usage:  ./install-android.sh [--boot] [--no-widget]
+# Usage:  ./install-android.sh [--boot] [--no-widget] [--accept-terms]
+#
+# --accept-terms  record acceptance without prompting (only when the PC wizard
+#                 already showed the terms and the user agreed there)
 #
 # Author:  Joachim Ruf, Loresoft.de
 # License: GPLv3
@@ -21,6 +24,7 @@ set -u
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WANT_BOOT=0
 WANT_WIDGET=1
+ACCEPT_TERMS=0
 
 info()  { printf '\033[32m[INFO]\033[0m  %s\n' "$*"; }
 warn()  { printf '\033[33m[WARN]\033[0m  %s\n' "$*"; }
@@ -29,10 +33,11 @@ step()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 for argument in "$@"; do
     case "$argument" in
-        --boot)       WANT_BOOT=1 ;;
-        --no-widget)  WANT_WIDGET=0 ;;
+        --boot)          WANT_BOOT=1 ;;
+        --no-widget)     WANT_WIDGET=0 ;;
+        --accept-terms)  ACCEPT_TERMS=1 ;;
         -h|--help)
-            sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) error "Unknown option: $argument"; exit 1 ;;
@@ -108,12 +113,14 @@ fi
 # ---------------------------------------------------------------------------
 step "Terms of use"
 # ---------------------------------------------------------------------------
-# Asked once, here, with the text on screen. The launcher never confirms them.
-python - "$SCRIPT_DIR" <<'PYTHON'
-"""Show the terms and accept them only on an explicit yes."""
+# Asked once, with the text on screen - unless the PC wizard already showed them
+# and passed --accept-terms. The launcher never confirms them on its own.
+python - "$SCRIPT_DIR" "$ACCEPT_TERMS" <<'PYTHON'
+"""Show the terms and accept them only on an explicit yes (or --accept-terms)."""
 import sys
 
 sys.path.insert(0, sys.argv[1])
+preaccepted = sys.argv[2] == "1"
 
 from clipster import i18n
 from clipster.config import Config
@@ -122,6 +129,13 @@ from clipster.terms import TERMS_APP_VERSION, accept_app_terms, app_terms_accept
 config = Config.load()
 if app_terms_accepted(config):
     print("Already accepted (version {0}).".format(config.terms_app_version))
+    raise SystemExit(0)
+
+if preaccepted:
+    accept_app_terms(config)
+    config.save()
+    print("Accepted on the computer (version {0}); recorded in {1}.".format(
+        TERMS_APP_VERSION, config.path))
     raise SystemExit(0)
 
 messages = i18n.load(config.language or "en")
@@ -151,13 +165,15 @@ fi
 step "Creating the launcher"
 # ---------------------------------------------------------------------------
 LAUNCHER="$HOME/.shortcuts/Clipster"
+# Shared-storage archives can drop the execute bit; the Termux shebang must be absolute.
+chmod +x "$SCRIPT_DIR/tools/android/clipster-start" 2>/dev/null || true
 if [ "$WANT_WIDGET" -eq 1 ]; then
     mkdir -p "$HOME/.shortcuts"
     cat > "$LAUNCHER" <<LAUNCH
 #!/data/data/com.termux/files/usr/bin/bash
 # Starts YouTube Clipster if it is not running, then opens its interface.
 # Created by install-android.sh - safe to edit.
-exec "$SCRIPT_DIR/tools/android/clipster-start" --open
+exec bash "$SCRIPT_DIR/tools/android/clipster-start" --open
 LAUNCH
     chmod +x "$LAUNCHER"
     info "Launcher written to $LAUNCHER"
@@ -174,7 +190,7 @@ if [ "$WANT_BOOT" -eq 1 ]; then
     cat > "$HOME/.termux/boot/clipster" <<BOOT
 #!/data/data/com.termux/files/usr/bin/bash
 # Starts YouTube Clipster when the phone boots (needs the Termux:Boot app).
-exec "$SCRIPT_DIR/tools/android/clipster-start"
+exec bash "$SCRIPT_DIR/tools/android/clipster-start"
 BOOT
     chmod +x "$HOME/.termux/boot/clipster"
     info "Boot script written to $HOME/.termux/boot/clipster"
@@ -191,7 +207,7 @@ cat <<SUMMARY
 
 Start it now:
 
-    $SCRIPT_DIR/tools/android/clipster-start --open
+    bash $SCRIPT_DIR/tools/android/clipster-start --open
 
 That acquires a wake lock, starts the program without any window, and opens the
 interface in your browser.

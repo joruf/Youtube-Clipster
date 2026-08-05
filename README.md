@@ -737,21 +737,31 @@ Four steps, each saying what it is waiting for:
 2. **The phone** — plug it in with a cable that carries data, and switch on USB debugging (Settings →
    About phone → tap *Build number* seven times → Developer options → USB debugging). The phone then
    asks whether to allow this computer; the window says so and waits, and notices the tap by itself.
-3. **Transfer** — the program packs itself up and copies the archive to the phone, with a progress bar.
-   The configuration and the history stay behind: the configuration holds this machine's remote control
-   token, which has no business on another device.
-4. **On the phone** — press **Run it on the phone**. The program brings Termux to the front and types
-   the command in for you, then presses Return. You do not type anything on the phone. *Copy the
-   command* and *Open Termux on the phone* stay there as a fallback.
+3. **Install** — press **Install**. The program asks you to accept the terms of use (once, on this
+   computer), packs itself up, and copies the archive plus a short bootstrap script to the phone.
+   If the phone still has the broken Play Store Termux, it offers to replace it with the official
+   GitHub build first. The configuration and the history stay behind: the configuration holds this
+   machine's remote control token, which has no business on another device.
 
-   Two taps on the phone remain, and neither can be automated: Android asks for **storage
-   permission** (its own permission dialog), and the setup asks you to **accept the terms of use**
-   once — that is a decision a program must not make for you.
+   **Xiaomi / HyperOS:** USB app installs are blocked until *Install via USB* (and often *USB
+   debugging (Security settings)*) is on in Developer options. Without that, Termux install fails
+   with `INSTALL_FAILED_VERIFICATION_FAILURE`. The wizard detects that, copies the APK to Downloads,
+   and tells you what to switch on — then retry, or tap-install `termux-github.apk` from Files.
+4. **Setup on the phone** — with official (debuggable) Termux the program copies the archive
+   straight into Termux's home via `run-as` (no `/sdcard`, so no *Permission denied* when storage
+   access is missing). It then opens Termux and types only `bash ~/clipster-phone-setup.sh`.
+   Otherwise it falls back to `/sdcard/Download` and `bash /sdcard/Download/clipster-phone-setup.sh`.
+   *Copy the command* and *Open Termux* stay as a fallback.
 
-*Where* that last line runs cannot be moved to the PC, and not for lack of trying: `adb shell` runs as
-a different user, and Termux keeps its home in its own private app storage that no other user may
-enter. So the archive goes to the shared `Download` folder and Termux fetches it from there. Only the
-*typing* could be moved, and it was.
+   If you ever see **Permission denied** on `/sdcard/…` in Termux: do not use that path. Run
+   `bash ~/clipster-phone-setup.sh` instead, or grant Termux all-files access
+   (`termux-setup-storage` → Allow). To start Clipster after install:
+   `bash ~/youtube-clipster/tools/android/clipster-start --open`
+
+*Where* the unpacking runs cannot fully leave the phone: `adb shell` is a different user. Official
+Termux can still receive files via `run-as` into its private home; without that, the archive goes to
+shared `Download` and Termux must be allowed to read it. Only a *short* launch command is typed —
+never the long `;` / `&&` chain, which many phones (especially MIUI) silently drop.
 
 Nothing is ever typed blindly: keystrokes go to whichever app holds the focus, so the program checks
 that Termux really is on screen first and refuses rather than typing a shell command into whatever
