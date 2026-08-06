@@ -33,7 +33,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk ffmpeg xclip
+          sudo apt-get install -y python3-tk xvfb ffmpeg xclip
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -43,12 +43,19 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
       - name: Run cross-platform contract tests
         run: |
           python -m unittest tests.test_cross_platform_contract -v
 
-      - name: Run full test suite
-        run: |
-          python -m unittest discover -s tests -v
+      # unittest discovery only ever collected the TestCase based contract
+      # module: everything else in tests/ is written for pytest and was silently
+      # skipped. Run the real suite instead, with a display where there is one.
+      - name: Run full test suite (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest -q
+
+      - name: Run full test suite (Windows, no desktop session)
+        if: runner.os == 'Windows'
+        run: python -m pytest -q -m "not gui"

@@ -22,6 +22,12 @@ from .config import Config
 #: Set in the child process so a broken relaunch cannot loop forever.
 _RELAUNCH_ENV = "YOUTUBE_CLIPSTER_RELAUNCHED"
 
+#: What this process was started with, so an update can start the replacement
+#: the same way.  Android runs ``--headless``; restarting without it would try
+#: to open a window on a phone that has no display and the program would be
+#: gone until the launcher is tapped again.
+STARTUP_ARGUMENTS: List[str] = []
+
 log = logging_setup.get_logger(__name__)
 
 
@@ -365,6 +371,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     """
     arguments = list(sys.argv[1:] if argv is None else argv)
     args = build_parser().parse_args(arguments)
+    STARTUP_ARGUMENTS[:] = arguments
 
     config = Config.load(Path(args.config).expanduser() if args.config else None)
     if args.lang:

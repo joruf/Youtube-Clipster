@@ -486,6 +486,8 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
                 self._answer(*api.terms())
             elif path == "/api/settings":
                 self._answer(*api.settings())
+            elif path == "/api/update":
+                self._answer(*api.update_check())
             elif path == "/api/discover":
                 self._answer(*api.discover())
             elif path.startswith("/media/"):
@@ -509,12 +511,18 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
             route = urlparse(self.path).path
             if route not in ("/api/submit", "/api/discover", "/api/discover/search",
                              "/api/discover/queue", "/api/quit", "/api/settings",
-                             "/api/terms", "/api/downloads/clear", "/api/downloads/hide"):
+                             "/api/terms", "/api/downloads/clear", "/api/downloads/hide",
+                             "/api/update"):
                 self._not_found()
                 return
             if route == "/api/quit":
                 # Empty body is fine; Quit must work even if the client sends none.
                 self._answer(*api.quit())
+                return
+            if route == "/api/update":
+                # Same as Quit: the button sends no body, and an update that
+                # refuses to start because of that would be absurd.
+                self._answer(*api.update_install())
                 return
             payload = self._read_json()
             if payload is None and route not in ("/api/downloads/clear",):

@@ -2164,6 +2164,65 @@ class ClipsterApp:
             },
         }
 
+    def check_update_remote(self) -> Dict[str, Any]:
+        """Ask GitHub for the newest commit on behalf of a remote device.
+
+        Runs on the caller's thread - the web server's - because it reaches the
+        network, which must never happen on the interface thread.  This is the
+        same :mod:`clipster.updater` check the desktop About page runs; the
+        phone only lacked a way to trigger it.
+
+        :return: ``{"ok", "available", "local", "remote", "summary", "error"}``.
+        """
+        info = updater.check()
+        text = (
+            self.messages.format("update_available", summary=info.summary or info.remote)
+            if info.available
+            else self.messages.format("update_current", commit=info.remote)
+        )
+        if not info.known:
+            text = self.messages.format("update_failed", details=info.error or "?")
+        self.bridge.post(self.gui.show_update_state, text, bool(info.available))
+        return {
+            "ok": bool(info.known),
+            "available": bool(info.available),
+            "local": info.local,
+            "remote": info.remote,
+            "summary": info.summary,
+            "error": info.error,
+            "message": text,
+        }
+
+    def install_update_remote(self) -> Dict[str, Any]:
+        """Fetch the newest version for a remote device and restart afterwards.
+
+        Runs on the caller's thread for the same reason as
+        :meth:`check_update_remote`.  The restart itself goes through the normal
+        shutdown so the HTTP server, the downloads and the instance lock are
+        released first - and it replays this process's own arguments, so the
+        phone comes back headless rather than looking for a display.
+
+        :return: ``{"ok": bool, "message": str}``.
+        """
+        ok, message = updater.apply()
+        if not ok:
+            text = self.messages.format("update_error", details=message)
+            log.error("%s", text)
+            self.bridge.post(self.gui.show_update_state, text, True)
+            return {"ok": False, "message": text, "restarting": False}
+        log.info("Update installed: %s", message)
+        self.bridge.post(self._restart_for_remote_update)
+        return {
+            "ok": True,
+            "message": self.messages["update_restarting"],
+            "restarting": True,
+        }
+
+    def _restart_for_remote_update(self) -> None:
+        """Shut down and come back up, after a remote device asked for it."""
+        self._restart_after_update = True
+        self.request_quit()
+
     def remote_settings(self) -> Dict[str, Any]:
         """Return the settings the phone UI may edit."""
         data: Dict[str, Any] = {}

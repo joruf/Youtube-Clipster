@@ -133,6 +133,27 @@ class FakeApp:
             "decline_label": "Decline",
         }
 
+    # -- update --------------------------------------------------------
+    def check_update_remote(self) -> Dict[str, Any]:
+        self.update_checks = getattr(self, "update_checks", 0) + 1
+        if getattr(self, "update_check_raises", False):
+            raise RuntimeError("no network")
+        return {
+            "ok": True,
+            "available": getattr(self, "update_is_available", False),
+            "local": "1111111111",
+            "remote": "2222222222",
+            "summary": "Newer commit",
+            "error": "",
+            "message": "A newer version is available: Newer commit",
+        }
+
+    def install_update_remote(self) -> Dict[str, Any]:
+        self.update_installs = getattr(self, "update_installs", 0) + 1
+        if getattr(self, "update_install_refuses", False):
+            raise RuntimeError("GUI bridge is not running")
+        return {"ok": True, "message": "Update installed.", "restarting": True}
+
     def accept_remote_terms(self, kind: str = "streaming") -> Dict[str, Any]:
         self.terms_kind = kind
         data = self.remote_terms()
@@ -386,6 +407,61 @@ def test_quit_asks_the_application_to_shut_down(served) -> None:
     assert status == 200
     assert json.loads(body)["ok"] is True
     assert app.quit_calls == 1
+
+
+def test_the_update_check_is_reachable_from_the_phone(served) -> None:
+    """Android gets the same update button Windows and Linux have."""
+    app, base, _ = served
+    status, _, body = _request(base + "/api/update")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["ok"] is True
+    assert payload["remote"] == "2222222222"
+    assert app.update_checks == 1
+
+
+def test_the_update_check_reports_an_available_version(served) -> None:
+    app, base, _ = served
+    app.update_is_available = True
+    status, _, body = _request(base + "/api/update")
+    assert status == 200
+    assert json.loads(body)["available"] is True
+
+
+def test_a_failing_update_check_still_answers(served) -> None:
+    """A phone that gets no answer at all just spins forever."""
+    app, base, _ = served
+    app.update_check_raises = True
+    status, _, body = _request(base + "/api/update")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["ok"] is False
+    assert payload["available"] is False
+
+
+def test_installing_the_update_needs_no_body(served) -> None:
+    """The button sends nothing; refusing that would be absurd."""
+    app, base, _ = served
+    status, _, body = _request(base + "/api/update", method="POST")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["ok"] is True
+    assert payload["restarting"] is True
+    assert app.update_installs == 1
+
+
+def test_installing_the_update_while_closing_answers_503(served) -> None:
+    app, base, _ = served
+    app.update_install_refuses = True
+    status, _, _ = _request(base + "/api/update", method="POST")
+    assert status == 503
+
+
+def test_the_update_endpoint_needs_the_token(served) -> None:
+    """Nobody on the network may restart the program."""
+    _, base, _ = served
+    assert _request(base + "/api/update", token=None)[0] == 401
+    assert _request(base + "/api/update", method="POST", token=None)[0] == 401
 
 
 def test_about_endpoint_reports_version(served) -> None:

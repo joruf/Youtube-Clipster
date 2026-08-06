@@ -189,17 +189,33 @@ class ViewWindow:
     # ------------------------------------------------------------------
     # Structure
     # ------------------------------------------------------------------
-    def _build(self) -> None:
-        """Create the menu row and the pages."""
-        menu = ttk.Frame(self.window, style="Toolbar.TFrame")
-        menu.pack(fill="x")
-        for key, label in (
+    @staticmethod
+    def _menu_entries() -> Tuple[Tuple[str, str], ...]:
+        """Return the pages this platform offers, as ``(key, label key)``.
+
+        The pages themselves are identical everywhere; only this list differs,
+        and only where a page would have nothing to do.  Remote hands the phone
+        a link to *this* computer - on Android the program already runs on the
+        phone, so there is nothing left to point at.
+
+        :return: The menu entries in display order.
+        """
+        entries = [
             ("discover", "page_discover"),
             ("downloads", "page_downloads"),
             ("phone", "page_phone"),
             ("settings", "page_settings"),
             ("about", "page_about"),
-        ):
+        ]
+        if paths.is_termux():
+            entries = [item for item in entries if item[0] != "phone"]
+        return tuple(entries)
+
+    def _build(self) -> None:
+        """Create the menu row and the pages."""
+        menu = ttk.Frame(self.window, style="Toolbar.TFrame")
+        menu.pack(fill="x")
+        for key, label in self._menu_entries():
             button = ttk.Button(
                 menu, text=self.messages[label], style="Menu.TButton", command=lambda k=key: self.select_page(k)
             )
@@ -225,19 +241,20 @@ class ViewWindow:
             on_mode_changed=self._discover_mode_changed,
         )
         self._pages["discover"] = self.discover
-        self.phone = PhonePage(
-            self._container,
-            messages=self.messages,
-            palette=self.palette,
-            config=self.config,
-            fonts=self.fonts,
-            on_apply=self._on_phone_apply,
-            on_new_token=self._on_phone_new_token,
-            on_state=self._on_phone_state,
-            on_copy=self._copy_to_clipboard,
-            on_firewall_hint=self._on_phone_firewall_hint,
-        )
-        self._pages["phone"] = self.phone
+        if "phone" in self._menu_buttons:
+            self.phone = PhonePage(
+                self._container,
+                messages=self.messages,
+                palette=self.palette,
+                config=self.config,
+                fonts=self.fonts,
+                on_apply=self._on_phone_apply,
+                on_new_token=self._on_phone_new_token,
+                on_state=self._on_phone_state,
+                on_copy=self._copy_to_clipboard,
+                on_firewall_hint=self._on_phone_firewall_hint,
+            )
+            self._pages["phone"] = self.phone
         self._pages["settings"] = self._build_settings(self._container)
         self._pages["about"] = self._build_about(self._container)
 
@@ -852,9 +869,17 @@ class ViewWindow:
         self._vars["download_dir"] = tk.StringVar()
         folder_row = ttk.Frame(left, style="Panel.TFrame")
         folder_row.pack(fill="x", pady=(PAD_SMALL, 0))
-        ttk.Label(folder_row, text=self.messages["settings_download_dir"], style="Panel.Muted.TLabel").pack(
-            anchor="w"
-        )
+        # Android stores downloads behind a link, so it needs the longer wording
+        # that names the folder a file manager actually shows.
+        ttk.Label(
+            folder_row,
+            text=self.messages[
+                "settings_download_dir_android" if paths.is_termux() else "settings_download_dir"
+            ],
+            style="Panel.Muted.TLabel",
+            wraplength=520,
+            justify="left",
+        ).pack(anchor="w")
         picker = ttk.Frame(left, style="Panel.TFrame")
         picker.pack(fill="x", pady=(2, 0))
         ttk.Entry(picker, textvariable=self._vars["download_dir"], font=self.fonts["body"]).pack(
@@ -862,6 +887,13 @@ class ViewWindow:
         )
         ttk.Button(picker, text=self.messages["settings_browse"], style="Row.TButton",
                    command=self._pick_folder).pack(side="left", padx=(PAD_SMALL, 0))
+        # Where the files really land - the phone UI has always shown this, the
+        # desktop did not, and an empty field or a link target is easy to misread.
+        self._download_dir_resolved = ttk.Label(
+            left, text="", style="Panel.Muted.TLabel", wraplength=520, justify="left"
+        )
+        self._download_dir_resolved.pack(anchor="w", pady=(2, 0))
+        self._vars["download_dir"].trace_add("write", lambda *_: self._sync_resolved_download_dir())
 
         self._vars["file_manager"] = tk.StringVar()
         self._add_entry(left, "settings_file_manager", "file_manager")
@@ -1089,6 +1121,26 @@ class ViewWindow:
         if chosen:
             self._vars["cookies_file"].set(chosen)
 
+    def _sync_resolved_download_dir(self) -> None:
+        """Show which folder the current download-dir setting really means."""
+        raw = self._vars["download_dir"].get().strip()
+        try:
+            if raw:
+                target = Path(raw).expanduser()
+                if paths.is_termux():
+                    target = paths.android_writable_download_dir(target)
+            else:
+                target = self.config.resolved_download_dir()
+            text = self.messages.format(
+                "settings_download_dir_resolved", path=paths.friendly_download_path(target)
+            )
+        except (OSError, ValueError):
+            text = ""
+        try:
+            self._download_dir_resolved.configure(text=text)
+        except tk.TclError:
+            pass
+
     def _load_settings(self) -> None:
         """Fill the form from the live configuration."""
         self._settings_status.configure(text="")
@@ -1097,6 +1149,7 @@ class ViewWindow:
             self.messages["format_mp4"] if self.config.default_format == "mp4" else self.messages["format_mp3"]
         )
         self._vars["download_dir"].set(self.config.download_dir)
+        self._sync_resolved_download_dir()
         self._vars["file_manager"].set(self.config.file_manager)
         self._vars["interval_sec"].set("{0:g}".format(self.config.interval_sec))
         self._vars["history_limit"].set(str(self.config.history_limit))

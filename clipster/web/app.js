@@ -98,6 +98,9 @@ const elements = {
     aboutPaths: document.getElementById("about-paths"),
     aboutTermsApp: document.getElementById("about-terms-app"),
     aboutTermsStreaming: document.getElementById("about-terms-streaming"),
+    updateHeading: document.getElementById("update-heading"),
+    updateState: document.getElementById("update-state"),
+    updateButton: document.getElementById("update-button"),
     termsDialog: document.getElementById("terms-dialog"),
     termsTitle: document.getElementById("terms-title"),
     termsBody: document.getElementById("terms-body"),
@@ -928,6 +931,90 @@ async function loadAbout() {
         li.appendChild(document.createTextNode(paths[key]));
         elements.aboutPaths.appendChild(li);
     });
+}
+
+// ---------------------------------------------------------------- update
+/** Whether the last check found a newer version, so the button installs it. */
+let updateAvailable = false;
+
+/** Labels of the update button, in the language the phone is set to. */
+const updateLabels = {
+    en: {check: "Check for updates", install: "Install and restart",
+         checking: "Looking for a new version...", installing: "Installing the update..."},
+    de: {check: "Nach Updates suchen", install: "Installieren und neu starten",
+         checking: "Suche nach einer neuen Version...", installing: "Update wird installiert..."},
+};
+
+/**
+ * Return the update labels for the phone's language.
+ *
+ * @returns {Object} The label set.
+ */
+function updateWords() {
+    return /^de\b/i.test(navigator.language || "") ? updateLabels.de : updateLabels.en;
+}
+
+/**
+ * Show an update state and set what the button will do next.
+ *
+ * @param {string} text What to tell the user.
+ * @param {boolean} offerInstall Whether the button should install now.
+ * @param {boolean} busy Whether a request is still running.
+ * @returns {void}
+ */
+function showUpdateState(text, offerInstall, busy) {
+    updateAvailable = !!offerInstall;
+    if (elements.updateState) {
+        elements.updateState.textContent = text;
+    }
+    if (elements.updateButton) {
+        const words = updateWords();
+        elements.updateButton.textContent = offerInstall ? words.install : words.check;
+        elements.updateButton.disabled = !!busy;
+    }
+}
+
+/**
+ * Ask the program to look for a newer version on GitHub.
+ *
+ * Deliberately the same endpoint the desktop About page drives: the version
+ * comparison, the branch and the archive fallback all live in one place.
+ *
+ * @returns {Promise<void>}
+ */
+async function checkUpdate() {
+    const words = updateWords();
+    showUpdateState(words.checking, false, true);
+    let answer;
+    try {
+        answer = await api("/api/update");
+    } catch (error) {
+        showUpdateState("The check failed.", false, false);
+        return;
+    }
+    const body = answer.body || {};
+    showUpdateState(body.message || "", !!body.available, false);
+}
+
+/**
+ * Fetch the new version and let the program restart itself.
+ *
+ * @returns {Promise<void>}
+ */
+async function installUpdate() {
+    const words = updateWords();
+    showUpdateState(words.installing, false, true);
+    let answer;
+    try {
+        answer = await api("/api/update", {method: "POST"});
+    } catch (error) {
+        showUpdateState("The update failed.", true, false);
+        return;
+    }
+    const body = answer.body || {};
+    // On success the program is on its way down; leave the button disabled so
+    // nobody starts a second update into a process that is already restarting.
+    showUpdateState(body.message || "", !body.ok, !!body.restarting);
 }
 
 // -------------------------------------------------------------- streaming
@@ -1955,6 +2042,15 @@ document.addEventListener("DOMContentLoaded", () => {
     if (elements.aboutTermsStreaming) {
         elements.aboutTermsStreaming.addEventListener("click", () => showTerms("streaming", false));
     }
+    if (elements.updateButton) {
+        elements.updateButton.addEventListener("click", () => {
+            if (updateAvailable) {
+                installUpdate();
+            } else {
+                checkUpdate();
+            }
+        });
+    }
 
     elements.tabStreaming.addEventListener("click", () => showView("streaming"));
     elements.tabDownloads.addEventListener("click", () => showView("downloads"));
@@ -2077,4 +2173,13 @@ function localizeChrome() {
     elements.tabDownloads.textContent = "Downloads";
     elements.tabSettings.textContent = "Einstellungen";
     elements.tabAbout.textContent = "Über";
+    if (elements.updateHeading) {
+        elements.updateHeading.textContent = "Update";
+    }
+    if (elements.updateState) {
+        elements.updateState.textContent = "Version noch nicht geprüft.";
+    }
+    if (elements.updateButton) {
+        elements.updateButton.textContent = updateLabels.de.check;
+    }
 }

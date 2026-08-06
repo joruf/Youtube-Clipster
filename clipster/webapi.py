@@ -170,6 +170,36 @@ class RemoteApi:
             log.debug("Remote terms refused: %s", exc)
             return 503, {"ok": False, "error": "closing"}
 
+    def update_check(self) -> Tuple[int, Dict[str, Any]]:
+        """Look for a newer version on GitHub, for the phone UI.
+
+        Reaches the network, so it runs on the calling web-server thread just
+        like :meth:`discover_search` does.
+
+        :return: ``(200, {...})``, or ``(503, ...)`` while shutting down.
+        """
+        self._record_contact()
+        try:
+            return 200, self._app.check_update_remote()
+        except Exception as exc:  # pragma: no cover - needs the network
+            log.debug("Remote update check failed: %s", exc)
+            return 200, {"ok": False, "available": False, "error": str(exc)}
+
+    def update_install(self) -> Tuple[int, Dict[str, Any]]:
+        """Fetch the newest version and restart, for the phone UI.
+
+        :return: ``(200, {...})``, or ``(503, ...)`` while shutting down.
+        """
+        self._record_contact()
+        try:
+            return 200, self._app.install_update_remote()
+        except RuntimeError as exc:
+            log.debug("Remote update refused: %s", exc)
+            return 503, {"ok": False, "error": "closing"}
+        except Exception as exc:  # pragma: no cover - needs the network
+            log.debug("Remote update failed: %s", exc)
+            return 200, {"ok": False, "message": str(exc)}
+
     def settings(self) -> Tuple[int, Dict[str, Any]]:
         """Return editable settings for the phone UI."""
         self._record_contact()

@@ -71,6 +71,27 @@ _UNAVAILABLE_PATTERNS = (
     "members-only",
 )
 
+#: YouTube handed out a media URL and then refused to serve it.  This is not a
+#: bot check and not a missing video: the metadata was read fine, only the
+#: transfer of that one stream was rejected.
+_FORBIDDEN_PATTERNS = (
+    "http error 403",
+    "403: forbidden",
+    "403 forbidden",
+)
+
+#: Audio preference the Streaming relay already proves fetchable.  YouTube signs
+#: the WebM/Opus stream through a player response whose media URLs the default
+#: clients cannot always redeem, while the m4a one is handed out plainly - which
+#: is exactly why a track can play in the Streaming tab and still fail to
+#: download.  Retried first because it changes the least.
+_M4A_FIRST = "ba[ext=m4a]/ba[acodec^=mp4a]"
+
+#: Player clients tried after a 403.  Each one gets its own set of signed media
+#: URLs, so a stream the default client cannot fetch often comes back usable
+#: from one of these.  Ordered by how rarely they need extra proof.
+_RETRY_PLAYER_CLIENTS = ("tv", "ios", "web_safari")
+
 _TITLE_SANITIZE_RE = re.compile(r"[\r\n\t]+")
 
 
@@ -231,7 +252,7 @@ def classify_error(message: str) -> str:
     """Classify a yt-dlp error message.
 
     :param message: The raw error text.
-    :return: ``diskfull``, ``bot``, ``unavailable`` or ``generic``.
+    :return: ``diskfull``, ``bot``, ``unavailable``, ``forbidden`` or ``generic``.
     """
     lowered = (message or "").lower()
     if any(pattern in lowered for pattern in _DISK_FULL_PATTERNS):
@@ -240,6 +261,8 @@ def classify_error(message: str) -> str:
         return "bot"
     if any(pattern in lowered for pattern in _UNAVAILABLE_PATTERNS):
         return "unavailable"
+    if any(pattern in lowered for pattern in _FORBIDDEN_PATTERNS):
+        return "forbidden"
     return "generic"
 
 
@@ -307,6 +330,8 @@ def user_facing_ytdlp_error(
         return messages[key]
     if kind == "unavailable":
         return messages["error_unavailable"]
+    if kind == "forbidden":
+        return messages["error_forbidden"]
     if kind == "diskfull":
         return messages.format("error_disk_full", details=sanitize_error_detail(message))
     detail = sanitize_error_detail(message) or "?"
@@ -508,6 +533,39 @@ class Downloader:
             "merge_output_format": "mp4",
         }
 
+    def _forbidden_retries(self, media_format: str, language: str) -> List[Dict[str, Any]]:
+        """Return option patches to try after YouTube answered 403.
+
+        The order matters: change the format first, because that is the known
+        difference between a track that plays and the same track failing to
+        download.  Only then ask a different player client, which costs another
+        round trip to YouTube.
+
+        :param media_format: ``mp3`` or ``mp4``.
+        :param language: Preferred audio language code, empty for "best".
+        :return: One options fragment per attempt, in the order to try them.
+        """
+        language_filter = "[language^={0}]".format(language) if language else ""
+        variants: List[Dict[str, Any]] = []
+
+        if media_format == "mp3":
+            preferred = (
+                ["ba{0}[ext=m4a]".format(language_filter)] if language_filter else []
+            )
+            audio = "/".join(preferred + [_M4A_FIRST, "ba", "best"])
+            variants.append({"format": audio})
+        else:
+            # Progressive first - one already muxed file, which is the same kind
+            # of stream the Streaming tab plays and the one YouTube hands out
+            # without the extra proof its split DASH formats now want.
+            variants.append({"format": "b[ext=mp4]/b/bv*[ext=mp4]+ba[ext=m4a]/bv*+ba"})
+
+        for client in _RETRY_PLAYER_CLIENTS:
+            variants.append(
+                {"extractor_args": {"youtube": {"player_client": [client]}}}
+            )
+        return variants
+
     def download(
         self,
         url: str,
@@ -638,21 +696,42 @@ class Downloader:
         log.info("Starting download: format=%s language=%s target=%s", media_format, language or "best", target_dir)
         emit(Progress(phase="preparing", percent=0.0))
 
+        # The first attempt is what the caller asked for; the rest only ever run
+        # after a 403 and are dropped the moment anything else goes wrong.
+        attempts = [options] + [
+            _merged_options(options, patch)
+            for patch in self._forbidden_retries(media_format, language)
+        ]
         try:
-            with youtube_dl(options) as ydl:
-                ydl.download([url])
-        except DownloadCanceled:
-            log.warning("Download canceled by the user.")
-            raise
-        except Exception as exc:
-            if canceled.is_set() or (cancel_event is not None and cancel_event.is_set()):
-                log.warning("Download canceled by the user.")
-                raise DownloadCanceled() from exc
-            message = str(exc)
-            kind = classify_error(message)
-            log.error("Download failed (%s): %s", kind, message)
-            _discard(produced["path"])
-            raise DownloadFailed(message, kind) from exc
+            for number, attempt in enumerate(attempts):
+                try:
+                    with youtube_dl(attempt) as ydl:
+                        ydl.download([url])
+                    if number:
+                        log.info("Retry %s succeeded after a 403.", number)
+                    break
+                except DownloadCanceled:
+                    log.warning("Download canceled by the user.")
+                    raise
+                except Exception as exc:
+                    if canceled.is_set() or (cancel_event is not None and cancel_event.is_set()):
+                        log.warning("Download canceled by the user.")
+                        raise DownloadCanceled() from exc
+                    message = str(exc)
+                    kind = classify_error(message)
+                    last = number == len(attempts) - 1
+                    if kind == "forbidden" and not last:
+                        log.warning(
+                            "YouTube refused the stream (403); retrying with %s.",
+                            _describe_patch(attempts[number + 1], options),
+                        )
+                        _discard(produced["path"])
+                        produced["path"] = None
+                        emit(Progress(phase="preparing", percent=0.0))
+                        continue
+                    log.error("Download failed (%s): %s", kind, message)
+                    _discard(produced["path"])
+                    raise DownloadFailed(message, kind) from exc
         finally:
             watcher.cleanup()
 
@@ -827,6 +906,48 @@ def _clock(seconds: float) -> str:
     if hours:
         return "{0}:{1:02d}:{2:02d}".format(hours, minutes, secs)
     return "{0}:{1:02d}".format(minutes, secs)
+
+
+def _merged_options(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``base`` with ``patch`` applied, without touching either.
+
+    ``extractor_args`` is a nested mapping, so replacing it wholesale would drop
+    every setting the patch does not mention; it is merged one level deeper.
+
+    :param base: The options the download started with.
+    :param patch: What one retry wants to change.
+    :return: A new options dictionary.
+    """
+    merged = dict(base)
+    for key, value in patch.items():
+        if key != "extractor_args" or not isinstance(value, dict):
+            merged[key] = value
+            continue
+        nested = {
+            name: dict(args) if isinstance(args, dict) else args
+            for name, args in (merged.get(key) or {}).items()
+        }
+        for name, args in value.items():
+            current = dict(nested.get(name) or {})
+            current.update(args)
+            nested[name] = current
+        merged[key] = nested
+    return merged
+
+
+def _describe_patch(attempt: Dict[str, Any], base: Dict[str, Any]) -> str:
+    """Return a log-friendly summary of how ``attempt`` differs from ``base``.
+
+    :param attempt: The options of the retry about to run.
+    :param base: The options of the first attempt.
+    :return: A short phrase such as ``player client tv``.
+    """
+    if attempt.get("format") != base.get("format"):
+        return "format {0}".format(attempt.get("format"))
+    clients = ((attempt.get("extractor_args") or {}).get("youtube") or {}).get("player_client")
+    if clients:
+        return "player client {0}".format(", ".join(str(item) for item in clients))
+    return "unchanged options"
 
 
 def _discard(path: Optional[str]) -> None:

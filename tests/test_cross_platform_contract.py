@@ -113,5 +113,77 @@ class TestWindowsOptionalDeps(unittest.TestCase):
         self.assertIn("mpv", step.hint.lower())
 
 
+class TestDownloadRetryContract(unittest.TestCase):
+    """A refused transfer must be retried the same way on every platform."""
+
+    def test_a_403_is_its_own_kind_of_error(self) -> None:
+        from clipster.downloader import classify_error
+
+        self.assertEqual(classify_error("HTTP Error 403: Forbidden"), "forbidden")
+        self.assertEqual(
+            classify_error("ERROR: unable to download video, data: HTTP Error 403 Forbidden"),
+            "forbidden",
+        )
+
+    def test_a_bot_check_is_not_mistaken_for_a_plain_403(self) -> None:
+        from clipster.downloader import classify_error
+
+        self.assertEqual(
+            classify_error("HTTP Error 403: Forbidden. Sign in to confirm you're not a bot"),
+            "bot",
+        )
+
+    def test_the_retry_prefers_the_format_that_plays(self) -> None:
+        from clipster.downloader import _M4A_FIRST, _RETRY_PLAYER_CLIENTS
+
+        self.assertIn("m4a", _M4A_FIRST)
+        self.assertTrue(_RETRY_PLAYER_CLIENTS)
+
+
+class TestUpdateContract(unittest.TestCase):
+    """The update path has to work the same on Linux, Windows and Android."""
+
+    def test_the_restart_replays_the_startup_arguments(self) -> None:
+        from clipster import cli, updater
+
+        original = list(cli.STARTUP_ARGUMENTS)
+        cli.STARTUP_ARGUMENTS[:] = ["--headless", "--skip-checks"]
+        try:
+            command = updater.restart_command()
+        finally:
+            cli.STARTUP_ARGUMENTS[:] = original
+        self.assertEqual(command[2:], ["--headless", "--skip-checks"])
+
+    def test_the_remote_api_can_check_and_install(self) -> None:
+        from clipster.webapi import RemoteApi
+
+        self.assertTrue(hasattr(RemoteApi, "update_check"))
+        self.assertTrue(hasattr(RemoteApi, "update_install"))
+
+    def test_the_phone_page_carries_the_update_button(self) -> None:
+        web = paths.PROJECT_ROOT / "clipster" / "web"
+        page = (web / "index.html").read_text(encoding="utf-8")
+        script = (web / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="update-button"', page)
+        self.assertIn("/api/update", script)
+
+
+class TestQueueTextContract(unittest.TestCase):
+    """Long queue titles are shortened, never allowed to widen a row."""
+
+    def test_a_long_line_is_cut_with_an_ellipsis(self) -> None:
+        from clipster.discover_page import _fit_line
+
+        class Font:
+            @staticmethod
+            def measure(text: str) -> int:
+                return 10 * len(text)
+
+        self.assertEqual(_fit_line("hello", 500, Font()), "hello")
+        cut = _fit_line("abcdefghijklmnop", 60, Font())
+        self.assertTrue(cut.endswith("…"))
+        self.assertLessEqual(Font.measure(cut), 60)
+
+
 if __name__ == "__main__":
     unittest.main()

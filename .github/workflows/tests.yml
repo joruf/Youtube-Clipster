@@ -63,6 +63,42 @@ jobs:
         # Windows specific paths and quoting are covered without a display.
         run: python -m pytest -q -m "not gui"
 
+  android:
+    name: Android (Termux code paths)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run the Android and parity tests
+        # There is no Termux runner. Android reports itself as Linux, so the
+        # branches that matter are reachable here: the tests below ask for them
+        # explicitly instead of relying on the host.
+        run: |
+          python -m pytest -q -m "not gui" \
+            tests/test_android_mode.py \
+            tests/test_platform_parity.py \
+            tests/test_android.py \
+            tests/test_headless.py \
+            tests/test_webserver.py \
+            tests/test_download_retry.py
+
+      - name: Run the whole suite as if it were Termux
+        # TERMUX_VERSION is what paths.is_termux() looks for. Nothing else may
+        # change behaviour, so the same suite has to stay green with it set.
+        env:
+          TERMUX_VERSION: "0.119.0"
+        run: python -m pytest -q -m "not gui"
+
   generated-files:
     name: Generated files are up to date
     runs-on: ubuntu-latest

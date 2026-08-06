@@ -213,6 +213,33 @@ def test_the_restart_command_points_at_the_entry_point() -> None:
     assert command[1].endswith("run.py")
 
 
+def test_the_restart_replays_the_startup_arguments(monkeypatch) -> None:
+    """Android runs --headless; coming back without it would find no display."""
+    from clipster import cli
+
+    monkeypatch.setattr(cli, "STARTUP_ARGUMENTS", ["--headless", "--skip-checks"])
+    command = updater.restart_command()
+    assert command[1].endswith("run.py")
+    assert command[2:] == ["--headless", "--skip-checks"]
+
+
+def test_the_restart_command_stays_bare_without_arguments(monkeypatch) -> None:
+    from clipster import cli
+
+    monkeypatch.setattr(cli, "STARTUP_ARGUMENTS", [])
+    assert len(updater.restart_command()) == 2
+
+
+def test_the_startup_arguments_cannot_be_changed_from_outside(monkeypatch) -> None:
+    """restart_command must not hand out a list callers can mutate."""
+    from clipster import cli
+
+    monkeypatch.setattr(cli, "STARTUP_ARGUMENTS", ["--headless"])
+    command = updater.restart_command()
+    command.append("--nonsense")
+    assert cli.STARTUP_ARGUMENTS == ["--headless"]
+
+
 def test_the_restart_clears_the_relaunch_marker(monkeypatch) -> None:
     """Otherwise the fresh process would refuse to enter its environment."""
     import subprocess

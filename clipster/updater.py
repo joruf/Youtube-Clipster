@@ -269,12 +269,19 @@ def _copy_tree(source: Path, target: Path) -> int:
 def restart_command() -> List[str]:
     """Return the command that starts the program again.
 
-    :return: Interpreter and entry point.
+    The arguments this process was started with are replayed: on Android the
+    program runs ``--headless``, and a replacement started without that flag
+    would look for a display that a phone does not have.
+
+    :return: Interpreter, entry point and the original arguments.
     """
     interpreter = paths.venv_python(gui=paths.IS_WINDOWS)
     if not interpreter.exists():
         interpreter = Path(sys.executable)
-    return [str(interpreter), str(paths.bootstrap_script())]
+    command = [str(interpreter), str(paths.bootstrap_script())]
+    from .cli import STARTUP_ARGUMENTS
+
+    return command + list(STARTUP_ARGUMENTS)
 
 
 def restart() -> None:

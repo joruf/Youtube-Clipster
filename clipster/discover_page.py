@@ -75,6 +75,11 @@ _QUEUE_COL_CHANNEL = 140
 _QUEUE_COL_DURATION = 56
 _QUEUE_COL_ACTION = 36
 
+#: Narrower than this and the channel column is dropped: the number, the title,
+#: the length and both row buttons then still fit instead of being pushed out
+#: of the visible area.
+_QUEUE_NARROW = 420
+
 #: Media-control glyphs for the Streaming player bar.
 _ICON_PREV = "⏮"
 _ICON_PLAY = "▶"
@@ -308,6 +313,14 @@ class DiscoverPage(ttk.Frame):
         self._viz_mpv_tried = False
         self._title_labels: List[ttk.Label] = []
         self._title_full: List[str] = []
+        self._channel_labels: List[ttk.Label] = []
+        self._channel_full: List[str] = []
+        #: False once the queue got too narrow to keep the channel column.
+        self._channel_visible = True
+        self._header_channel: Optional[ttk.Label] = None
+        #: Width of the two button columns; measured in :meth:`_build` so the
+        #: header sits above the buttons on every theme, font size and DPI.
+        self._col_action = _QUEUE_COL_ACTION
         #: Video ids that failed to start this session — skipped on auto-advance.
         self._unplayable_ids: set = set()
 
@@ -578,35 +591,62 @@ class DiscoverPage(ttk.Frame):
             split, text=self.messages["discover_queue"], style="Card.TLabelframe", padding=PAD_SMALL
         )
 
-        self._queue_header = ttk.Frame(queue, style="Panel.TFrame", padding=(PAD_SMALL, 4))
-        self._queue_header.pack(fill="x")
+        # A Row.TButton asks for more than _QUEUE_COL_ACTION on most themes, and
+        # grid would then widen the button columns of the rows only - leaving the
+        # headings beside their buttons.  Measure one and let both agree on it.
+        probe = ttk.Button(
+            queue, text=self.messages["discover_hide_icon"], style="Row.TButton", width=3
+        )
+        # The column carries the button plus its left padding.
+        self._col_action = max(_QUEUE_COL_ACTION, int(probe.winfo_reqwidth()) + PAD_SMALL)
+        probe.destroy()
+
+        # The rows live inside a scrolled canvas, so they are narrower than the
+        # header by exactly the scrollbar.  Without the spacer on the right the
+        # right-aligned headings would sit beside their values, not above them.
+        header_wrap = ttk.Frame(queue, style="Panel.TFrame")
+        header_wrap.pack(fill="x")
+        self._queue_header = ttk.Frame(header_wrap, style="Panel.TFrame", padding=(PAD_SMALL, 4))
+        self._queue_header.pack(side="left", fill="x", expand=True)
+        self._header_gap = ttk.Frame(header_wrap, style="Panel.TFrame", width=0)
+        self._header_gap.pack(side="right", fill="y")
         self._configure_queue_columns(self._queue_header)
+        # width=1 everywhere: the header must take its column sizes from
+        # _configure_queue_columns only, exactly like the rows below it, or a
+        # long heading would shift the header out of line with the values.
         ttk.Label(
-            self._queue_header, text=self.messages["discover_queue_col_num"], style="Panel.Muted.TLabel"
+            self._queue_header, text=self.messages["discover_queue_col_num"],
+            style="Panel.Muted.TLabel", width=1,
         ).grid(row=0, column=0, sticky="ew")
         ttk.Label(
-            self._queue_header, text=self.messages["discover_queue_col_title"], style="Panel.Muted.TLabel"
+            self._queue_header, text=self.messages["discover_queue_col_title"],
+            style="Panel.Muted.TLabel", width=1,
         ).grid(row=0, column=1, sticky="ew", padx=(PAD_SMALL, 0))
-        ttk.Label(
-            self._queue_header, text=self.messages["discover_queue_col_channel"], style="Panel.Muted.TLabel"
-        ).grid(row=0, column=2, sticky="ew", padx=(PAD_SMALL, 0))
+        self._header_channel = ttk.Label(
+            self._queue_header, text=self.messages["discover_queue_col_channel"],
+            style="Panel.Muted.TLabel", width=1,
+        )
+        self._header_channel.grid(row=0, column=2, sticky="ew", padx=(PAD_SMALL, 0))
         ttk.Label(
             self._queue_header,
             text=self.messages["column_duration"],
             style="Panel.Muted.TLabel",
             anchor="e",
+            width=1,
         ).grid(row=0, column=3, sticky="ew", padx=(PAD_SMALL, 0))
         ttk.Label(
             self._queue_header,
             text=self.messages["discover_queue_col_hide"],
             style="Panel.Muted.TLabel",
             anchor="e",
+            width=1,
         ).grid(row=0, column=4, sticky="ew", padx=(PAD_SMALL, 0))
         ttk.Label(
             self._queue_header,
             text=self.messages["discover_queue_col_download"],
             style="Panel.Muted.TLabel",
             anchor="e",
+            width=1,
         ).grid(row=0, column=5, sticky="ew", padx=(PAD_SMALL, 0))
         ttk.Separator(queue, orient="horizontal").pack(fill="x", pady=(2, 0))
 
@@ -622,6 +662,11 @@ class DiscoverPage(ttk.Frame):
         self._window = self._canvas.create_window((0, 0), window=self._body, anchor="nw")
         self._body.bind("<Configure>", lambda _e: self._canvas.configure(scrollregion=self._canvas.bbox("all")))
         self._canvas.bind("<Configure>", self._on_queue_canvas_configure, add="+")
+        scrollbar.bind(
+            "<Configure>",
+            lambda event: self._header_gap.configure(width=max(0, int(event.width))),
+            add="+",
+        )
         self._bind_wheel(self._canvas)
         self._bind_wheel(self._body)
         self._bind_wheel(queue)
@@ -1667,10 +1712,40 @@ class DiscoverPage(ttk.Frame):
         """Apply the shared queue column geometry to a header or row frame."""
         frame.columnconfigure(0, minsize=_QUEUE_COL_NUM, weight=0)
         frame.columnconfigure(1, weight=1, minsize=80)
-        frame.columnconfigure(2, minsize=_QUEUE_COL_CHANNEL, weight=0)
+        frame.columnconfigure(
+            2, minsize=_QUEUE_COL_CHANNEL if self._channel_visible else 0, weight=0
+        )
         frame.columnconfigure(3, minsize=_QUEUE_COL_DURATION, weight=0)
-        frame.columnconfigure(4, minsize=_QUEUE_COL_ACTION, weight=0)
-        frame.columnconfigure(5, minsize=_QUEUE_COL_ACTION, weight=0)
+        frame.columnconfigure(4, minsize=self._col_action, weight=0)
+        frame.columnconfigure(5, minsize=self._col_action, weight=0)
+
+    def _apply_queue_width(self, width: int) -> None:
+        """Drop or restore the channel column for the available ``width``.
+
+        The column minimum sizes add up to more than a narrow pane offers, and
+        grid then pushes the row buttons past the right edge.  Giving up the
+        channel keeps every control reachable.
+
+        :param width: Currently available queue width in pixels.
+        :return: None
+        """
+        wide = width <= 0 or width >= _QUEUE_NARROW
+        if wide == self._channel_visible:
+            return
+        self._channel_visible = wide
+        for frame in [self._queue_header] + list(self._row_frames):
+            try:
+                self._configure_queue_columns(frame)
+            except tk.TclError:
+                pass
+        labels = list(self._channel_labels)
+        if self._header_channel is not None:
+            labels.append(self._header_channel)
+        for label in labels:
+            try:
+                label.grid() if wide else label.grid_remove()
+            except tk.TclError:
+                pass
 
     def _on_queue_canvas_configure(self, event: tk.Event) -> None:
         """Keep the scroll body as wide as the canvas and refresh title ellipsis."""
@@ -1678,22 +1753,52 @@ class DiscoverPage(ttk.Frame):
             self._canvas.itemconfigure(self._window, width=event.width)
         except tk.TclError:
             pass
+        self._apply_queue_width(int(event.width))
         self._refresh_title_ellipsis()
 
-    def _refresh_title_ellipsis(self) -> None:
-        """Truncate queue titles to the current title-column width."""
+    def _fit_cell(self, label: ttk.Label, full: str) -> None:
+        """Truncate ``full`` to what ``label`` is currently wide enough to show.
+
+        :param label: A queue cell created by :meth:`_cell`.
+        :param full: The untruncated text.
+        :return: None
+        """
         font = self.fonts.get("body")
         if font is None:
             return
+        try:
+            width = max(24, int(label.winfo_width()) - 4)
+            label.configure(text=_fit_line(full, width, font))
+        except (tk.TclError, TypeError, ValueError):
+            pass
+
+    def _cell(self, row: tk.Misc, full: str, style: str, anchor: str) -> ttk.Label:
+        """Return a queue cell that never widens its grid column.
+
+        A ``ttk.Label`` asks for as many pixels as its text needs, and ``grid``
+        hands every column the widest request in it.  One long title therefore
+        stretched the whole row past the canvas and pushed the later columns out
+        of line with the rows above.  Pinning ``width`` to a single character
+        makes the request constant, so the column geometry comes from
+        :meth:`_configure_queue_columns` alone and every row lines up; the text
+        is then shortened with an ellipsis to whatever space the cell got.
+
+        :param row: The row frame the cell belongs to.
+        :param full: The untruncated text.
+        :param style: ttk style name.
+        :param anchor: Text anchor inside the cell.
+        :return: The new label.
+        """
+        label = ttk.Label(row, text=full, style=style, anchor=anchor, width=1)
+        label.bind("<Configure>", lambda _e, lbl=label, txt=full: self._fit_cell(lbl, txt), add="+")
+        return label
+
+    def _refresh_title_ellipsis(self) -> None:
+        """Truncate queue titles and channels to their current column width."""
         for label, full in zip(self._title_labels, self._title_full):
-            try:
-                width = max(24, int(label.winfo_width()) - 4)
-            except (tk.TclError, TypeError, ValueError):
-                continue
-            try:
-                label.configure(text=_fit_line(full, width, font))
-            except tk.TclError:
-                pass
+            self._fit_cell(label, full)
+        for label, full in zip(self._channel_labels, self._channel_full):
+            self._fit_cell(label, full)
 
     def _render_rows(self) -> None:
         """Rebuild the scrollable track rows under the fixed column header."""
@@ -1702,6 +1807,8 @@ class DiscoverPage(ttk.Frame):
         self._row_frames = []
         self._title_labels = []
         self._title_full = []
+        self._channel_labels = []
+        self._channel_full = []
         if not self._tracks:
             ttk.Label(self._body, text=self.messages["discover_empty"], style="Panel.Muted.TLabel").pack(
                 anchor="w", padx=PAD, pady=PAD
@@ -1741,39 +1848,34 @@ class DiscoverPage(ttk.Frame):
             text="{0}.".format(index + 1),
             style="Panel.Muted.TLabel",
             anchor="e",
+            width=1,
         )
         number.grid(row=0, column=0, sticky="ew")
         number.bind("<Button-1>", lambda _e, i=index: self.play_at(i))
 
         full_title = " ".join((track.title or "").split())
-        title = ttk.Label(row, text=full_title, style="Panel.TLabel", anchor="w")
+        title = self._cell(row, full_title, "Panel.TLabel", "w")
         title.grid(row=0, column=1, sticky="ew", padx=(PAD_SMALL, 0))
         title.bind("<Button-1>", lambda _e, i=index: self.play_at(i))
-        title.bind(
-            "<Configure>",
-            lambda e, lbl=title, full=full_title: lbl.configure(
-                text=_fit_line(full, max(24, int(e.width) - 4), self.fonts["body"])
-            ),
-            add="+",
-        )
         self._title_labels.append(title)
         self._title_full.append(full_title)
 
         channel = " ".join((track.uploader or track.seed_title or "").split())
-        channel_label = ttk.Label(
-            row,
-            text=_fit_line(channel, _QUEUE_COL_CHANNEL - 8, self.fonts["body"]) if channel else "",
-            style="Panel.Muted.TLabel",
-            anchor="w",
-        )
+        channel_label = self._cell(row, channel, "Panel.Muted.TLabel", "w")
         channel_label.grid(row=0, column=2, sticky="ew", padx=(PAD_SMALL, 0))
+        if not self._channel_visible:
+            # Rows arriving while the queue is narrow must not bring the column back.
+            channel_label.grid_remove()
         channel_label.bind("<Button-1>", lambda _e, i=index: self.play_at(i))
+        self._channel_labels.append(channel_label)
+        self._channel_full.append(channel)
 
         duration_label = ttk.Label(
             row,
             text=format_duration(int(track.duration or 0)),
             style="Panel.Muted.TLabel",
             anchor="e",
+            width=1,
         )
         duration_label.grid(row=0, column=3, sticky="ew", padx=(PAD_SMALL, 0))
         duration_label.bind("<Button-1>", lambda _e, i=index: self.play_at(i))

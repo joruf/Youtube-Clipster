@@ -11,7 +11,9 @@
 
 "use strict";
 
-const SHELL_CACHE = "clipster-shell-v1";
+// Bumped whenever index.html / app.js / style.css change, so an installed
+// home-screen copy does not keep serving the previous interface.
+const SHELL_CACHE = "clipster-shell-v2";
 const SHELL = ["/", "/index.html", "/style.css", "/app.js", "/icon.png"];
 
 self.addEventListener("install", (event) => {
