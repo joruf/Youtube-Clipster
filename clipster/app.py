@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import APP_AUTHOR, APP_SHORT_NAME, APP_TITLE, APP_URL, APP_VERSION, APP_WEBSITE, paths, shortcuts
 from .bridge import Prompt, TkBridge
+from .clip import ClipRange
 from .clipboard import Clipboard
 from .config import Config
 from .downloader import (
@@ -2027,17 +2028,25 @@ class ClipsterApp:
                 log.warning("Download canceled by the user in the navigation window.")
                 self._cancel_run(url, info)
                 return
-            media_format = answer.get("format") or "mp3"
-            language = answer.get("language") or ""
-            log.debug("Selected format: %s, audio track: %s", media_format, language or "best")
+            media_format = str(answer.get("format") or "mp3")
+            language = str(answer.get("language") or "")
+            section = answer.get("section")
+            log.debug(
+                "Selected format: %s, audio track: %s, section: %s",
+                media_format,
+                language or "best",
+                section.label() if section is not None else "whole video",
+            )
 
-            existing = self.history.find_download(url, media_format)
+            # A section is always a new file, so the "you already have this"
+            # shortcut only ever answers for the whole video.
+            existing = None if section is not None else self.history.find_download(url, media_format)
             if existing is not None and not self._force_redownload:
                 log.info("%s is already downloaded - offering the existing file.", existing.name)
                 self.bridge.post(self._offer_existing, nav, info, existing, url, media_format)
                 return
 
-            self._run_download(url, info, media_format, language)
+            self._run_download(url, info, media_format, language, section)
         except Exception:  # pragma: no cover - defensive, keeps the app alive
             log.exception("Unexpected error while processing the link")
             self._nav_post(url, "finish", self.messages["error_title"], STATUS_FAILED)
@@ -2320,8 +2329,8 @@ class ClipsterApp:
             return info.audio_languages[0]
         return info.original_language()
 
-    def _ask(self, nav: Any, info: VideoInfo) -> Optional[Dict[str, str]]:
-        """Ask for format and audio track, or skip when nothing to decide.
+    def _ask(self, nav: Any, info: VideoInfo) -> Optional[Dict[str, Any]]:
+        """Ask for format, audio track and section, or skip when nothing to decide.
 
         The track question only appears when the video really offers several
         languages and the user asked to be prompted; otherwise the track is
@@ -2329,12 +2338,18 @@ class ClipsterApp:
 
         :param nav: The navigation window.
         :param info: The fetched video metadata.
-        :return: ``{"format": ..., "language": ...}``, or ``None`` on cancel.
+        :return: ``{"format": ..., "language": ..., "section": ...}``, or
+            ``None`` on cancel.
         """
         if self._forced_format:
-            # Started from the view window toolbar, which already picked a format.
+            # Started from the view window toolbar, the phone or Streaming, none
+            # of which name a section: those always mean the whole video.
             self.bridge.post(self._question_answered)
-            return {"format": self._forced_format, "language": self._auto_language(info)}
+            return {
+                "format": self._forced_format,
+                "language": self._auto_language(info),
+                "section": None,
+            }
         prompt = Prompt()
         self.bridge.post(
             nav.ask,
@@ -2382,22 +2397,27 @@ class ClipsterApp:
         nav.already_downloaded(info.title, target, detail, again)
         self._finish_worker(url, "status_done", title=_trim(entry.name, 55))
 
-    def _run_download(self, url: str, info: VideoInfo, media_format: str, language: str) -> None:
+    def _run_download(self, url: str, info: VideoInfo, media_format: str, language: str,
+                      section: Optional[ClipRange] = None) -> None:
         """Download the video and report the outcome.
 
         :param url: The YouTube URL.
         :param info: The fetched video metadata.
         :param media_format: ``mp3`` or ``mp4``.
         :param language: Preferred audio language code, empty for best.
+        :param section: The piece to cut out, or ``None`` for the whole video.
         :return: None
         """
         nav = self.gui.nav
         if nav is None:  # pragma: no cover
             return
         cancel_event = self._cancel_of(url)
+        # What is being made is the section, so that is the length to show and
+        # to record - not the length of the video it was cut from.
+        length = int(section.length or 0) if section is not None else (info.duration or 0)
         if self._owns_nav(url):
             self.bridge.call(nav.set_headline, info.title)
-            self.bridge.call(nav.show_progress, media_format, info.duration or 0)
+            self.bridge.call(nav.show_progress, media_format, length)
 
         def on_progress(progress: Progress) -> None:
             """Mirror a downloader progress update into the navigation window."""
@@ -2424,6 +2444,7 @@ class ClipsterApp:
                 cancel_event=cancel_event,
                 duration=info.duration,
                 estimated_size=info.filesize,
+                section=section,
             )
         except DownloadCanceled:
             cancel_event.set()
@@ -2438,7 +2459,8 @@ class ClipsterApp:
                 url=url,
                 title=info.title,
                 media_format=media_format,
-                duration=info.duration or 0,
+                section=section.key() if section is not None else "",
+                duration=length,
                 status=STATUS_FAILED,
                 error=message,
                 error_kind=exc.kind,
@@ -2464,8 +2486,9 @@ class ClipsterApp:
             name=name,
             path=str(result) if result is not None else "",
             media_format=media_format,
+            section=section.key() if section is not None else "",
             size=size,
-            duration=info.duration or 0,
+            duration=length,
             status=STATUS_OK,
         )
 

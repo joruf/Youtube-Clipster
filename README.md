@@ -23,6 +23,8 @@ edition (`windows/*.bat`) have been replaced by the `clipster/` package.
 - **Dark, modern interface** – one colour scheme (`clipster/theme.py`), identical on every platform
 - **Format selection** – audio (MP3) or video (MP4), with a preselectable default
 - **Audio track selection** – offered when a video has several languages
+- **Section download** – two fields for a start and an end cut one piece out of the video, exactly at
+  the named second; the file name says which piece it is
 - **Declared dependencies** – everything the program needs is data in `clipster/dependencies.py`;
   the installer reads that table, works out what is missing, installs it and starts the program
 - **Self-updating** – `yt-dlp` is kept up to date automatically
@@ -220,6 +222,18 @@ to download it again anyway.
 
 ![Choose format](assets/screenshots/nav-choose.png)
 
+**Only a section**, when you do not want all of it: the two fields next to **Section** take a start
+and an end. Leave both empty for the whole video, fill in only the first for "from here to the end",
+only the second for "the first n minutes". Times are written as `1:23`, `1:02:03` or as plain
+seconds; a field that is not a time, or an end before the start, is refused in the window instead of
+turning into a wrong download.
+
+The cut lands on the second you named rather than on the next keyframe, so the piece is re-encoded
+and takes a little longer than the same amount of a plain download. The file says which piece it is –
+`Some song [0-45_2-10].mp3` – so it can sit next to the full version, and repeating the exact same
+section is recognised like any other repeated download. The section belongs to that one link; the
+next one starts with empty fields again.
+
 ### 2. Watch it download
 
 The same window shows the progress, the speed and the remaining time. **Cancel** stops it.
@@ -255,6 +269,13 @@ Open it from the tray icon, or let it open itself after every download
   system's default player, *Folder* reveals it in the file manager, *Delete* removes the file from
   the disk and the row from the list. The first two are disabled once a file has been moved or
   deleted; *Delete* stays available, so a failed attempt can be cleared away.
+- **Sorting** – click a heading to sort by it, click it again to turn the order around. A small
+  arrow marks the column in use. Names sort as text, length, size and date by value, so 9 MB stays
+  below 10 MB. New downloads arrive in the chosen order; the list starts with the newest first.
+- **Column widths** – drag the divider on the right of *Length*, *Size* or *Date* to make that
+  column wider or narrower. The name column takes whatever is left, so narrowing the others gives
+  the file names more room.
+- **Long names** – a name that had to be cut short shows itself in full when the pointer rests on it
 - **Failed rows** say what went wrong right under the name
 
 Settings are edited in the same window and written straight to `config.json`:
@@ -873,6 +894,7 @@ youtube-clipster/
     ├── visualizer.py        # stage visualizer modes (default: pulse)
     ├── bridge.py            # marshals GUI calls onto the Tk thread (incl. Prompt)
     ├── downloader.py        # yt-dlp integration (metadata, download, progress)
+    ├── clip.py              # section downloads: time fields, validation, file name
     ├── history.py           # the persistent download list (history.json)
     ├── updater.py           # checks GitHub, fetches, restarts
     ├── webserver.py         # the remote interface: HTTP, token, Range requests
@@ -881,6 +903,7 @@ youtube-clipster/
     ├── phone_page.py        # the Phone page of the view window
     ├── qrview.py            # draws a QR code onto a Tk canvas
     ├── scroller.py          # the scrollable container both pages use
+    ├── tooltip.py           # the hover popup the Streaming page and the table share
     ├── headless.py          # windowless event loop and interface (--headless)
     ├── android.py           # adb: find the phone, pack up, transfer
     ├── android_dialog.py    # the "Install on Android" window

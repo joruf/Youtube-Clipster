@@ -44,6 +44,9 @@ class HistoryEntry:
     url: str = ""
     #: ``mp3`` or ``mp4``.
     media_format: str = ""
+    #: :meth:`clipster.clip.ClipRange.key` when only a section was downloaded,
+    #: empty for the whole video.  Older history files simply do not have it.
+    section: str = ""
     #: Size in bytes, ``0`` when unknown.
     size: int = 0
     #: Length of the video in seconds, ``0`` when unknown.
@@ -190,15 +193,19 @@ class History:
         self.save()
         return entry
 
-    def find_download(self, url: str, media_format: str = "") -> Optional[HistoryEntry]:
+    def find_download(self, url: str, media_format: str = "",
+                      section: str = "") -> Optional[HistoryEntry]:
         """Return an earlier successful download of ``url`` whose file is still there.
 
         Used to avoid fetching and converting a video a second time when the
         same link is copied again.  The format has to match: the same video as
-        MP3 and as MP4 are two different downloads.
+        MP3 and as MP4 are two different downloads - and so is a section of it,
+        which is why a cut out piece never answers for the whole video.
 
         :param url: The canonical YouTube URL.
         :param media_format: ``mp3`` or ``mp4``; empty matches any format.
+        :param section: The wanted :meth:`clipster.clip.ClipRange.key`; the
+            default matches whole videos only.
         :return: The matching entry, or ``None``.
         """
         if not url:
@@ -207,6 +214,8 @@ class History:
             if not entry.succeeded or entry.url != url:
                 continue
             if media_format and entry.media_format != media_format:
+                continue
+            if entry.section != section:
                 continue
             if entry.file_path() is not None:
                 return entry

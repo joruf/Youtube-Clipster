@@ -85,8 +85,9 @@ The About page can open the terms again in read-only form.
 1. Leave Clipster running (tray or view window).
 2. Copy a YouTube link (`youtube.com/watch`, `youtu.be`, Shorts, …).
 3. The small navigation window opens: confirm **MP3** or **MP4**, and pick an audio language if asked.
-4. Watch progress; use Cancel if needed.
-5. When finished, open the file or its folder from the nav window.
+4. Optionally fill in **Section** to keep only a part of the video (see below).
+5. Watch progress; use Cancel if needed.
+6. When finished, open the file or its folder from the nav window.
 
 You can also paste a URL into the **Downloads** page and press Download.
 
@@ -97,6 +98,33 @@ Tips:
 - Several links queue up (they are not dropped while a download runs).
 - The same URL + format is not downloaded again if the file still exists — you can open it or force a re-download.
 - Files go to your Downloads folder unless you change **Download folder** in Settings.
+
+### Only a section
+
+The two small fields next to **Section** cut one piece out of the video instead of downloading all of it:
+
+| From | To | Result |
+|---|---|---|
+| *(empty)* | *(empty)* | The whole video, as always |
+| `0:45` | `2:10` | Everything between those two points |
+| `1:30` | *(empty)* | From there to the end |
+| *(empty)* | `0:30` | The first 30 seconds |
+
+Times are written as `1:23` (minutes:seconds), `1:02:03` (hours:minutes:seconds) or as plain seconds (`90`). A field that is not a time — or an end before the start — is reported right in the window; nothing is downloaded until it makes sense.
+
+The cut lands exactly on the second you named, not on the nearest keyframe, so the section is re-encoded and takes a little longer than the same amount of a plain download.
+
+The file keeps the video title and says which piece it is: `Some song [0-45_2-10].mp3`. That way a section and the full video can sit next to each other, and downloading the same section twice is recognised just like a repeated full download. The section belongs to that one link — the next link starts with empty fields again.
+
+### Working with the list
+
+The **Downloads** page is a table you can arrange:
+
+- **Sort** — click *Name*, *Length*, *Size* or *Date*. Clicking the same heading again reverses the order; an arrow marks the column in use. Length, size and date sort by their real value, not by the text, so `9 MB` stays below `10 MB`. The list starts with the newest download on top.
+- **Column widths** — drag the divider on the right of *Length*, *Size* or *Date*. The name column takes whatever is left over, so pulling the others in gives long file names more space. The pointer turns into a double arrow over a divider.
+- **Long names** — names too long for the column end in `…`; rest the pointer on one to see it in full.
+
+Sorting and column widths apply to the window you are working in and start fresh on the next start.
 
 ## Streaming tab
 

@@ -35,6 +35,7 @@ from .player import (
 )
 from .spectrum import EQ_BAND_LABELS, EQ_BAR_COUNT, SPECTRUM_TWEEN_SEC, FakeSpectrum, SpectrumTween
 from .theme import PAD, PAD_SMALL
+from .tooltip import attach as _attach_tooltip
 from .visualizer import (
     DEFAULT_VISUALIZER,
     MOUNTAIN_BAR_COUNT,
@@ -116,110 +117,6 @@ def _fit_line(text: str, width: int, font) -> str:
         else:
             high = middle - 1
     return clean[:low].rstrip() + "…"
-
-
-def _attach_tooltip(widget: tk.Misc, text: str, *, background: str, foreground: str) -> None:
-    """Show ``text`` in a small popup while the pointer rests on ``widget``.
-
-    The popup is positioned so it stays inside the screen: when the widget sits
-    near the right or bottom edge, the tip flips left and/or above instead of
-    being clipped by the window border.
-    """
-    tip: Dict[str, Optional[tk.Toplevel]] = {"window": None}
-
-    def hide(_event: Optional[tk.Event] = None) -> None:
-        window = tip["window"]
-        tip["window"] = None
-        if window is not None:
-            try:
-                window.destroy()
-            except tk.TclError:
-                pass
-
-    def _screen_bounds(root: tk.Misc) -> tuple:
-        try:
-            left = int(root.winfo_vrootx())
-            top = int(root.winfo_vrooty())
-            width = int(root.winfo_vrootwidth())
-            height = int(root.winfo_vrootheight())
-            if width > 1 and height > 1:
-                return left, top, left + width, top + height
-        except (tk.TclError, TypeError, ValueError):
-            pass
-        try:
-            width = int(root.winfo_screenwidth())
-            height = int(root.winfo_screenheight())
-            return 0, 0, width, height
-        except (tk.TclError, TypeError, ValueError):
-            return 0, 0, 1920, 1080
-
-    def show(_event: Optional[tk.Event] = None) -> None:
-        if tip["window"] is not None or not text:
-            return
-        try:
-            anchor_x = int(widget.winfo_rootx())
-            anchor_y = int(widget.winfo_rooty())
-            anchor_w = int(widget.winfo_width())
-            anchor_h = int(widget.winfo_height())
-            root = widget.winfo_toplevel()
-        except (tk.TclError, TypeError, ValueError):
-            return
-        screen_left, screen_top, screen_right, screen_bottom = _screen_bounds(root)
-        margin = 8
-        window = tk.Toplevel(widget)
-        window.wm_overrideredirect(True)
-        try:
-            window.attributes("-topmost", True)
-        except tk.TclError:
-            pass
-        window.configure(background=background)
-        # Keep long URLs readable without forcing a huge horizontal popup.
-        wrap = max(180, min(420, screen_right - screen_left - 2 * margin))
-        label = tk.Label(
-            window,
-            text=text,
-            background=background,
-            foreground=foreground,
-            justify="left",
-            padx=8,
-            pady=4,
-            borderwidth=1,
-            relief="solid",
-            wraplength=wrap,
-        )
-        label.pack()
-        window.update_idletasks()
-        try:
-            tip_w = int(window.winfo_reqwidth())
-            tip_h = int(window.winfo_reqheight())
-        except (tk.TclError, TypeError, ValueError):
-            tip_w, tip_h = 200, 28
-
-        # Prefer below the widget, right-aligned to its right edge when near the
-        # right border so download-column tips stay fully visible.
-        x = anchor_x
-        y = anchor_y + anchor_h + 6
-        if x + tip_w > screen_right - margin:
-            x = anchor_x + anchor_w - tip_w
-        if x < screen_left + margin:
-            x = screen_left + margin
-        if x + tip_w > screen_right - margin:
-            x = max(screen_left + margin, screen_right - margin - tip_w)
-
-        if y + tip_h > screen_bottom - margin:
-            y = anchor_y - tip_h - 6
-        if y < screen_top + margin:
-            y = screen_top + margin
-        if y + tip_h > screen_bottom - margin:
-            y = max(screen_top + margin, screen_bottom - margin - tip_h)
-
-        window.geometry("+{0}+{1}".format(int(x), int(y)))
-        tip["window"] = window
-
-    widget.bind("<Enter>", show, add="+")
-    widget.bind("<Leave>", hide, add="+")
-    widget.bind("<ButtonPress>", hide, add="+")
-    widget.bind("<Destroy>", hide, add="+")
 
 
 def _format_clock(seconds: float) -> str:

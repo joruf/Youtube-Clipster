@@ -17,7 +17,17 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Callable, Dict, List, Optional, Tuple
 
-from . import APP_AUTHOR, APP_SHORT_NAME, APP_URL, APP_VERSION, APP_WEBSITE, dependencies, paths, theme
+from . import (
+    APP_AUTHOR,
+    APP_SHORT_NAME,
+    APP_URL,
+    APP_VERSION,
+    APP_WEBSITE,
+    dependencies,
+    paths,
+    theme,
+    tooltip,
+)
 from .config import Config
 from .discover import DiscoverTrack
 from .discover_page import DiscoverPage
@@ -41,7 +51,8 @@ log = get_logger(__name__)
 #: Marks in front of a row, per status.
 _MARKS = {STATUS_OK: "✓", STATUS_FAILED: "✕", STATUS_CANCELED: "–"}
 
-#: Fixed column widths of the table in pixels; the name column takes the rest.
+#: Starting column widths of the table in pixels; the name column takes the
+#: rest.  The user can drag the others, so these are defaults, not constants.
 _COL_BADGE = 48
 _COL_NAME_MIN = 150
 _COL_DURATION = 62
@@ -49,6 +60,11 @@ _COL_SIZE = 78
 _COL_DATE = 118
 #: Gap between two row buttons.
 _ROW_BUTTON_GAP = 4
+#: How far a dragged column may be taken, in pixels.
+_COL_MIN_WIDTH = 40
+_COL_MAX_WIDTH = 320
+#: Width of the grip between two column headings.
+_GRIP_WIDTH = 6
 
 #: The sidebar filters, as ``(key, message key)``.
 _FILTERS = (
@@ -57,6 +73,32 @@ _FILTERS = (
     (STATUS_FAILED, "filter_failed"),
     (STATUS_CANCELED, "filter_canceled"),
 )
+
+#: The table headings, as ``(sort key, message key, grid column, anchor)``.
+#: The grid column is what ties a heading to its values and to its grip.
+_COLUMNS = (
+    ("name", "column_name", 1, "w"),
+    ("duration", "column_duration", 2, "e"),
+    ("size", "column_size", 3, "e"),
+    ("date", "column_date", 4, "w"),
+)
+
+#: How each column is sorted.  Names read as text, everything else as a number
+#: or a timestamp, so that 9 MB sorts below 10 MB instead of above it.
+_SORT_KEYS = {
+    "name": lambda entry: entry.name.casefold(),
+    "duration": lambda entry: entry.duration,
+    "size": lambda entry: entry.size,
+    "date": lambda entry: entry.finished_at,
+}
+
+#: Which direction a column starts in when it is first clicked.  Text reads
+#: best from A, numbers and dates from the largest - the newest download is the
+#: one being looked for.
+_SORT_DESCENDING_FIRST = {"name": False, "duration": True, "size": True, "date": True}
+
+#: Appended to the active heading.
+_SORT_MARKS = {False: " ▲", True: " ▼"}
 
 
 def _shorten(text: str, limit: int = 120) -> str:
@@ -156,8 +198,21 @@ class ViewWindow:
         self._actions_width = 0
         self._entries: List[HistoryEntry] = []
         self._filter = "all"
+        #: Which column the table is sorted by, and in which direction.
+        self._sort_key = "date"
+        self._sort_desc = True
+        #: Current width of the fixed columns, in pixels; changed by dragging.
+        self._col_widths: Dict[int, int] = {
+            2: _COL_DURATION,
+            3: _COL_SIZE,
+            4: _COL_DATE,
+        }
         self._page = "discover"
         self._counts: Dict[str, int] = {}
+        self._column_labels: Dict[str, ttk.Label] = {}
+        self._grips: Dict[int, tk.Frame] = {}
+        #: Set while a column grip is being dragged: ``(column, x, width)``.
+        self._drag: Optional[Tuple[int, int, int]] = None
         self._filter_buttons: Dict[str, ttk.Button] = {}
         self._menu_buttons: Dict[str, ttk.Button] = {}
         self._pages: Dict[str, ttk.Frame] = {}
@@ -373,6 +428,7 @@ class ViewWindow:
         table.pack(side="left", fill="both", expand=True)
 
         self._actions_width = self._measure_actions(table)
+        self._widen_for_headings(table)
 
         self._scroller = _Scroller(table, self.palette)
         self._scroller.pack(fill="both", expand=True)
@@ -393,20 +449,24 @@ class ViewWindow:
         ttk.Frame(header, style="TFrame", width=self._actions_width, height=1).grid(
             row=0, column=5, sticky="ew"
         )
-        for column, key, anchor in (
-            (1, "column_name", "w"),
-            (2, "column_duration", "e"),
-            (3, "column_size", "e"),
-            (4, "column_date", "w"),
-        ):
+        for sort_key, key, column, anchor in _COLUMNS:
             # width=1 keeps the heading from widening its column: the column
-            # sizes come from the constants above, and the label just stretches
+            # sizes come from the widths above, and the label just stretches
             # into whatever it gets. Otherwise a long heading such as "GRÖSSE"
             # would push the header out of step with the values below.
-            ttk.Label(header, text=self.messages[key].upper(), style="Muted.TLabel",
-                      anchor=anchor, width=1).grid(
-                row=0, column=column, sticky="ew", padx=(0, PAD_SMALL), pady=(0, 6)
+            label = ttk.Label(header, text="", style="Muted.TLabel", anchor=anchor, width=1)
+            label.grid(row=0, column=column, sticky="ew", padx=(0, PAD_SMALL), pady=(0, 6))
+            label.configure(cursor="hand2")
+            label.bind("<Button-1>", lambda _e, k=sort_key: self.set_sort(k))
+            tooltip.attach(
+                label,
+                self.messages["column_sort_tip"],
+                background=self.palette.elevated,
+                foreground=self.palette.text,
             )
+            self._column_labels[sort_key] = label
+        self._build_grips(header)
+        self._paint_columns()
         ttk.Separator(self._scroller.stack, orient="horizontal").pack(side="top", fill="x")
 
         footer = ttk.Frame(page, style="Toolbar.TFrame", padding=(PAD, PAD_SMALL))
@@ -468,6 +528,27 @@ class ViewWindow:
         probe.destroy()
         return width
 
+    def _widen_for_headings(self, master: tk.Misc) -> None:
+        """Grow the starting widths until every heading is readable.
+
+        The headings are clickable now, so a clipped one is worse than a few
+        pixels of extra column: "GRÖSSE ▼" has to be legible, not "RÖSSE ▼".
+        Measured rather than guessed, because the words differ per language and
+        the sort mark only appears on the active column.
+
+        :param master: Any widget of the right window, used as a parent.
+        :return: None
+        """
+        probe = ttk.Label(master, style="Muted.TLabel")
+        for _sort_key, message_key, column, _anchor in _COLUMNS:
+            if column not in self._col_widths:
+                continue
+            probe.configure(text=self.messages[message_key].upper() + _SORT_MARKS[True])
+            probe.update_idletasks()
+            needed = probe.winfo_reqwidth() + PAD_SMALL
+            self._col_widths[column] = max(self._col_widths[column], needed)
+        probe.destroy()
+
     def _configure_columns(self, frame: tk.Misc) -> None:
         """Apply the shared column geometry to a header or row frame.
 
@@ -476,12 +557,145 @@ class ViewWindow:
         """
         frame.columnconfigure(0, minsize=_COL_BADGE, weight=0)
         # Only the name column grows, so every other column stays aligned with
-        # the header no matter how wide the window is.
+        # the header no matter how wide the window is - and so a column that is
+        # dragged narrower hands its space to the names.
         frame.columnconfigure(1, weight=1, minsize=_COL_NAME_MIN)
-        frame.columnconfigure(2, minsize=_COL_DURATION, weight=0)
-        frame.columnconfigure(3, minsize=_COL_SIZE, weight=0)
-        frame.columnconfigure(4, minsize=_COL_DATE, weight=0)
+        for column, width in self._col_widths.items():
+            frame.columnconfigure(column, minsize=width, weight=0)
         frame.columnconfigure(5, minsize=self._actions_width, weight=0)
+
+    # ------------------------------------------------------------------
+    # Column widths
+    # ------------------------------------------------------------------
+    def _build_grips(self, header: tk.Misc) -> None:
+        """Put a drag handle on the right edge of every fixed column.
+
+        The handles are *placed*, not gridded: the header shares its grid with
+        every row, and an extra cell there would take the two out of step.
+
+        :param header: The heading strip.
+        :return: None
+        """
+        for _sort_key, _message_key, column, _anchor in _COLUMNS:
+            if column not in self._col_widths:
+                continue  # The name column takes what is left; nothing to drag.
+            grip = tk.Frame(
+                header,
+                background=self.palette.border,
+                cursor="sb_h_double_arrow",
+                width=_GRIP_WIDTH,
+            )
+            grip.bind("<Button-1>", lambda event, c=column: self._start_column_drag(event, c))
+            grip.bind("<B1-Motion>", self._drag_column)
+            grip.bind("<ButtonRelease-1>", self._end_column_drag)
+            tooltip.attach(
+                grip,
+                self.messages["column_resize_tip"],
+                background=self.palette.elevated,
+                foreground=self.palette.text,
+            )
+            self._grips[column] = grip
+        header.bind("<Configure>", lambda _event: self._place_grips(), add="+")
+
+    def _place_grips(self) -> None:
+        """Move every handle onto the right edge of its column."""
+        header = getattr(self, "_header", None)
+        if header is None:  # pragma: no cover - built together with the table
+            return
+        for column, grip in self._grips.items():
+            try:
+                bbox = header.grid_bbox(column, 0)
+            except tk.TclError:  # pragma: no cover - window going away
+                return
+            if not bbox:
+                continue
+            left, _top, width, _height = bbox
+            grip.place(x=left + width - _GRIP_WIDTH // 2, y=0,
+                       width=_GRIP_WIDTH, relheight=1.0)
+            grip.lift()
+
+    def _start_column_drag(self, event: tk.Event, column: int) -> None:
+        """Remember where a drag began.
+
+        :param event: The button press on the handle.
+        :param column: The grid column the handle belongs to.
+        :return: None
+        """
+        self._drag = (column, int(event.x_root), self._col_widths[column])
+
+    def _drag_column(self, event: tk.Event) -> None:
+        """Resize the dragged column to follow the pointer.
+
+        :param event: The motion event.
+        :return: None
+        """
+        if self._drag is None:  # pragma: no cover - motion without a press
+            return
+        column, origin, width = self._drag
+        self.set_column_width(column, width + int(event.x_root) - origin)
+
+    def _end_column_drag(self, _event: tk.Event) -> None:
+        """Finish a drag and settle the handles."""
+        self._drag = None
+        self._place_grips()
+
+    def set_column_width(self, column: int, width: int) -> None:
+        """Give one column a new width, within what the table can carry.
+
+        :param column: The grid column, as listed in :data:`_COLUMNS`.
+        :param width: The wanted width in pixels; clamped.
+        :return: None
+        """
+        if column not in self._col_widths:
+            return
+        wanted = max(_COL_MIN_WIDTH, min(_COL_MAX_WIDTH, int(width)))
+        if wanted == self._col_widths[column]:
+            return
+        self._col_widths[column] = wanted
+        # Only one column changed, so the header and the rows that are already
+        # mounted are nudged instead of rebuilt - a drag arrives many times a
+        # second, and rebuilding the table on every pixel would crawl.
+        frames: List[tk.Misc] = [self._header]
+        frames.extend(row for _sep, row, _entry in self._row_items)
+        for frame in frames:
+            try:
+                frame.columnconfigure(column, minsize=wanted)
+            except tk.TclError:  # pragma: no cover - row destroyed meanwhile
+                continue
+        self._place_grips()
+
+    # ------------------------------------------------------------------
+    # Sorting and filtering
+    # ------------------------------------------------------------------
+    def set_sort(self, key: str) -> None:
+        """Sort the table by one column, or turn its direction around.
+
+        Clicking the column that is already active reverses it; a different
+        column starts in the direction that is useful for its kind of value.
+
+        :param key: A sort key from :data:`_COLUMNS`.
+        :return: None
+        """
+        if key not in _SORT_KEYS:  # pragma: no cover - keys come from _COLUMNS
+            return
+        if key == self._sort_key:
+            self._sort_desc = not self._sort_desc
+        else:
+            self._sort_key = key
+            self._sort_desc = _SORT_DESCENDING_FIRST[key]
+        self._paint_columns()
+        self._paint_rows()
+
+    def _paint_columns(self) -> None:
+        """Write the headings, marking the one the table is sorted by."""
+        for sort_key, message_key, _column, _anchor in _COLUMNS:
+            label = self._column_labels.get(sort_key)
+            if label is None:  # pragma: no cover - built together with the table
+                continue
+            text = self.messages[message_key].upper()
+            if sort_key == self._sort_key:
+                text += _SORT_MARKS[self._sort_desc]
+            label.configure(text=text)
 
     def set_filter(self, key: str) -> None:
         """Restrict the table to one status.
@@ -575,10 +789,16 @@ class ViewWindow:
             )
 
     def _visible_entries(self) -> List[HistoryEntry]:
-        """Return the entries matching the active filter."""
+        """Return the entries matching the active filter, in the sorted order.
+
+        The sort is stable, so rows that compare equal - two downloads of the
+        same size, say - keep the order the history has them in.
+        """
         if self._filter == "all":
-            return self._entries
-        return [entry for entry in self._entries if entry.status == self._filter]
+            entries = list(self._entries)
+        else:
+            entries = [entry for entry in self._entries if entry.status == self._filter]
+        return sorted(entries, key=_SORT_KEYS[self._sort_key], reverse=self._sort_desc)
 
     def _paint_rows(self) -> None:
         """Rebuild the table rows."""
@@ -694,13 +914,23 @@ class ViewWindow:
             foreground=colour,
             font=self.fonts["bold"],
         ).pack(side="left", anchor="n", padx=(0, 6))
+        shown = _shorten(entry.name)
         name_label = ttk.Label(
             title_line,
-            text=_shorten(entry.name),
+            text=shown,
             style="Panel.Bold.TLabel",
             justify="left",
         )
         name_label.pack(side="left", anchor="nw", fill="x", expand=True)
+        # A name that had to be cut short says nothing on its own, so the full
+        # one is kept within reach. Names that fit get a silent tip, which
+        # ``rewrap`` gives something to say as soon as the column is too narrow.
+        name_tip = tooltip.attach(
+            name_label,
+            entry.name if shown != entry.name else "",
+            background=self.palette.elevated,
+            foreground=self.palette.text,
+        )
 
         problem = self._problem_text(entry)
         problem_label: Optional[ttk.Label] = None
@@ -717,6 +947,7 @@ class ViewWindow:
             first: ttk.Label = name_label,
             second: Optional[ttk.Label] = problem_label,
             full: str = entry.name,
+            tip: tooltip.Tooltip = name_tip,
         ) -> None:
             """Keep the name length and the wrap width in sync with the cell."""
             width = max(120, event.width - 24)
@@ -724,7 +955,9 @@ class ViewWindow:
             # while predicting Tk's word wrapping never quite matches and left
             # the rows at uneven heights.  The status mark shares the line, so
             # its width is subtracted.
-            first.configure(text=self._fit_line(full, width - 26))
+            fitted = self._fit_line(full, width - 26)
+            first.configure(text=fitted)
+            tip.set_text(full if fitted != full else "")
             if second is not None:
                 second.configure(wraplength=width)
 

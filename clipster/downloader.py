@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from . import paths
+from .clip import ClipRange
+from .clip import output_template as clip_output_template
 from .config import Config
 from .i18n import Messages
 from .installer import find_ffmpeg
@@ -533,6 +535,28 @@ class Downloader:
             "merge_output_format": "mp4",
         }
 
+    @staticmethod
+    def _section_options(section: ClipRange) -> Dict[str, Any]:
+        """Build the yt-dlp options that cut one section out of the video.
+
+        ``download_ranges`` is documented as a callback that is asked for the
+        sections of a video, so a plain function is handed over instead of
+        yt-dlp's own ``download_range_func`` helper - one internal less that an
+        update could move.
+
+        :param section: The piece the user asked for.
+        :return: The options fragment to merge into the download options.
+        """
+        chapter: Dict[str, Any] = {"start_time": section.start}
+        if section.end is not None:
+            chapter["end_time"] = section.end
+        return {
+            "download_ranges": lambda info, ydl: [dict(chapter)],
+            # Cut where the user asked instead of at the nearest keyframe, which
+            # is the whole point of naming a second in the first place.
+            "force_keyframes_at_cuts": True,
+        }
+
     def _forbidden_retries(self, media_format: str, language: str) -> List[Dict[str, Any]]:
         """Return option patches to try after YouTube answered 403.
 
@@ -575,8 +599,9 @@ class Downloader:
         cancel_event: Optional[threading.Event] = None,
         duration: Optional[int] = None,
         estimated_size: int = 0,
+        section: Optional[ClipRange] = None,
     ) -> Optional[Path]:
-        """Download ``url`` as MP3 or MP4.
+        """Download ``url`` as MP3 or MP4, or only one section of it.
 
         :param url: The YouTube URL.
         :param media_format: ``mp3`` or ``mp4``.
@@ -587,6 +612,7 @@ class Downloader:
             while ffmpeg converts or merges.
         :param estimated_size: Expected download size in bytes; used to refuse
             the download up front when the disk cannot hold it.
+        :param section: Cut this piece out instead of taking the whole video.
         :return: The path of the finished file, if yt-dlp reported one.
         :raises DownloadCanceled: When ``cancel_event`` was set.
         :raises DownloadFailed: When yt-dlp reported an error.
@@ -595,6 +621,15 @@ class Downloader:
             youtube_dl = _import_yt_dlp()
         except MetadataError as exc:
             raise DownloadFailed(str(exc), "generic") from exc
+
+        if section is not None:
+            # From here on the section is the file: ffmpeg reports its progress
+            # against that length, and only that part has to fit on the disk.
+            length = section.length
+            if length and duration and duration > 0:
+                estimated_size = int(estimated_size * min(1.0, length / duration))
+            if length:
+                duration = int(length)
 
         target_dir = self.config.resolved_download_dir()
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -665,10 +700,14 @@ class Downloader:
 
         options = self._base_options()
         options.update(self._format_selector(media_format, language))
+        template = self.config.output_template
+        if section is not None:
+            options.update(self._section_options(section))
+            template = clip_output_template(template, section)
         options.update(
             {
                 "paths": {"home": str(target_dir)},
-                "outtmpl": self.config.output_template,
+                "outtmpl": template,
                 "restrictfilenames": self.config.restrict_filenames,
                 "windowsfilenames": paths.IS_WINDOWS,
                 "overwrites": False,
@@ -693,7 +732,13 @@ class Downloader:
                 log.error("%s", message)
                 raise DownloadFailed(message, "diskfull")
 
-        log.info("Starting download: format=%s language=%s target=%s", media_format, language or "best", target_dir)
+        log.info(
+            "Starting download: format=%s language=%s section=%s target=%s",
+            media_format,
+            language or "best",
+            section.label() if section is not None else "whole video",
+            target_dir,
+        )
         emit(Progress(phase="preparing", percent=0.0))
 
         # The first attempt is what the caller asked for; the rest only ever run

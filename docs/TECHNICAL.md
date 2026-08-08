@@ -49,8 +49,25 @@ Worker threads never touch Tk widgets directly; they call back through `TkBridge
 | Window | Module | Role |
 |--------|--------|------|
 | Hidden Tk root | `gui.Gui` | Owns the process; hosts both windows |
-| Nav window | `navwindow.NavWindow` | Format / track choice, progress, result |
+| Nav window | `navwindow.NavWindow` | Format / track / section choice, progress, result |
 | View window | `viewwindow.ViewWindow` | Pages: Streaming, Downloads, Settings, About |
+
+The download table keeps its geometry in one place: `ViewWindow._configure_columns()` applies the
+same column widths to the heading strip and to every row, so the two can never drift apart.
+
+- **Sorting** — `_COLUMNS` ties a sort key to its grid column, `_SORT_KEYS` says how that column
+  compares (`size` by bytes, not by the rendered `9 MB`). `set_sort()` toggles the direction when
+  the same column is clicked again; `_visible_entries()` filters and then sorts, stable, so equal
+  rows keep their history order. The order therefore survives a re-render.
+- **Column widths** — `_col_widths` holds the pixels per fixed column; the name column has
+  `weight=1` and absorbs the rest. The grips are *placed*, not gridded: an extra grid cell in the
+  header would take it out of step with the rows. A drag calls `set_column_width()`, which nudges
+  only the changed column on the header and the mounted rows instead of rebuilding the table.
+  `_widen_for_headings()` measures the headings once at build time so no clickable heading is
+  clipped, in any language.
+- **Long names** — `_fit_line()` cuts a name to the pixel width of its cell; the `<Configure>`
+  handler feeds the full name to a `tooltip.Tooltip` whenever the shown text differs, and clears it
+  again when the name fits. Nothing that is fully visible gets a tip.
 
 `Gui.build_windows()` constructs both. `show_view(page)` deiconifies the view and may select a page (`discover`, `downloads`, `settings`, `about`). Closing the view usually hides it when the tray is active; Quit ends the process.
 
@@ -62,6 +79,13 @@ Worker threads never touch Tk widgets directly; they call back through `TkBridge
 - Progress callbacks populate `Progress` for the nav UI.
 - Post-process: MP3 extract or MP4 merge via ffmpeg; conversion progress is read from ffmpeg `-progress` output.
 - Errors are classified (`bot`, `unavailable`, `metadata`, …) for history and messages.
+
+**Sections.** `download(..., section=ClipRange)` cuts one piece out instead of taking the whole video:
+
+- `clip.parse_range()` turns the two nav window fields into a `ClipRange` (or one of the `clip_error_*` message keys). It clamps an end beyond the video, refuses a start behind it, and returns `None` when the fields describe the whole video anyway.
+- yt-dlp gets `download_ranges` (a plain callback, not the `download_range_func` helper) plus `force_keyframes_at_cuts`, so the cut lands on the named second rather than the nearest keyframe.
+- `clip.output_template()` puts `[1-23_2-45]` in front of the extension. Without it the clip would take the file name of the full download, and since `overwrites` is off, yt-dlp would skip the download and hand back the full file.
+- The section length replaces the video length for the progress bar, the disk space check and the history entry; `HistoryEntry.section` holds `ClipRange.key()`, and `History.find_download()` compares it, so a clip is never offered as "already downloaded" for the whole video.
 
 ### Streaming / Discover
 
@@ -241,6 +265,7 @@ the process and take the downloader with it.
 | `app.py` | Clipboard monitor, download orchestration, Discover wiring, terms gates |
 | `bridge.py` | Marshal calls onto the Tk thread (`Prompt`, callbacks) |
 | `cli.py` | CLI flags, bootstrap, relaunch into venv |
+| `clip.py` | Section downloads: time parsing, validation, file name marker |
 | `clipboard.py` | Cross-platform clipboard backends |
 | `config.py` | User settings dataclass + load/save |
 | `dependencies.py` | Declarative dependency table |
@@ -271,6 +296,7 @@ the process and take the downloader with it.
 | `phonesetup.py` | The same setup as a console wizard (`--phone-setup`) |
 | `qrview.py` | Draws a QR code onto a Tk canvas (no Pillow needed) |
 | `scroller.py` | Scrollable container shared by the table and the Phone page |
+| `tooltip.py` | The hover popup shared by the Streaming page and the download list |
 | `headless.py` | `--headless`: a timer-only event loop plus a do-nothing interface |
 | `android.py` | adb wrapper: device states, bundle, push with progress |
 | `android_dialog.py` | The four-step "Install on Android" window |

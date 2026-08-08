@@ -12,6 +12,7 @@ import pytest
 
 from clipster import theme
 from clipster.bridge import Prompt
+from clipster.clip import ClipRange
 from clipster.history import STATUS_CANCELED, STATUS_FAILED, STATUS_OK, HistoryEntry
 
 pytestmark = pytest.mark.gui
@@ -20,6 +21,26 @@ pytestmark = pytest.mark.gui
 def _rows(view) -> list:
     """Return the rendered table rows of the download list."""
     return [w for w in view._scroller.body.winfo_children() if w.winfo_class() == "TFrame"]
+
+
+def _entries(widget) -> list:
+    """Collect every text entry below ``widget``, in the order they were added."""
+    found = []
+    for child in widget.winfo_children():
+        if child.winfo_class() == "TEntry":
+            found.append(child)
+        found.extend(_entries(child))
+    return found
+
+
+def _labels(widget) -> list:
+    """Collect every label below ``widget``."""
+    found = []
+    for child in widget.winfo_children():
+        if child.winfo_class() in ("TLabel", "Label"):
+            found.append(child)
+        found.extend(_labels(child))
+    return found
 
 
 def _all_text(widget) -> list:
@@ -485,6 +506,174 @@ def test_clearing_asks_before_it_empties(gui, sample_entries, monkeypatch) -> No
 
 
 # ----------------------------------------------------------------------
+# Sorting the table
+# ----------------------------------------------------------------------
+def _order(view) -> list:
+    """Return the names of the rendered rows, top to bottom."""
+    return [entry.name for _sep, _row, entry in view._row_items]
+
+
+def test_the_table_starts_with_the_newest_download(gui, sample_entries) -> None:
+    gui.render_history(sample_entries)
+    assert _order(gui.view) == ["song.mp3", "broken.mp4", "stopped.mp4"]
+    assert (gui.view._sort_key, gui.view._sort_desc) == ("date", True)
+
+
+def test_clicking_a_heading_sorts_by_that_column(gui, sample_entries) -> None:
+    gui.render_history(sample_entries)
+    gui.view.set_sort("name")
+    assert _order(gui.view) == ["broken.mp4", "song.mp3", "stopped.mp4"]
+
+
+def test_clicking_the_same_heading_turns_the_order_around(gui, sample_entries) -> None:
+    gui.render_history(sample_entries)
+    gui.view.set_sort("name")
+    gui.view.set_sort("name")
+    assert _order(gui.view) == ["stopped.mp4", "song.mp3", "broken.mp4"]
+    assert gui.view._sort_desc is True
+
+
+def test_numbers_sort_by_value_not_by_their_text(gui) -> None:
+    """9 MB below 10 MB - the trap of sorting the rendered text instead."""
+    entries = [
+        HistoryEntry(name="nine.mp3", size=9_000_000, status=STATUS_OK, finished_at="2026-07-01T10:00:00"),
+        HistoryEntry(name="ten.mp3", size=10_000_000, status=STATUS_OK, finished_at="2026-07-02T10:00:00"),
+    ]
+    gui.render_history(entries)
+    gui.view.set_sort("size")
+    assert _order(gui.view) == ["ten.mp3", "nine.mp3"]
+
+
+def test_the_sorted_column_is_the_one_that_carries_the_mark(gui, sample_entries, messages) -> None:
+    gui.render_history(sample_entries)
+    gui.view.set_sort("size")
+    marks = {
+        key: str(label.cget("text"))
+        for key, label in gui.view._column_labels.items()
+    }
+    assert marks["size"].startswith(messages["column_size"].upper())
+    assert marks["size"].endswith("▼")
+    assert not any(text.endswith(("▼", "▲")) for key, text in marks.items() if key != "size")
+    gui.view.set_sort("size")
+    assert str(gui.view._column_labels["size"].cget("text")).endswith("▲")
+
+
+def test_sorting_and_filtering_hold_at_the_same_time(gui, sample_entries) -> None:
+    gui.render_history(sample_entries)
+    gui.view.set_filter(STATUS_OK)
+    gui.view.set_sort("name")
+    assert _order(gui.view) == ["song.mp3"]
+    gui.view.set_filter("all")
+    assert _order(gui.view) == ["broken.mp4", "song.mp3", "stopped.mp4"], \
+        "a new filter must not throw the sorting away"
+
+
+def test_a_new_download_lands_in_the_sorted_order(gui, sample_entries) -> None:
+    """Rendering again keeps the chosen order instead of falling back to date."""
+    gui.render_history(sample_entries)
+    gui.view.set_sort("name")
+    gui.render_history(sample_entries + [
+        HistoryEntry(name="aaa.mp3", status=STATUS_OK, finished_at="2026-06-01T10:00:00")
+    ])
+    assert _order(gui.view)[0] == "aaa.mp3"
+
+
+# ----------------------------------------------------------------------
+# Column widths
+# ----------------------------------------------------------------------
+class _Pointer:
+    """Stands in for a Tk mouse event; only the screen position is read."""
+
+    def __init__(self, x_root: int) -> None:
+        self.x_root = x_root
+
+
+def test_every_heading_fits_into_its_column(gui, messages) -> None:
+    """A clickable heading that is cut off cannot be read or trusted."""
+    probe = tk.Label(gui.view.window, font=gui.view.fonts["body"])
+    for key, column in (("column_duration", 2), ("column_size", 3), ("column_date", 4)):
+        probe.configure(text=messages[key].upper() + " ▼")
+        probe.update_idletasks()
+        assert gui.view._col_widths[column] >= probe.winfo_reqwidth(), key
+    probe.destroy()
+
+
+def test_dragging_a_grip_resizes_the_column_and_every_row(gui, sample_entries) -> None:
+    gui.render_history(sample_entries)
+    before = gui.view._col_widths[4]
+    gui.view._start_column_drag(_Pointer(500), 4)
+    gui.view._drag_column(_Pointer(560))
+    assert gui.view._col_widths[4] == before + 60
+    for _sep, row, _entry in gui.view._row_items:
+        assert row.grid_columnconfigure(4)["minsize"] == before + 60
+    assert gui.view._header.grid_columnconfigure(4)["minsize"] == before + 60
+
+
+def test_a_row_painted_after_a_drag_uses_the_new_width(gui, sample_entries) -> None:
+    gui.render_history(sample_entries)
+    gui.view.set_column_width(4, 200)
+    gui.render_history(sample_entries[:2])
+    for _sep, row, _entry in gui.view._row_items:
+        assert row.grid_columnconfigure(4)["minsize"] == 200
+
+
+def test_a_column_cannot_be_dragged_out_of_existence(gui) -> None:
+    gui.view.set_column_width(4, -400)
+    assert gui.view._col_widths[4] == 40, "clamped to something still readable"
+    gui.view.set_column_width(4, 5000)
+    assert gui.view._col_widths[4] == 320, "clamped so the row still fits the window"
+
+
+def test_only_the_fixed_columns_can_be_dragged(gui) -> None:
+    """The name column takes what is left; there is nothing to drag there."""
+    assert set(gui.view._grips) == {2, 3, 4}
+    gui.view.set_column_width(1, 300)
+    assert 1 not in gui.view._col_widths
+
+
+# ----------------------------------------------------------------------
+# Names that do not fit
+# ----------------------------------------------------------------------
+def _tip_of(widget) -> str:
+    """Hover ``widget`` and return the text of the popup, or an empty string."""
+    widget.event_generate("<Enter>")
+    widget.update_idletasks()
+    tips = [child for child in widget.winfo_children() if child.winfo_class() == "Toplevel"]
+    if not tips:
+        return ""
+    texts = _all_text(tips[0])
+    widget.event_generate("<Leave>")
+    return texts[0] if texts else ""
+
+
+def test_a_name_that_had_to_be_cut_short_shows_itself_in_full(gui) -> None:
+    long_name = ("A very long file name that certainly does not fit into the "
+                 "narrow name column of the download list.mp4")
+    gui.render_history([HistoryEntry(name=long_name, status=STATUS_OK,
+                                     finished_at="2026-07-31T11:20:05")])
+    gui.show_view("downloads")
+    gui.root.update()
+    gui.root.update_idletasks()
+
+    label = [w for w in _labels(gui.view._row_items[0][1]) if str(w.cget("text")).endswith("…")]
+    assert label, "the name was expected to be cut short"
+    assert _tip_of(label[0]) == long_name
+
+
+def test_a_name_that_fits_explains_nothing(gui) -> None:
+    gui.render_history([HistoryEntry(name="short.mp3", status=STATUS_OK,
+                                     finished_at="2026-07-31T11:20:05")])
+    gui.show_view("downloads")
+    gui.root.update()
+    gui.root.update_idletasks()
+
+    label = [w for w in _labels(gui.view._row_items[0][1])
+             if str(w.cget("text")) == "short.mp3"]
+    assert label, "the name should be shown as it is"
+    assert _tip_of(label[0]) == "", "a tooltip repeating what is already there is noise"
+
+
+# ----------------------------------------------------------------------
 # The toolbar
 # ----------------------------------------------------------------------
 def test_a_pasted_link_is_handed_on(gui) -> None:
@@ -700,13 +889,67 @@ def test_a_single_track_offers_no_choice(gui) -> None:
     assert len(boxes) == 1, "only the format selector"
 
 
-def test_answering_returns_format_and_language(gui) -> None:
+def test_answering_returns_format_language_and_section(gui) -> None:
     prompt = Prompt()
     gui.nav.begin("x")
     gui.nav.ask(prompt, "T", 0, [], "mp3", False)
     gui.nav._submit()
-    assert prompt.wait(poll=0.01) == {"format": "mp3", "language": ""}
+    assert prompt.wait(poll=0.01) == {"format": "mp3", "language": "", "section": None}
     assert not gui.nav.question_pending()
+
+
+def test_the_question_offers_two_section_fields(gui) -> None:
+    gui.nav.begin("x")
+    gui.nav.ask(Prompt(), "T", 213, [], "mp3", False)
+    entries = _entries(gui.nav._form)
+    assert len(entries) == 2, "from and to"
+    assert [entry.get() for entry in entries] == ["", ""], "empty means the whole video"
+
+
+def test_a_section_is_answered_along_with_the_format(gui) -> None:
+    prompt = Prompt()
+    gui.nav.begin("x")
+    gui.nav.ask(prompt, "T", 213, [], "mp3", False)
+    gui.nav._clip_start.set("1:23")
+    gui.nav._clip_end.set("2:45")
+    gui.nav._submit()
+    answer = prompt.wait(poll=0.01)
+    assert answer["section"] == ClipRange(start=83.0, end=165.0)
+
+
+def test_a_section_beyond_the_video_keeps_the_question_open(gui) -> None:
+    """The window has the length, so the mistake is caught before the download."""
+    prompt = Prompt()
+    gui.nav.begin("x")
+    gui.nav.ask(prompt, "T", 213, [], "mp3", False)
+    gui.nav._clip_start.set("9:00")
+    gui.nav._submit()
+    assert gui.nav.question_pending(), "nothing was answered"
+    assert gui.nav._clip_hint is not None
+    assert str(gui.nav._clip_hint.cget("style")) == "Danger.TLabel"
+    assert str(gui.nav._clip_hint.cget("text")) == gui.messages["clip_error_range"]
+
+
+def test_a_corrected_section_can_still_be_submitted(gui) -> None:
+    prompt = Prompt()
+    gui.nav.begin("x")
+    gui.nav.ask(prompt, "T", 213, [], "mp3", False)
+    gui.nav._clip_start.set("nonsense")
+    gui.nav._submit()
+    assert gui.nav.question_pending()
+    gui.nav._clip_start.set("0:10")
+    gui.nav._submit()
+    assert prompt.wait(poll=0.01)["section"] == ClipRange(start=10.0, end=213.0)
+
+
+def test_the_section_fields_start_empty_for_the_next_link(gui) -> None:
+    gui.nav.begin("x")
+    gui.nav.ask(Prompt(), "T", 213, [], "mp3", False)
+    gui.nav._clip_start.set("1:23")
+    gui.nav.cancel_pending()
+    gui.nav.begin("y")
+    gui.nav.ask(Prompt(), "T2", 213, [], "mp3", False)
+    assert gui.nav._clip_start.get() == "", "a section belongs to one download only"
 
 
 def test_cancelling_the_question(gui) -> None:

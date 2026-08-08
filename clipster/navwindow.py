@@ -15,9 +15,9 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
-from . import APP_SHORT_NAME, theme
+from . import APP_SHORT_NAME, clip, theme
 from .bridge import Prompt
 from .history import STATUS_CANCELED, STATUS_FAILED, STATUS_OK, format_duration
 from .i18n import Messages
@@ -116,6 +116,12 @@ class NavWindow:
 
         self._format = tk.StringVar(value="mp3")
         self._language = tk.StringVar(value="")
+        self._clip_start = tk.StringVar(value="")
+        self._clip_end = tk.StringVar(value="")
+        #: Length of the video being asked about, for validating the section.
+        self._clip_duration = 0
+        #: The hint below the section fields; also carries its error message.
+        self._clip_hint: Optional[ttk.Label] = None
 
     # ------------------------------------------------------------------
     # Visibility
@@ -204,6 +210,7 @@ class NavWindow:
         """Remove the selector widgets."""
         for child in self._form.winfo_children():
             child.destroy()
+        self._clip_hint = None
         self._form.pack_forget()
 
     def _clear_buttons(self) -> None:
@@ -273,10 +280,11 @@ class NavWindow:
         ask_language: bool = True,
         original: str = "",
     ) -> None:
-        """Ask for format and audio track in one step.
+        """Ask for format, audio track and section in one step.
 
-        The answer handed to ``prompt`` is a dict with the keys ``format`` and
-        ``language``, or ``None`` when the user cancels.
+        The answer handed to ``prompt`` is a dict with the keys ``format``,
+        ``language`` and ``section`` (a :class:`clipster.clip.ClipRange` or
+        ``None`` for the whole video), or ``None`` when the user cancels.
 
         :param prompt: The prompt the worker thread is waiting on.
         :param title: The video title.
@@ -349,6 +357,8 @@ class NavWindow:
         else:
             self._language.set("")
 
+        self._build_section_fields(duration)
+
         self._buttons.pack(fill="x", pady=(PAD, 0))
         download = ttk.Button(
             self._buttons, text=self.messages["button_download"], style="Accent.TButton", command=self._submit
@@ -362,12 +372,71 @@ class NavWindow:
         self.window.bind("<Escape>", lambda _e: self._cancel_question())
         self._resize()
 
+    def _build_section_fields(self, duration: int) -> None:
+        """Add the two "from" and "to" fields below the selectors.
+
+        Both are empty by default, which means the whole video - the section is
+        an extra the user reaches for, never something to dismiss first.
+
+        :param duration: Video length in seconds, ``0`` when unknown.
+        :return: None
+        """
+        self._clip_duration = max(0, int(duration or 0))
+        self._clip_start.set("")
+        self._clip_end.set("")
+
+        ttk.Label(self._form, text=self.messages["nav_clip"], style="Muted.TLabel").grid(
+            row=2, column=0, sticky="w", padx=(0, PAD_SMALL), pady=(6, 0)
+        )
+        row = ttk.Frame(self._form, style="TFrame")
+        row.grid(row=2, column=1, sticky="ew", pady=(6, 0))
+        ttk.Entry(row, textvariable=self._clip_start, width=8, font=self.fonts["body"]).pack(side="left")
+        ttk.Label(row, text="–", style="Muted.TLabel").pack(side="left", padx=PAD_SMALL)
+        ttk.Entry(row, textvariable=self._clip_end, width=8, font=self.fonts["body"]).pack(side="left")
+
+        # Across both columns: kept inside the value column the hint would make
+        # the whole window as wide as one line of it.
+        self._clip_hint = ttk.Label(
+            self._form,
+            text=self.messages["nav_clip_hint"],
+            style="Muted.TLabel",
+            wraplength=_WIDTH - 2 * PAD,
+            justify="left",
+        )
+        self._clip_hint.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+    def _show_clip_error(self, key: str) -> None:
+        """Replace the hint below the section fields with a problem.
+
+        :param key: One of the ``clip_error_*`` message keys.
+        :return: None
+        """
+        if self._clip_hint is None:  # pragma: no cover - the fields carry it
+            return
+        self._clip_hint.configure(text=self.messages[key], style="Danger.TLabel")
+        self._resize()
+
     def _submit(self) -> None:
-        """Hand the chosen format and audio track to the waiting worker."""
+        """Hand format, audio track and section to the waiting worker.
+
+        A section that cannot work is reported in place of the hint and the
+        question stays open; nothing is silently dropped or rounded into
+        something the user did not ask for.
+        """
         if self._prompt is None:
             return
+        section, error = clip.parse_range(
+            self._clip_start.get(), self._clip_end.get(), self._clip_duration
+        )
+        if error:
+            self._show_clip_error(error)
+            return
         prompt, self._prompt = self._prompt, None
-        answer: Dict[str, str] = {"format": self._format.get(), "language": self._language.get()}
+        answer: Dict[str, Any] = {
+            "format": self._format.get(),
+            "language": self._language.get(),
+            "section": section,
+        }
         self._clear_form()
         self._clear_buttons()
         self._unbind_keys()

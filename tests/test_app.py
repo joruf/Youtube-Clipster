@@ -127,6 +127,17 @@ def test_another_format_is_not_the_same_download(app, tmp_path: Path) -> None:
     assert app.history.find_download(URL_A, "mp4") is None, "MP4 still has to be fetched"
 
 
+def test_a_section_is_not_the_same_download_as_the_whole_video(app, tmp_path: Path) -> None:
+    """A cut out piece must never be handed over as "you already have this"."""
+    target = tmp_path / "song [1-23_2-45].mp3"
+    target.write_bytes(b"x")
+    app.history.add(HistoryEntry(name=target.name, path=str(target), url=URL_A,
+                                 media_format="mp3", section="83-165", status=STATUS_OK))
+    assert app.history.find_download(URL_A, "mp3") is None
+    assert app.history.find_download(URL_A, "mp3", "83-165") is not None
+    assert app.history.find_download(URL_A, "mp3", "83-166") is None
+
+
 def test_a_deleted_file_is_not_offered(app, tmp_path: Path) -> None:
     app.history.add(HistoryEntry(name="gone.mp3", path=str(tmp_path / "gone.mp3"), url=URL_A,
                                  media_format="mp3", status=STATUS_OK))
