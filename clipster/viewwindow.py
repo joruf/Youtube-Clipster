@@ -175,6 +175,9 @@ class ViewWindow:
         self._on_close = on_close
         self._on_quit = on_quit
         self._on_play_entry = on_play_entry
+        #: Optional: play a row inside Clipster instead of handing it over to
+        #: the system.  Bound to a double click on the row.
+        self.on_play_here: Optional[Callable[[HistoryEntry], None]] = None
         self._on_reveal_entry = on_reveal_entry
         self._on_delete_entry = on_delete_entry
         self._on_hide_entry = on_hide_entry
@@ -1011,7 +1014,36 @@ class ViewWindow:
                     pass
 
         self._scroller.bind_wheel_tree(row)
+        if available:
+            # Double click plays the file in Clipster's own player; the Play
+            # button keeps handing it to the system, which is what it says.
+            self._bind_play_here(row, entry)
         self._row_items.append((separator, row, entry))
+
+    def _bind_play_here(self, widget: tk.Misc, entry: HistoryEntry) -> None:
+        """Let a double click anywhere on the row start it in the Streaming tab.
+
+        The buttons are excluded - a double click on *Delete* must delete once,
+        not delete and then play.
+
+        :param widget: The row, walked down to its labels.
+        :param entry: The entry the row shows.
+        :return: None
+        """
+        if widget.winfo_class() in ("TButton", "Button"):
+            return
+        widget.bind("<Double-Button-1>", lambda _event, e=entry: self._play_here(e), add="+")
+        for child in widget.winfo_children():
+            self._bind_play_here(child, entry)
+
+    def _play_here(self, entry: HistoryEntry) -> None:
+        """Hand one row to the in-app player.
+
+        :param entry: The entry to play.
+        :return: None
+        """
+        if self.on_play_here is not None:
+            self.on_play_here(entry)
 
     def _fit_line(self, text: str, width: int) -> str:
         """Shorten ``text`` so that it fits on a single line of ``width`` pixels.

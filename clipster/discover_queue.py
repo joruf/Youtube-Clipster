@@ -30,6 +30,7 @@ def _track_to_dict(track: DiscoverTrack) -> Dict[str, Any]:
         "duration": int(track.duration or 0),
         "thumbnail": track.thumbnail or "",
         "seed_title": track.seed_title or "",
+        "path": track.path or "",
     }
 
 
@@ -38,7 +39,10 @@ def _track_from_dict(data: Dict[str, Any]) -> Optional[DiscoverTrack]:
     video_id = str(data.get("video_id") or "").strip()
     title = str(data.get("title") or "").strip()
     url = str(data.get("url") or "").strip()
-    if not video_id and not url:
+    path = str(data.get("path") or "").strip()
+    # A file from the download folder is a playable track even when it carries
+    # no YouTube handle at all - the path is its handle.
+    if not video_id and not url and not path:
         return None
     if len(video_id) != 11 and url:
         # Prefer a real 11-char id; keep the row if the URL is the only handle.
@@ -46,7 +50,7 @@ def _track_from_dict(data: Dict[str, Any]) -> Optional[DiscoverTrack]:
     if not url and video_id:
         url = "https://www.youtube.com/watch?v={0}".format(video_id)
     if not title:
-        title = video_id or url
+        title = video_id or url or Path(path).stem
     try:
         duration = max(0, int(data.get("duration") or 0))
     except (TypeError, ValueError):
@@ -59,6 +63,7 @@ def _track_from_dict(data: Dict[str, Any]) -> Optional[DiscoverTrack]:
         duration=duration,
         thumbnail=str(data.get("thumbnail") or ""),
         seed_title=str(data.get("seed_title") or ""),
+        path=path,
     )
 
 
@@ -98,7 +103,9 @@ class DiscoverQueueStore:
             track = _track_from_dict(item)
             if track is None:
                 continue
-            key = track.video_id or track.url
+            # A file from the download folder is identified by its path; it has
+            # no video id and often no URL either.
+            key = track.video_id or track.url or track.path
             if not key or key in seen:
                 continue
             seen.add(key)
@@ -121,7 +128,11 @@ class DiscoverQueueStore:
         :param tracks: Live queue rows.
         :param index: Selected / playing index.
         """
-        rows = [_track_to_dict(track) for track in tracks[: self.limit] if track.video_id or track.url]
+        rows = [
+            _track_to_dict(track)
+            for track in tracks[: self.limit]
+            if track.video_id or track.url or track.path
+        ]
         if rows:
             index = max(-1, min(int(index), len(rows) - 1))
         else:

@@ -175,6 +175,15 @@ class DiscoverTrack:
     thumbnail: str = ""
     #: Title of the history entry that triggered this result.
     seed_title: str = ""
+    #: Absolute path of a file that is already on disk.  Set for tracks that
+    #: come from the download folder: those play straight from there instead of
+    #: being resolved against YouTube again.
+    path: str = ""
+
+    @property
+    def is_local(self) -> bool:
+        """Return ``True`` when this track plays from a file on disk."""
+        return bool(self.path)
 
 
 def seed_from_track(track: DiscoverTrack) -> HistoryEntry:

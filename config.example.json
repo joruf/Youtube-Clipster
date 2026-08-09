@@ -49,6 +49,8 @@
   "discover_extend_count": 8,
   "discover_play_video": false,
   "discover_visualizer": "pulse",
+  "discover_shuffle": false,
+  "discover_repeat": "off",
   "remote_enabled": false,
   "remote_bind": "127.0.0.1",
   "remote_port": 8733,

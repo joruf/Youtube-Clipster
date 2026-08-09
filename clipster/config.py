@@ -99,6 +99,10 @@ class Config:
     discover_play_video: bool = False
     #: Audio-stage visualizer mode (see :mod:`clipster.visualizer`).
     discover_visualizer: str = "pulse"
+    #: Play the Streaming queue in a random order.
+    discover_shuffle: bool = False
+    #: ``off``, ``all`` (queue starts over) or ``one`` (the same song again).
+    discover_repeat: str = "off"
     #: Serve the phone interface on the local network. Off by default on
     #: purpose: it lets other devices start downloads and read finished files.
     remote_enabled: bool = False

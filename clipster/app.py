@@ -50,6 +50,7 @@ from .discover_taste import DiscoverTaste, VOTE_DOWN, VOTE_UP
 from .discover_queue import DiscoverQueueStore
 from .history import STATUS_CANCELED, STATUS_FAILED, STATUS_OK, History, HistoryEntry, format_size
 from .i18n import Messages
+from .library import library_tracks
 from .logging_setup import get_logger
 from .terms import (
     TERMS_APP_VERSION,
@@ -265,6 +266,8 @@ class ClipsterApp:
             self.gui.view.discover._on_clear_vote = self._discover_clear_vote
             self.gui.view.discover._on_play_vote = self._discover_play_vote
             self.gui.view.discover.on_queue_changed = self._schedule_queue_save
+            self.gui.view.discover.on_library = self._discover_library
+            self.gui.view.on_play_here = self.play_entry_in_app
             self.gui.view.discover.set_votes(self.taste.entries)
 
         self._discover_cancel = threading.Event()
@@ -1372,6 +1375,96 @@ class ClipsterApp:
             self.bridge.post(self._discover_ready, outcome)
 
         threading.Thread(target=worker, name="clipster-discover", daemon=True).start()
+
+    def _discover_library(self) -> None:
+        """Fill the Streaming queue with the downloads that are already here.
+
+        No network, no terms gate: nothing leaves this machine, the files are
+        the ones the program wrote itself.  The scan still runs on a worker,
+        because a large download folder takes a moment to walk.
+
+        :return: None
+        """
+        if self._discover_busy:
+            return
+        page = self._discover_page()
+        if page is None:
+            return
+        self._discover_busy = True
+        page.set_busy(True, self.messages["discover_library_loading"])
+
+        def worker() -> None:
+            """Collect the local tracks off the UI thread."""
+            try:
+                tracks = self._library_snapshot()
+            except Exception as exc:  # pragma: no cover - defensive
+                log.exception("Reading the library failed")
+                self.bridge.post(self._discover_failed, str(exc))
+                return
+            self.bridge.post(self._library_ready, tracks)
+
+        threading.Thread(target=worker, name="clipster-library", daemon=True).start()
+
+    def _library_snapshot(self) -> List[DiscoverTrack]:
+        """Return everything playable that is on this machine right now.
+
+        :return: The local tracks, download list first.
+        """
+        return library_tracks(self.download_dir, list(self.history.entries))
+
+    def _library_ready(self, tracks: List[DiscoverTrack]) -> None:
+        """Show the local tracks in the Streaming queue.
+
+        :param tracks: What :func:`clipster.library.library_tracks` found.
+        :return: None
+        """
+        self._discover_busy = False
+        page = self._discover_page()
+        if page is None:
+            return
+        page.set_busy(False)
+        if not tracks:
+            page.show_empty("discover_library_empty")
+            return
+        log.info("Library: %s playable files", len(tracks))
+        page.set_tracks(
+            tracks,
+            status=self.messages.format("discover_library_ready", count=len(tracks)),
+            level="ok",
+        )
+
+    def play_entry_in_app(self, entry: HistoryEntry) -> None:
+        """Play one downloaded file in the Streaming tab, not in another program.
+
+        The whole library goes into the queue and playback starts on the row
+        that was asked for, so the rest of the downloads simply keep playing
+        afterwards.
+
+        :param entry: The download list row to start with.
+        :return: None
+        """
+        target = entry.file_path()
+        if target is None:
+            self.gui.show_error(self.messages["error_title"], self.messages["history_missing"])
+            self.gui.render_history(self.history.entries)
+            return
+        page = self._discover_page()
+        if page is None:  # pragma: no cover - Streaming page always exists
+            return
+        tracks = self._library_snapshot()
+        index = next((i for i, track in enumerate(tracks) if track.path == str(target)), -1)
+        if index < 0:
+            log.debug("%s is not in the library list; playing it on its own.", target)
+            tracks = [DiscoverTrack(url=entry.url, video_id="", title=entry.title or entry.name,
+                                    duration=entry.duration, path=str(target))]
+            index = 0
+        page.set_tracks(
+            tracks,
+            status=self.messages.format("discover_library_ready", count=len(tracks)),
+            level="ok",
+        )
+        self.gui.show_view("discover")
+        page.play_at(index)
 
     def _discover_no_seeds(self) -> None:
         """Show the empty-seeds state after a background seed resolve."""

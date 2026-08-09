@@ -1540,3 +1540,51 @@ def test_the_resolved_headers_travel_with_the_url(app, streaming, monkeypatch) -
     assert headers["User-Agent"] == "Mozilla"
     # Cached with its headers, not just the URL.
     assert app.discover_remote_audio("aaaaaaaaaa0")[1]["Accept"] == "*/*"
+
+
+# ----------------------------------------------------------------------
+# Playing what is already downloaded
+# ----------------------------------------------------------------------
+def test_the_library_lands_in_the_streaming_queue(app, streaming, downloads: Path) -> None:
+    """Downloading and playing are one program, not two."""
+    page, _calls, _seeks = streaming
+    target = downloads / "song.mp3"
+    target.write_bytes(b"x")
+    app.history.add(HistoryEntry(name="song.mp3", path=str(target), title="A Song",
+                                 url=URL_A, duration=213, status=STATUS_OK))
+
+    app._library_ready(app._library_snapshot())
+    assert [track.title for track in page._tracks] == ["A Song"]
+    assert page._tracks[0].is_local
+
+
+def test_an_empty_library_says_so_instead_of_looking_broken(app, streaming) -> None:
+    page, _calls, _seeks = streaming
+    app._library_ready([])
+    assert not page._tracks
+
+
+def test_double_clicking_a_row_plays_it_here(app, streaming, downloads: Path) -> None:
+    page, calls, _seeks = streaming
+    for name in ("first.mp3", "second.mp3"):
+        (downloads / name).write_bytes(b"x")
+    for name in ("first.mp3", "second.mp3"):
+        app.history.add(HistoryEntry(name=name, path=str(downloads / name), title=name,
+                                     status=STATUS_OK))
+    wanted = app.history.entries[0]
+
+    app.play_entry_in_app(wanted)
+    assert calls == ["play_at"], "playback starts in Clipster, not in another program"
+    assert page._tracks, "the rest of the library keeps playing afterwards"
+    assert page._tracks[0].path == wanted.path, "starting on the row that was asked for"
+
+
+def test_a_row_whose_file_is_gone_is_reported(app, streaming, downloads: Path,
+                                              monkeypatch) -> None:
+    page, calls, _seeks = streaming
+    shown: list = []
+    monkeypatch.setattr(app.gui, "show_error", lambda title, text: shown.append(text))
+    app.play_entry_in_app(HistoryEntry(name="gone.mp3", path=str(downloads / "gone.mp3"),
+                                       status=STATUS_OK))
+    assert shown, "the user is told instead of nothing happening"
+    assert calls == []

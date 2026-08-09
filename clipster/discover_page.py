@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import random
 import threading
 import time
 import tkinter as tk
@@ -87,6 +88,25 @@ _ICON_PLAY = "▶"
 _ICON_PAUSE = "⏸"
 _ICON_STOP = "⏹"
 _ICON_NEXT = "⏭"
+_ICON_SHUFFLE = "🔀"
+_ICON_REPEAT = "🔁"
+_ICON_REPEAT_ONE = "🔂"
+
+#: Repeat modes, in the order the button cycles through them.
+REPEAT_OFF = "off"
+REPEAT_ALL = "all"
+REPEAT_ONE = "one"
+_REPEAT_ORDER = (REPEAT_OFF, REPEAT_ALL, REPEAT_ONE)
+
+#: What each repeat mode shows and says.
+_REPEAT_LOOK = {
+    REPEAT_OFF: (_ICON_REPEAT, "discover_repeat_off"),
+    REPEAT_ALL: (_ICON_REPEAT, "discover_repeat_all"),
+    REPEAT_ONE: (_ICON_REPEAT_ONE, "discover_repeat_one"),
+}
+
+#: Sleep timer choices in minutes; ``0`` is "keep playing".
+_SLEEP_MINUTES = (0, 15, 30, 45, 60, 90, 120)
 
 
 def _shorten(text: str, limit: int = 90) -> str:
@@ -176,6 +196,8 @@ class DiscoverPage(ttk.Frame):
         self._on_clear_vote: Optional[Callable[[str], None]] = None
         #: Play a voted track (enqueue if needed).
         self._on_play_vote: Optional[Callable[[str, str, str], None]] = None
+        #: Fill the queue with the downloads that are already on disk.
+        self.on_library: Optional[Callable[[], None]] = None
         #: Optional gate: return ``False`` to block Streaming actions (terms declined).
         self.ensure_terms: Optional[Callable[[], bool]] = None
         #: Optional lookup of stored taste vote for a video id (``up`` / ``down``).
@@ -197,6 +219,17 @@ class DiscoverPage(ttk.Frame):
         self._play_token = 0
         #: When the queue runs out mid-session, continue once new tracks arrive.
         self._resume_after_extend = False
+        #: Play in a random order, and what is left to play in this round.
+        self._shuffle = bool(getattr(config, "discover_shuffle", False))
+        self._shuffle_bag: List[int] = []
+        self._shuffle_started = False
+        #: ``off``, ``all`` or ``one``.
+        self._repeat = str(getattr(config, "discover_repeat", REPEAT_OFF))
+        if self._repeat not in _REPEAT_ORDER:
+            self._repeat = REPEAT_OFF
+        #: Sleep timer: the Tk job that stops playback, and when it fires.
+        self._sleep_job: Optional[str] = None
+        self._sleep_ends_at = 0.0
         self._seek_dragging = False
         self._eq_job: Optional[str] = None
         self._eq_levels = [0.0] * _EQ_BARS
@@ -256,6 +289,15 @@ class DiscoverPage(ttk.Frame):
             command=self._on_refresh,
         )
         self._refresh_btn.pack(side="left")
+
+        # The other source: everything that is already on this machine.
+        self._library_btn = ttk.Button(
+            actions,
+            text=self.messages["discover_library"],
+            style="Row.TButton",
+            command=self._library_clicked,
+        )
+        self._library_btn.pack(side="left", padx=(PAD_SMALL, 0))
 
         ttk.Label(actions, text=self.messages["discover_mode"], style="Panel.Muted.TLabel").pack(
             side="left", padx=(PAD, PAD_SMALL)
@@ -483,6 +525,13 @@ class DiscoverPage(ttk.Frame):
             command=self.download_current,
         )
         download_btn.pack(side="right")
+
+        # Own row on purpose: hung next to the transport buttons these three
+        # would widen the player pane, and the Panedwindow would take that width
+        # straight out of the queue beside it.
+        modes = ttk.Frame(player, style="Panel.TFrame")
+        modes.pack(fill="x", pady=(PAD_SMALL, 0))
+        self._build_playback_modes(modes, tip_bg=tip_bg, tip_fg=tip_fg)
 
         queue = ttk.LabelFrame(
             split, text=self.messages["discover_queue"], style="Card.TLabelframe", padding=PAD_SMALL
@@ -880,11 +929,218 @@ class DiscoverPage(ttk.Frame):
         self._spinner_index += 1
         self._spinner_job = self.after(120, self._spin_once)
 
+    # ------------------------------------------------------------------
+    # How the queue is played: shuffle, repeat, sleep timer
+    # ------------------------------------------------------------------
+    def _build_playback_modes(self, controls: tk.Misc, *, tip_bg: str, tip_fg: str) -> None:
+        """Add the shuffle, repeat and sleep controls to the transport row.
+
+        :param controls: The row that already holds play, stop and skip.
+        :param tip_bg: Tooltip background colour.
+        :param tip_fg: Tooltip text colour.
+        :return: None
+        """
+        self._shuffle_btn = ttk.Button(
+            controls,
+            text=_ICON_SHUFFLE,
+            style="Player.TButton",
+            command=self.toggle_shuffle,
+            width=_PLAYER_BTN_WIDTH,
+        )
+        self._shuffle_btn.pack(side="left")
+        self._shuffle_tip = _attach_tooltip(
+            self._shuffle_btn, "", background=tip_bg, foreground=tip_fg
+        )
+        self._repeat_btn = ttk.Button(
+            controls,
+            text=_ICON_REPEAT,
+            style="Player.TButton",
+            command=self.cycle_repeat,
+            width=_PLAYER_BTN_WIDTH,
+        )
+        self._repeat_btn.pack(side="left", padx=(PAD_SMALL, 0))
+        self._repeat_tip = _attach_tooltip(
+            self._repeat_btn, "", background=tip_bg, foreground=tip_fg
+        )
+
+        self._sleep_var = tk.StringVar()
+        self._sleep_labels = {
+            self.messages["discover_sleep_off"] if minutes == 0
+            else self.messages.format("discover_sleep_minutes", minutes=minutes): minutes
+            for minutes in _SLEEP_MINUTES
+        }
+        sleep_box = ttk.Combobox(
+            controls,
+            state="readonly",
+            textvariable=self._sleep_var,
+            values=list(self._sleep_labels.keys()),
+            width=12,
+            font=self.fonts["body"],
+        )
+        sleep_box.current(0)
+        sleep_box.pack(side="left", padx=(PAD, 0))
+        sleep_box.bind("<<ComboboxSelected>>", lambda _e: self._sleep_selected())
+        self._sleep_box = sleep_box
+        _attach_tooltip(
+            sleep_box, self.messages["discover_sleep_tip"], background=tip_bg, foreground=tip_fg
+        )
+        self._paint_playback_modes()
+
+    def _paint_playback_modes(self) -> None:
+        """Show which modes are on, on the buttons and in their tooltips."""
+        self._shuffle_btn.configure(
+            style="PlayerAccent.TButton" if self._shuffle else "Player.TButton"
+        )
+        self._shuffle_tip.set_text(
+            self.messages["discover_shuffle_on" if self._shuffle else "discover_shuffle_off"]
+        )
+        icon, message_key = _REPEAT_LOOK[self._repeat]
+        self._repeat_btn.configure(
+            text=icon,
+            style="Player.TButton" if self._repeat == REPEAT_OFF else "PlayerAccent.TButton",
+        )
+        self._repeat_tip.set_text(self.messages[message_key])
+
+    def toggle_shuffle(self) -> None:
+        """Turn random order on or off.
+
+        :return: None
+        """
+        self._shuffle = not self._shuffle
+        self._reset_shuffle_bag()
+        self.config.discover_shuffle = self._shuffle
+        self.config.save()
+        self._paint_playback_modes()
+        self.set_status(
+            self.messages["discover_shuffle_on" if self._shuffle else "discover_shuffle_off"],
+            "info",
+        )
+
+    def cycle_repeat(self) -> None:
+        """Step through off, repeat all and repeat one.
+
+        :return: None
+        """
+        position = _REPEAT_ORDER.index(self._repeat) if self._repeat in _REPEAT_ORDER else 0
+        self._repeat = _REPEAT_ORDER[(position + 1) % len(_REPEAT_ORDER)]
+        self.config.discover_repeat = self._repeat
+        self.config.save()
+        self._paint_playback_modes()
+        self.set_status(self.messages[_REPEAT_LOOK[self._repeat][1]], "info")
+
+    def next_index(self, *, automatic: bool) -> Optional[int]:
+        """Return the row to play next, or ``None`` when the queue is through.
+
+        Repeat-one only repeats a track that ended by itself: pressing *next*
+        means "something else", never the same song again.
+
+        :param automatic: ``True`` when the track ended on its own.
+        :return: The index to play, or ``None``.
+        """
+        if not self._tracks:
+            return None
+        if automatic and self._repeat == REPEAT_ONE:
+            return max(0, self._selected)
+        if self._shuffle:
+            return self._draw_from_bag()
+        following = self._selected + 1
+        if following < len(self._tracks):
+            return following
+        return 0 if self._repeat == REPEAT_ALL else None
+
+    def _draw_from_bag(self) -> Optional[int]:
+        """Return the next random row, playing each one before any repeats.
+
+        A plain random pick replays the same song far too often and skips
+        others for an hour.  This keeps a bag of the rows that have not come up
+        in this round and only refills it once every row has played - which is
+        also where repeat decides whether there is another round at all.
+
+        :return: The index to play, or ``None`` when the round is over.
+        """
+        self._shuffle_bag = [index for index in self._shuffle_bag if index < len(self._tracks)]
+        if not self._shuffle_bag:
+            if self._shuffle_started and self._repeat != REPEAT_ALL:
+                return None
+            self._refill_shuffle_bag()
+        if not self._shuffle_bag:
+            # A queue of one: repeat it, or stop when repeat is off.
+            return self._selected if self._repeat != REPEAT_OFF else None
+        return self._shuffle_bag.pop()
+
+    def _reset_shuffle_bag(self) -> None:
+        """Start a fresh random round, e.g. after the queue changed."""
+        self._shuffle_bag = []
+        self._shuffle_started = False
+
+    def _refill_shuffle_bag(self) -> None:
+        """Put every row except the current one back into the bag, shuffled."""
+        self._shuffle_bag = [
+            index for index in range(len(self._tracks)) if index != self._selected
+        ]
+        random.shuffle(self._shuffle_bag)
+        self._shuffle_started = True
+
+    # ------------------------------------------------------------------
+    def _sleep_selected(self) -> None:
+        """Start, restart or cancel the sleep timer from the selector."""
+        minutes = self._sleep_labels.get(self._sleep_var.get(), 0)
+        self.set_sleep_timer(minutes)
+
+    def set_sleep_timer(self, minutes: int) -> None:
+        """Stop playback after ``minutes``, or cancel a running timer.
+
+        :param minutes: Minutes from now; ``0`` cancels.
+        :return: None
+        """
+        self._cancel_sleep_timer()
+        if minutes <= 0:
+            self._sleep_ends_at = 0.0
+            self.set_status(self.messages["discover_sleep_cancelled"], "info")
+            return
+        self._sleep_ends_at = time.monotonic() + minutes * 60
+        self._sleep_job = self.after(minutes * 60 * 1000, self._sleep_reached)
+        self.set_status(self.messages.format("discover_sleep_set", minutes=minutes), "info")
+
+    def sleep_minutes_left(self) -> int:
+        """Return the whole minutes left on the sleep timer, ``0`` when off."""
+        if not self._sleep_ends_at:
+            return 0
+        return max(0, int((self._sleep_ends_at - time.monotonic()) // 60) + 1)
+
+    def _cancel_sleep_timer(self) -> None:
+        """Drop a pending sleep job without touching playback."""
+        if self._sleep_job is not None:
+            try:
+                self.after_cancel(self._sleep_job)
+            except tk.TclError:  # pragma: no cover - window going away
+                pass
+            self._sleep_job = None
+
+    def _sleep_reached(self) -> None:
+        """Stop playback because the sleep timer ran out."""
+        self._sleep_job = None
+        self._sleep_ends_at = 0.0
+        try:
+            self._sleep_box.current(0)
+        except tk.TclError:  # pragma: no cover - window going away
+            pass
+        log.info("Sleep timer reached; stopping playback.")
+        self.stop_playback()
+        self.set_status(self.messages["discover_sleep_done"], "info")
+
+    def _library_clicked(self) -> None:
+        """Ask the application for the downloads that are already on disk."""
+        if self._busy or self.on_library is None:
+            return
+        self.on_library()
+
     def set_busy(self, busy: bool, message: str = "") -> None:
         """Enable or disable the refresh action while a search runs."""
         self._busy = busy
         state = "disabled" if busy else "normal"
         self._refresh_btn.configure(state=state)
+        self._library_btn.configure(state=state)
         self._sync_queue_visibility()
         if busy:
             self.set_loading(True, message or self.messages["discover_loading"])
@@ -965,6 +1221,8 @@ class DiscoverPage(ttk.Frame):
         self._tracks = dedupe_tracks(tracks)
         self.player.set_playlist(self._tracks)
         self._selected = 0 if self._tracks else -1
+        # A new queue means a new random round.
+        self._reset_shuffle_bag()
         self._render_rows()
         self._sync_queue_visibility()
         if status:
@@ -2142,8 +2400,8 @@ class DiscoverPage(ttk.Frame):
         self._refresh_seek_ui()
         self._refresh_stream_rate()
         if self.player.track_finished():
-            nxt = self._selected + 1
-            if nxt < len(self._tracks):
+            nxt = self.next_index(automatic=True)
+            if nxt is not None:
                 self.play_at(nxt)
             else:
                 self._resume_after_extend = True
@@ -2231,9 +2489,9 @@ class DiscoverPage(ttk.Frame):
         self.set_status(self.messages["discover_playback_stopped"], "info")
 
     def play_next(self) -> None:
-        """Skip to the next track."""
-        nxt = self._selected + 1
-        if nxt >= len(self._tracks):
+        """Skip to the next track, following shuffle and repeat."""
+        nxt = self.next_index(automatic=False)
+        if nxt is None:
             self.maybe_extend("play")
             self.set_status(self.messages["discover_up_next_loading"], "info")
             return

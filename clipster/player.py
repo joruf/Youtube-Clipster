@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -140,6 +141,25 @@ def format_stream_rate(bps: float) -> str:
 def watch_url(track: DiscoverTrack) -> str:
     """Return the normal watch URL for ``track``."""
     return track.url or "https://www.youtube.com/watch?v={0}".format(track.video_id)
+
+
+def local_source(track: DiscoverTrack) -> Optional[str]:
+    """Return the file this track plays from, when it is one and still there.
+
+    A downloaded file needs no stream resolution at all: mpv and ffplay take a
+    path exactly where they take a URL.  A file that was moved or deleted in the
+    meantime falls back to the online route, so the track still plays.
+
+    :param track: The track about to be played.
+    :return: The path as a string, or ``None`` when there is nothing on disk.
+    """
+    if not track.path:
+        return None
+    try:
+        candidate = Path(track.path)
+        return str(candidate) if candidate.is_file() else None
+    except OSError:  # pragma: no cover - unusable path
+        return None
 
 
 @dataclass
@@ -401,6 +421,8 @@ class DiscoverPlayer:
         if index < 0 or index >= len(self._tracks):
             return
         track = self._tracks[index]
+        if local_source(track) is not None:
+            return  # Nothing to warm up: the file is already there.
         with self._lock:
             if track.video_id:
                 entry = self._stream_cache.get(track.video_id)
@@ -1128,18 +1150,22 @@ class DiscoverPlayer:
         prefer_video: bool,
         start_at: float = 0.0,
     ) -> PlayStartResult:
-        """Resolve a stream and play it inside the Streaming tab."""
+        """Resolve a stream - or take the file - and play it in the Streaming tab."""
         want_video = bool(prefer_video)
         target = watch_url(track)
-        stream = self._take_cached_stream(track, prefer_video=want_video)
+        stream = local_source(track)
         if stream:
-            log.info("Using prefetched stream for '%s'", track.title)
+            log.info("Playing '%s' from disk: %s", track.title, stream)
         else:
-            try:
-                stream = resolve_stream_url(target, options, prefer_video=want_video)
-            except Exception as exc:
-                log.warning("Stream resolve failed for '%s': %s", track.title, exc)
-                return PlayStartResult(track=track, error=str(exc))
+            stream = self._take_cached_stream(track, prefer_video=want_video)
+            if stream:
+                log.info("Using prefetched stream for '%s'", track.title)
+            else:
+                try:
+                    stream = resolve_stream_url(target, options, prefer_video=want_video)
+                except Exception as exc:
+                    log.warning("Stream resolve failed for '%s': %s", track.title, exc)
+                    return PlayStartResult(track=track, error=str(exc))
 
         self._stream_url = stream
         self._seek_base = max(0.0, float(start_at))
