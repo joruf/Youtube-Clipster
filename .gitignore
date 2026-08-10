@@ -24,3 +24,4 @@ dist/
 .pytest_cache/
 .coverage
 htmlcov/
+/tools/android/launcher/.gradle
