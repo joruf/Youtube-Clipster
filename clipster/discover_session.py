@@ -3,12 +3,19 @@
 Used on Android / headless: the phone UI drives search, queue and guest
 playback through the remote API. A :class:`~clipster.player.DiscoverPlayer`
 holds the playlist; local mpv is optional (guest play uses ``/stream/``).
+
+Shuffle, repeat and the sleep timer are the same rules the desktop follows -
+:class:`~clipster.playorder.PlayOrder` decides what comes next here too, and the
+sleep timer is a plain thread because there is no Tk event loop to hang it on.
 """
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any, Callable, List, Optional, Set
 
+from . import playorder
 from .discover import DiscoverTrack, dedupe_tracks
 from .logging_setup import get_logger
 from .player import DiscoverPlayer
@@ -31,7 +38,19 @@ class HeadlessDiscoverSession:
         self._selected = -1
         self._busy = False
         self._extend_requested = False
+        #: Shuffle, repeat and the shuffle bag - the same class the Tk page uses.
+        self._order = playorder.PlayOrder(
+            shuffle=bool(getattr(config, "discover_shuffle", False)),
+            repeat=str(getattr(config, "discover_repeat", playorder.REPEAT_OFF)),
+        )
+        #: Sleep timer: a plain timer thread, since there is no Tk loop here.
+        self._sleep_timer: Optional[threading.Timer] = None
+        self._sleep_ends_at = 0.0
         self.ensure_terms: Optional[Callable[[], bool]] = None
+        #: Return ``False`` when a track that is not on disk may not be fetched.
+        self.allow_stream: Optional[Callable[[], bool]] = None
+        #: Fill the queue with the downloads that are already on disk.
+        self.on_library: Optional[Callable[[], None]] = None
         self._on_like: Optional[Callable[[DiscoverTrack], None]] = None
         self._on_dislike: Optional[Callable[[DiscoverTrack], None]] = None
         self._on_hide: Optional[Callable[[DiscoverTrack], None]] = None
@@ -107,6 +126,31 @@ class HeadlessDiscoverSession:
             self._selected = index
             self._notify_queue_changed()
 
+    def set_tracks(self, tracks: List[DiscoverTrack], status: str = "", level: str = "ok") -> None:
+        """Replace the queue, as :meth:`clipster.discover_page.DiscoverPage.set_tracks` does.
+
+        The page counterpart also starts playing when the queue was empty; here
+        it must not.  On the phone the audio comes out of the browser, and the
+        browser decides when to start - a track begun on this side would play on
+        whatever speaker the PC has instead.
+
+        :param tracks: The songs to put in the queue.
+        :param status: Optional status text, logged rather than shown.
+        :param level: Status level, kept for signature compatibility.
+        :return: None
+        """
+        del level
+        self._busy = False
+        self._extend_requested = False
+        self._tracks = dedupe_tracks(tracks)
+        self.player.set_playlist(self._tracks)
+        self._selected = 0 if self._tracks else -1
+        # A new queue means a new random round.
+        self._order.reset()
+        if status:
+            log.info("%s", status)
+        self._notify_queue_changed()
+
     def restore_tracks(
         self,
         tracks: List[DiscoverTrack],
@@ -123,6 +167,7 @@ class HeadlessDiscoverSession:
             self._selected = max(0, min(int(index), len(self._tracks) - 1))
         else:
             self._selected = -1
+        self._order.reset()
         self._notify_queue_changed()
 
     def append_tracks(self, tracks: List[DiscoverTrack], update_status: bool = True) -> int:
@@ -156,6 +201,23 @@ class HeadlessDiscoverSession:
         self._notify_queue_changed()
         return len(fresh)
 
+    def _may_play(self, track: DiscoverTrack) -> bool:
+        """Return ``True`` when this track may be started right now.
+
+        Same rule as the Tk page keeps: a file on disk always plays, anything
+        that would have to be fetched asks the application first, and a refusal
+        swaps the queue for the local library instead of stopping the music.
+
+        :param track: The track that is about to start.
+        :return: Whether playback may go ahead.
+        """
+        if track.is_local or self.allow_stream is None or self.allow_stream():
+            return True
+        log.info("Streaming is not allowed on this connection - switching to the library.")
+        if self.on_library is not None:
+            self.on_library()
+        return False
+
     def play_at(self, index: int) -> None:
         """Select ``index`` and start local audio when a backend exists.
 
@@ -164,6 +226,8 @@ class HeadlessDiscoverSession:
         if index < 0 or index >= len(self._tracks):
             return
         if self.ensure_terms is not None and not self.ensure_terms():
+            return
+        if not self._may_play(self._tracks[index]):
             return
         self._selected = index
         self._notify_queue_changed()
@@ -195,21 +259,96 @@ class HeadlessDiscoverSession:
         """Stop local playback."""
         self.player.stop()
 
+    def next_index(self, *, automatic: bool) -> Optional[int]:
+        """Return the row to play next, or ``None`` when the queue is through.
+
+        Same rules as the desktop, from the same place: shuffle draws from a bag
+        and repeat-one only repeats a song that ended by itself.
+
+        :param automatic: ``True`` when the song ended on its own.
+        :return: The index to play, or ``None``.
+        """
+        return self._order.next_index(len(self._tracks), self._selected, automatic=automatic)
+
     def play_next(self) -> None:
-        """Advance to the next track."""
-        if self.player.next() is not None:
-            self.play_at(self.player.index)
-        elif self._tracks:
-            nxt = min(self._selected + 1, len(self._tracks) - 1)
-            if nxt != self._selected:
-                self.play_at(nxt)
+        """Advance to the next track, honouring shuffle and repeat."""
+        following = self.next_index(automatic=False)
+        if following is None:
+            return
+        self.play_at(following)
 
     def play_previous(self) -> None:
         """Go back one track."""
-        if self.player.previous() is not None:
-            self.play_at(self.player.index)
-        elif self._tracks and self._selected > 0:
+        if self._tracks and self._selected > 0:
             self.play_at(self._selected - 1)
+
+    # ------------------------------------------------------------------
+    # How the queue is played
+    # ------------------------------------------------------------------
+    def set_shuffle(self, enabled: bool) -> None:
+        """Turn random order on or off.
+
+        :param enabled: Whether to play in random order.
+        :return: None
+        """
+        self._order.set_shuffle(enabled)
+        self.config.discover_shuffle = self._order.shuffle
+
+    def toggle_shuffle(self) -> None:
+        """Flip random order, as the desktop button does."""
+        self.set_shuffle(not self._order.shuffle)
+
+    def set_repeat(self, mode: str) -> None:
+        """Set the repeat mode.
+
+        :param mode: ``off``, ``all`` or ``one``.
+        :return: None
+        """
+        self._order.set_repeat(mode)
+        self.config.discover_repeat = self._order.repeat
+
+    def cycle_repeat(self) -> None:
+        """Step through off, repeat all and repeat one."""
+        self.set_repeat(self._order.cycle_repeat())
+
+    def set_sleep_timer(self, minutes: int) -> None:
+        """Stop playback after ``minutes``, or cancel a running timer.
+
+        :param minutes: Minutes from now; ``0`` cancels.
+        :return: None
+        """
+        self._cancel_sleep_timer()
+        if minutes <= 0:
+            self._sleep_ends_at = 0.0
+            log.info("Sleep timer off.")
+            return
+        self._sleep_ends_at = time.monotonic() + minutes * 60
+        self._sleep_timer = threading.Timer(minutes * 60, self._sleep_reached)
+        self._sleep_timer.daemon = True
+        self._sleep_timer.start()
+        log.info("Sleep timer set: playback stops in %s minutes.", minutes)
+
+    def sleep_minutes_left(self) -> int:
+        """Return the whole minutes left on the sleep timer, ``0`` when off."""
+        if not self._sleep_ends_at:
+            return 0
+        return max(0, int((self._sleep_ends_at - time.monotonic()) // 60) + 1)
+
+    def _cancel_sleep_timer(self) -> None:
+        """Drop a pending sleep timer without touching playback."""
+        if self._sleep_timer is not None:
+            self._sleep_timer.cancel()
+            self._sleep_timer = None
+
+    def _sleep_reached(self) -> None:
+        """Stop playback because the sleep timer ran out."""
+        self._sleep_timer = None
+        self._sleep_ends_at = 0.0
+        log.info("Sleep timer reached - stopping playback.")
+        try:
+            self.player.stop()
+        except Exception:  # pragma: no cover - a dying backend must not raise here
+            log.debug("Stopping on the sleep timer failed", exc_info=True)
 
     def current_track(self) -> Optional[DiscoverTrack]:
         """Return the track under the playhead, if any."""
@@ -311,6 +450,7 @@ class HeadlessDiscoverSession:
 
     def destroy_player(self) -> None:
         """Stop playback on shutdown."""
+        self._cancel_sleep_timer()
         try:
             self.player.stop()
         except Exception:  # pragma: no cover

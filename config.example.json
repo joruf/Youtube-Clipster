@@ -51,6 +51,8 @@
   "discover_visualizer": "pulse",
   "discover_shuffle": false,
   "discover_repeat": "off",
+  "playback_on_mobile": "stream",
+  "playback_local_only": false,
   "remote_enabled": false,
   "remote_bind": "127.0.0.1",
   "remote_port": 8733,

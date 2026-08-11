@@ -17,9 +17,19 @@ edition (`windows/*.bat`) have been replaced by the `clipster/` package.
     watch the progress, see the result
   - a large **view window** with Streaming, the download list, settings and about
 - **Streaming** – find similar songs from downloads, likes, and local media; play Audio or Video
-  in-tab, Stage visualizer (default **Beat ring** / `pulse`), likes/dislikes
+  in-tab, Stage visualizer (default **Beat ring** / `pulse`), likes/dislikes, shuffle, repeat and a
+  sleep timer
+- **Play your own downloads** – *My downloads* fills the queue from the download folder, so
+  Streaming works with no connection at all
+- **Mobile data rule** – on a mobile connection Streaming can keep to the downloaded songs instead
+  of streaming; set it under Settings → Playback, with a manual *downloaded songs only* switch for
+  the day the allowance runs out
+- **Share a song by QR code** – long-press (right-click on a desktop) any queue or download row for a
+  code somebody else scans with Clipster; the song lands straight in their playlist. The code holds a
+  plain YouTube link, so any camera app reads it too
 - **Download list** – name, length, size, date and status of every download, with per-row
-  *Play*, *Folder* and *Hide* buttons, status filters and a problem description when something failed
+  *Play*, *Folder* and *Hide* buttons, sortable columns, status filters and a problem description
+  when something failed
 - **Dark, modern interface** – one colour scheme (`clipster/theme.py`), identical on every platform
 - **Format selection** – audio (MP3) or video (MP4), with a preselectable default
 - **Audio track selection** – offered when a video has several languages
@@ -29,7 +39,11 @@ edition (`windows/*.bat`) have been replaced by the `clipster/` package.
   the installer reads that table, works out what is missing, installs it and starts the program
 - **Self-updating** – `yt-dlp` is kept up to date automatically
 - **Phone interface** – send links from your Android phone or iPhone, the PC downloads them, and
-  **operate Streaming** from there; no app to install, see [Remote control](#remote-control-phone-tablet-another-pc)
+  **operate Streaming** from there; no app to install, see [Remote control](#remote-control-phone-tablet-another-pc).
+  It carries the same features as the desktop, which is what the Android version *is* – a contract
+  `tests/test_platform_parity.py` keeps
+- **Version marker** – an installation without `.git` (the Android bundle) records the commit it was
+  built from, so its update check has something to compare and the install button actually appears
 - **Multi-language** – English and German (`clipster/locales/*.json`)
 - **Single instance** – a second start is refused with a clear message
 - **Desktop integration** – optional desktop shortcut and login autostart

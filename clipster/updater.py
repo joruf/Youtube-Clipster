@@ -2,7 +2,17 @@
 
 The repository publishes neither releases nor tags, so the commit of the default
 branch is what "newer" means here: the API reports the head commit, and it is
-compared with the one the checkout sits on.
+compared with the one this installation sits on.
+
+Where that local commit comes from depends on how the program was installed:
+
+* **checkout** - ``git rev-parse HEAD``.
+* **anything else** - the marker file :data:`MARKER_NAME`, written when the
+  installation was packed or last updated.  Android is exactly this case: the
+  Termux bundle deliberately leaves ``.git`` behind, so without the marker there
+  would be nothing to compare and the phone would report "newest version"
+  forever.  An installation with no marker at all counts as *unknown*, which
+  offers a reinstall rather than claiming to be current.
 
 Two ways to apply an update:
 
@@ -51,6 +61,11 @@ _USER_AGENT = "YouTubeClipster (+{0})".format(APP_URL)
 #: Files and folders the archive update never overwrites.
 _KEEP = frozenset({".git", "config.json", "history.json"})
 
+#: Records which commit a non-git installation was built from, relative to the
+#: installation directory.  Written by the Android bundler and by every archive
+#: update; a checkout never has one because git already knows.
+MARKER_NAME = Path("clipster") / "BUILD_COMMIT"
+
 
 @dataclass
 class UpdateInfo:
@@ -66,6 +81,8 @@ class UpdateInfo:
     summary: str = ""
     #: Why the check could not be made, empty on success.
     error: str = ""
+    #: ``True`` when this installation cannot say which commit it holds.
+    unknown: bool = False
 
     @property
     def known(self) -> bool:
@@ -111,15 +128,97 @@ def local_commit(root: Optional[Path] = None) -> str:
     return result[1].strip() if result[0] == 0 else ""
 
 
+def marker_path(root: Optional[Path] = None) -> Path:
+    """Return where the build marker of an installation lives.
+
+    :param root: The installation directory; defaults to the project root.
+    :return: The path of the marker file, which need not exist.
+    """
+    return (root or paths.PROJECT_ROOT) / MARKER_NAME
+
+
+def read_marker(root: Optional[Path] = None) -> str:
+    """Return the commit recorded in the build marker.
+
+    :param root: The installation directory; defaults to the project root.
+    :return: The SHA, or an empty string when there is no readable marker.
+    """
+    try:
+        text = marker_path(root).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    commit = text.strip()
+    # Anything that is not a plain hex SHA is treated as no marker at all: a
+    # half-written file must not be compared against the remote commit.
+    if not commit or len(commit) < 7 or any(c not in "0123456789abcdef" for c in commit.lower()):
+        return ""
+    return commit.lower()
+
+
+def write_marker(commit: str, root: Optional[Path] = None) -> bool:
+    """Record which commit this installation now holds.
+
+    :param commit: The full SHA that was installed.
+    :param root: The installation directory; defaults to the project root.
+    :return: ``True`` when the marker was written.
+    """
+    if not commit:
+        return False
+    target = marker_path(root)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(commit.strip() + "\n", encoding="utf-8")
+    except OSError as exc:
+        # A missing marker only costs the next check its comparison; it must
+        # never turn a working update into a failed one.
+        log.debug("The build marker could not be written: %s", exc)
+        return False
+    return True
+
+
+def installed_commit(root: Optional[Path] = None) -> str:
+    """Return the commit this installation holds, however it was installed.
+
+    :param root: The installation directory; defaults to the project root.
+    :return: The full SHA, or an empty string when it cannot be determined.
+    """
+    target = root or paths.PROJECT_ROOT
+    if is_git_checkout(target):
+        return local_commit(target)
+    return read_marker(target)
+
+
 def check(root: Optional[Path] = None) -> UpdateInfo:
     """Ask GitHub whether the branch is ahead of this installation.
 
     :param root: The installation directory; defaults to the project root.
     :return: What was found; never raises.
     """
+    remote, summary, error = _fetch_head()
+    if error:
+        return UpdateInfo(error=error)
+
+    local = installed_commit(root)
+    mark_checked()
+    return UpdateInfo(
+        # An installation that cannot name its own commit is offered the update
+        # rather than told it is current - the second is a lie it cannot back up.
+        available=local != remote if local else True,
+        unknown=not local,
+        local=local[:10],
+        remote=remote[:10],
+        summary=summary,
+    )
+
+
+def _fetch_head() -> Tuple[str, str, str]:
+    """Ask GitHub which commit the branch points at.
+
+    :return: ``(sha, subject, error)``; the SHA is empty when the error is set.
+    """
     slug = repository_slug()
     if not slug:
-        return UpdateInfo(error="{0} is not a GitHub repository".format(APP_URL))
+        return "", "", "{0} is not a GitHub repository".format(APP_URL)
 
     url = "https://api.github.com/repos/{0}/commits/{1}".format(slug, BRANCH)
     request = urllib.request.Request(url, headers={
@@ -131,24 +230,16 @@ def check(root: Optional[Path] = None) -> UpdateInfo:
             payload = json.load(response)
     except (urllib.error.URLError, OSError, ValueError) as exc:
         log.debug("Update check failed: %s", exc)
-        return UpdateInfo(error=str(exc))
+        return "", "", str(exc)
 
     remote = str(payload.get("sha") or "")
     if not remote:
-        return UpdateInfo(error="the API returned no commit")
+        return "", "", "the API returned no commit"
     summary = ""
     commit = payload.get("commit")
     if isinstance(commit, dict):
         summary = str(commit.get("message") or "").splitlines()[0] if commit.get("message") else ""
-
-    local = local_commit(root)
-    mark_checked()
-    return UpdateInfo(
-        available=bool(local) and local != remote,
-        local=local[:10],
-        remote=remote[:10],
-        summary=summary,
-    )
+    return remote, summary, ""
 
 
 def due(hours: int) -> bool:
@@ -213,12 +304,20 @@ def _apply_git(root: Path) -> Tuple[bool, str]:
 def _apply_archive(root: Path) -> Tuple[bool, str]:
     """Download the branch archive and unpack it over the installation.
 
+    The commit the archive was cut from is asked for first and written to the
+    build marker afterwards, so the next check has something to compare against.
+    The archive itself carries no such record - this is the only place it can
+    come from.
+
     :param root: The installation directory.
     :return: ``(success, message)``.
     """
     slug = repository_slug()
     if not slug:
         return False, "no GitHub repository configured"
+    head, _summary, head_error = _fetch_head()
+    if head_error:
+        log.debug("The new commit could not be named before the download: %s", head_error)
     url = "https://github.com/{0}/archive/refs/heads/{1}.zip".format(slug, BRANCH)
 
     with tempfile.TemporaryDirectory(prefix="clipster-update-") as work:
@@ -237,7 +336,8 @@ def _apply_archive(root: Path) -> Tuple[bool, str]:
             return False, "the archive has an unexpected layout"
         copied = _copy_tree(unpacked[0], root)
 
-    log.info("Updated %s files from the archive.", copied)
+    write_marker(head, root)
+    log.info("Updated %s files from the archive (%s).", copied, head[:10] or "commit unknown")
     return True, "{0} files updated".format(copied)
 
 

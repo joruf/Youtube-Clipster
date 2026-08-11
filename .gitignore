@@ -5,6 +5,10 @@ youtube-clipster.lock
 # Local, per-checkout configuration (portable mode)
 config.json
 
+# Written into installations that have no .git to read the version from;
+# a checkout asks git itself and must never carry a stale one.
+clipster/BUILD_COMMIT
+
 # Local user data (must not be committed)
 history.json
 discover_taste.json

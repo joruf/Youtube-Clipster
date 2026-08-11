@@ -127,6 +127,25 @@ def extract_youtube_url(text: str) -> Optional[str]:
     return _CANONICAL_URL.format(video_id) if video_id else None
 
 
+def share_url(video_id: str) -> str:
+    """Return the canonical watch URL for a known video id.
+
+    What a shared QR code carries.  Plain YouTube on purpose: any camera app
+    can read it, and only Clipster's own scanner turning it into a queue entry
+    is special.  Unlike :func:`extract_youtube_url` this takes an id that is
+    already known rather than searching text for one.
+
+    :param video_id: The eleven character YouTube id.
+    :return: The canonical URL, or an empty string when the id is not one.
+    """
+    identifier = str(video_id or "").strip()
+    if len(identifier) != 11 or not all(
+        character.isalnum() or character in "-_" for character in identifier
+    ):
+        return ""
+    return _CANONICAL_URL.format(identifier)
+
+
 class DownloadCanceled(Exception):
     """Raised internally when the user cancels a running download."""
 

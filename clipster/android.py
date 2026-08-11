@@ -19,6 +19,7 @@ Nothing here touches the interface; the wizard does the talking.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -33,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Tuple
 
-from . import paths
+from . import paths, updater
 from .logging_setup import get_logger
 from .shortcuts import _no_window
 
@@ -82,8 +83,11 @@ _SKIP_DIRS = frozenset({".git", ".venv", "venv", "__pycache__", ".pytest_cache",
                         ".mypy_cache", "node_modules", ".idea", ".vscode"})
 
 #: Files that must never travel - the configuration holds the remote token.
+#: The build marker is listed because :func:`make_bundle` writes a fresh one;
+#: copying an existing one too would put the same name in the archive twice.
 _SKIP_FILES = frozenset({"config.json", "history.json", "discover_taste.json",
-                         "discover_queue.json", "youtube-clipster.log"})
+                         "discover_queue.json", "youtube-clipster.log",
+                         updater.MARKER_NAME.name})
 
 #: ``adb push`` prints its progress like ``[ 42%] /sdcard/Download/...``.
 _PROGRESS = re.compile(r"\[\s*(\d{1,3})%\]")
@@ -341,6 +345,11 @@ def make_bundle(root: Path, target: Path,
     The configuration and the history stay behind: the configuration holds the
     remote control token, which has no business travelling to another device.
 
+    The commit this checkout sits on travels with it, as
+    :data:`clipster.updater.MARKER_NAME`.  Without it the phone has no way to
+    tell which version it is running - ``.git`` is not in the archive - and its
+    update check could never find anything newer.
+
     :param root: The checkout to package.
     :param target: The archive to write.
     :param on_progress: Called with ``(done, total)`` per file.
@@ -354,9 +363,33 @@ def make_bundle(root: Path, target: Path,
             archive.add(path, arcname=str(Path(root.name) / path.relative_to(root)))
             if on_progress is not None:
                 on_progress(index, total)
+        _add_build_marker(archive, root)
     log.info("Android bundle written: %s (%s files, %s bytes)",
              target, total, target.stat().st_size)
     return target
+
+
+def _add_build_marker(archive: tarfile.TarFile, root: Path) -> None:
+    """Write the commit of ``root`` into an open archive.
+
+    The file is synthesised rather than taken from disk, so packaging never
+    writes anything into the checkout it is packaging.
+
+    :param archive: The archive being written.
+    :param root: The checkout the bundle comes from.
+    :return: None
+    """
+    commit = updater.installed_commit(root)
+    if not commit:
+        log.warning("This installation cannot name its commit; the bundle gets no build "
+                    "marker and the phone will offer a reinstall instead of an update.")
+        return
+    payload = (commit + "\n").encode("utf-8")
+    info = tarfile.TarInfo(str(Path(root.name) / updater.MARKER_NAME))
+    info.size = len(payload)
+    info.mode = 0o644
+    archive.addfile(info, io.BytesIO(payload))
+    log.info("Build marker in the bundle: %s", commit[:10])
 
 
 def setup_script_body(bundle_name: str = BUNDLE_NAME, remote_dir: str = REMOTE_DIR,

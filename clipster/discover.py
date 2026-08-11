@@ -256,23 +256,36 @@ def dedupe_tracks(
 ) -> List[DiscoverTrack]:
     """Drop tracks that share a video id or a near-identical title.
 
+    Titles are compared because the same song turns up from three uploaders
+    under three spellings.  That reasoning does not hold for files: two files in
+    the download folder are two songs even when they are called *Track 01* and
+    *Track 02*, so a track that plays from disk is identified by its path alone
+    and never folded into another by name.
+
     :param tracks: Candidates, kept in order (first wins).
     :param against: Optional already-accepted tracks to also compare against.
     :return: Deduplicated list.
     """
     kept: List[DiscoverTrack] = list(against or ())
     seen_ids: Set[str] = {track.video_id for track in kept if track.video_id}
+    seen_paths: Set[str] = {track.path for track in kept if track.path}
     fresh: List[DiscoverTrack] = []
     for track in tracks:
         if track.video_id and track.video_id in seen_ids:
             continue
-        if any(titles_similar(track.title, existing.title) for existing in kept):
-            continue
-        if any(titles_similar(track.title, existing.title) for existing in fresh):
-            continue
+        if track.path:
+            if track.path in seen_paths:
+                continue
+        else:
+            if any(titles_similar(track.title, existing.title) for existing in kept):
+                continue
+            if any(titles_similar(track.title, existing.title) for existing in fresh):
+                continue
         fresh.append(track)
         if track.video_id:
             seen_ids.add(track.video_id)
+        if track.path:
+            seen_paths.add(track.path)
         kept.append(track)
     return fresh
 

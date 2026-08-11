@@ -24,6 +24,7 @@ from . import (
     APP_VERSION,
     APP_WEBSITE,
     dependencies,
+    netmode,
     paths,
     theme,
     tooltip,
@@ -178,6 +179,9 @@ class ViewWindow:
         #: Optional: play a row inside Clipster instead of handing it over to
         #: the system.  Bound to a double click on the row.
         self.on_play_here: Optional[Callable[[HistoryEntry], None]] = None
+        #: Optional: show the QR code another Clipster can scan for this song.
+        #: Bound to a right click on the row.
+        self.on_share_entry: Optional[Callable[[HistoryEntry], None]] = None
         self._on_reveal_entry = on_reveal_entry
         self._on_delete_entry = on_delete_entry
         self._on_hide_entry = on_hide_entry
@@ -1033,6 +1037,7 @@ class ViewWindow:
         if widget.winfo_class() in ("TButton", "Button"):
             return
         widget.bind("<Double-Button-1>", lambda _event, e=entry: self._play_here(e), add="+")
+        widget.bind("<Button-3>", lambda _event, e=entry: self._share_entry(e), add="+")
         for child in widget.winfo_children():
             self._bind_play_here(child, entry)
 
@@ -1044,6 +1049,16 @@ class ViewWindow:
         """
         if self.on_play_here is not None:
             self.on_play_here(entry)
+
+    def _share_entry(self, entry: HistoryEntry) -> str:
+        """Show the share code for one download.
+
+        :param entry: The entry the row shows.
+        :return: ``break``, so no other handler also answers the click.
+        """
+        if self.on_share_entry is not None:
+            self.on_share_entry(entry)
+        return "break"
 
     def _fit_line(self, text: str, width: int) -> str:
         """Shorten ``text`` so that it fits on a single line of ``width`` pixels.
@@ -1222,6 +1237,32 @@ class ViewWindow:
             style="TCheckbutton",
         ).pack(anchor="w", pady=(PAD_SMALL, 0))
 
+        self._vars["playback_on_mobile"] = tk.StringVar()
+        self._add_combo(
+            discover,
+            "playback_mobile_label",
+            "playback_on_mobile",
+            [
+                self.messages["playback_mobile_stream"],
+                self.messages["playback_mobile_local"],
+                self.messages["playback_mobile_ask"],
+            ],
+        )
+        self._vars["playback_local_only"] = tk.BooleanVar()
+        ttk.Checkbutton(
+            discover,
+            text=self.messages["playback_local_only_label"],
+            variable=self._vars["playback_local_only"],
+            style="TCheckbutton",
+        ).pack(anchor="w", pady=(PAD_SMALL, 0))
+        ttk.Label(
+            discover,
+            text=self.messages["playback_local_only_hint"],
+            style="Panel.Muted.TLabel",
+            wraplength=720,
+            justify="left",
+        ).pack(anchor="w", pady=(2, 0))
+
         ttk.Label(
             discover,
             text=self.messages["settings_cookies"],
@@ -1324,6 +1365,17 @@ class ViewWindow:
         from . import i18n
 
         return [self.messages.language_label(code) for code in i18n.available_languages()]
+
+    def _mobile_labels(self) -> Dict[str, str]:
+        """Return the shown text for every ``playback_on_mobile`` value.
+
+        :return: Mapping of stored value to translated label.
+        """
+        return {
+            netmode.MOBILE_STREAM: self.messages["playback_mobile_stream"],
+            netmode.MOBILE_LOCAL: self.messages["playback_mobile_local"],
+            netmode.MOBILE_ASK: self.messages["playback_mobile_ask"],
+        }
 
     def _add_combo(self, master: tk.Misc, label_key: str, var_key: str, values: List[str]) -> None:
         """Add a labelled read-only combobox to a settings card.
@@ -1434,6 +1486,10 @@ class ViewWindow:
         self._vars["discover_mode"].set(
             mode_map.get(self.config.discover_mode, self.messages["discover_mode_search"])
         )
+        self._vars["playback_on_mobile"].set(
+            self._mobile_labels()[netmode.normalize_mode(self.config.playback_on_mobile)]
+        )
+        self._vars["playback_local_only"].set(bool(self.config.playback_local_only))
         self._vars["startup_visibility"].set(
             self.messages["settings_startup_tray"]
             if self.config.start_minimized
@@ -1498,6 +1554,12 @@ class ViewWindow:
             self.config.discover_mode = "listenbrainz"
         else:
             self.config.discover_mode = "search"
+        chosen = self._vars["playback_on_mobile"].get()
+        self.config.playback_on_mobile = next(
+            (key for key, label in self._mobile_labels().items() if label == chosen),
+            netmode.DEFAULT_MOBILE_MODE,
+        )
+        self.config.playback_local_only = bool(self._vars["playback_local_only"].get())
         start_in_tray = self._vars["startup_visibility"].get() == self.messages["settings_startup_tray"]
         self.config.start_minimized = start_in_tray
         for key in (

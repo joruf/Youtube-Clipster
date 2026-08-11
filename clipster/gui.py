@@ -28,10 +28,15 @@ from .history import HistoryEntry
 from .i18n import Messages
 from .logging_setup import get_logger
 from .navwindow import NavWindow
+from .qrview import draw_qr
 from .theme import PAD, PAD_SMALL
 from .viewwindow import ViewWindow
 
 log = get_logger(__name__)
+
+#: Edge length of the QR code in the share dialog, in pixels.  Big enough that
+#: another phone reads it off the screen without anyone leaning in.
+_SHARE_QR_SIZE = 260
 
 
 class Gui:
@@ -615,6 +620,68 @@ class Gui:
             if window is not None and window.visible():
                 return window.window
         return self.root
+
+    def show_share_code(self, url: str, title: str = "") -> None:
+        """Show a QR code somebody else can scan to get this song.
+
+        The code carries a plain YouTube link, so any camera app reads it;
+        Clipster's own scanner is only what puts it straight into a queue.
+
+        :param url: The link to encode.
+        :param title: Song title, shown above the code.
+        :return: None
+        """
+        parent = self._dialog_parent()
+        dialog = tk.Toplevel(parent)
+        dialog.withdraw()
+        dialog.transient(parent)
+        dialog.title(self.messages["share_title"])
+        dialog.configure(background=self.palette.base)
+        dialog.resizable(False, False)
+
+        frame = ttk.Frame(dialog, style="Panel.TFrame", padding=PAD)
+        frame.pack(fill="both", expand=True)
+        if title:
+            ttk.Label(frame, text=title, style="Title.TLabel", wraplength=320,
+                      justify="left").pack(anchor="w")
+
+        canvas = tk.Canvas(frame, highlightthickness=0, background=self.palette.base,
+                           width=_SHARE_QR_SIZE, height=_SHARE_QR_SIZE)
+        canvas.pack(pady=(PAD, PAD))
+        drawn = draw_qr(canvas, url, _SHARE_QR_SIZE, dark=self.palette.base, light="#ffffff")
+
+        ttk.Label(
+            frame,
+            text=self.messages["share_hint"] if drawn else self.messages["share_missing"],
+            style="Panel.Muted.TLabel",
+            wraplength=320,
+            justify="left",
+        ).pack(anchor="w")
+        ttk.Label(frame, text=url, style="Panel.Muted.TLabel", wraplength=320,
+                  justify="left").pack(anchor="w", pady=(PAD_SMALL, 0))
+
+        buttons = ttk.Frame(frame, style="Panel.TFrame")
+        buttons.pack(fill="x", pady=(PAD, 0))
+
+        def copy_link() -> None:
+            """Put the link on the clipboard, for people without a camera to hand."""
+            try:
+                dialog.clipboard_clear()
+                dialog.clipboard_append(url)
+            except tk.TclError:  # pragma: no cover - no clipboard on this display
+                log.debug("The share link could not be copied", exc_info=True)
+
+        ttk.Button(buttons, text=self.messages["share_copy"], style="Row.TButton",
+                   command=copy_link).pack(side="left")
+        ttk.Button(buttons, text=self.messages["share_close"], style="Accent.TButton",
+                   command=dialog.destroy).pack(side="right")
+
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.update_idletasks()
+        dialog.deiconify()
+        dialog.grab_set()
+        dialog.focus_set()
 
     def toast(self, text: str, duration_ms: int = 4000) -> None:
         """Show a small notification window that closes itself.

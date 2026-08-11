@@ -16,7 +16,7 @@ from typing import Any, Dict
 
 import pytest
 
-from clipster import paths, updater
+from clipster import i18n, paths, updater
 
 
 # ----------------------------------------------------------------------
@@ -26,12 +26,13 @@ class _Info:
     """Stands in for :class:`clipster.updater.UpdateInfo`."""
 
     def __init__(self, *, available=False, remote="2222222222", local="1111111111",
-                 summary="Newer commit", error="") -> None:
+                 summary="Newer commit", error="", unknown=False) -> None:
         self.available = available
         self.remote = remote
         self.local = local
         self.summary = summary
         self.error = error
+        self.unknown = unknown
 
     @property
     def known(self) -> bool:
@@ -74,6 +75,30 @@ def test_a_failed_check_reaches_the_phone_as_a_message(app, monkeypatch) -> None
     result = app.check_update_remote()
     assert result["ok"] is False
     assert "no network" in result["message"]
+
+
+def test_an_installation_without_a_version_offers_the_update_to_the_phone(app, monkeypatch) -> None:
+    """The Android bundle has no .git; it must not be told it is current.
+
+    This is the state the phone was stuck in: no local commit, so nothing to
+    compare, so "newest version" - and the install button never appeared.
+    """
+    monkeypatch.setattr(updater, "check",
+                        lambda *a, **k: _Info(available=True, unknown=True, local=""))
+    result = app.check_update_remote()
+    assert result["ok"] is True
+    assert result["available"] is True
+    assert result["unknown"] is True
+    assert result["message"] != app.messages.format("update_current", commit="2222222222")
+
+
+def test_the_unknown_version_wording_exists_in_every_language() -> None:
+    """Both languages must be able to say it, or the phone shows a raw key."""
+    for language in i18n.available_languages():
+        messages = i18n.load(language)
+        text = messages.format("update_unversioned", commit="abc1234")
+        assert text and "update_unversioned" not in text
+        assert "abc1234" in text
 
 
 def test_installing_from_the_phone_asks_for_a_restart(app, monkeypatch) -> None:
@@ -204,3 +229,118 @@ def test_the_download_folder_label_is_chosen_by_platform(termux: bool, monkeypat
     assert messages[key].strip()
     if termux:
         assert "Download/clipster" in messages[key]
+
+
+# ----------------------------------------------------------------------
+# Feature parity: the phone interface is the Android version
+# ----------------------------------------------------------------------
+def _web(name: str) -> str:
+    """Return one file of the phone interface as text.
+
+    :param name: File name below ``clipster/web``.
+    :return: Its contents.
+    """
+    return (paths.PROJECT_ROOT / "clipster" / "web" / name).read_text(encoding="utf-8")
+
+
+#: Every Streaming control the desktop offers, and the element id that has to
+#: exist in the phone interface for it.  Android is not a second program - it is
+#: this page - so a desktop feature without a row here is a feature the phone
+#: silently does not have.
+_STREAMING_CONTROLS = {
+    "shuffle": 'id="stream-shuffle"',
+    "repeat": 'id="stream-repeat"',
+    "sleep timer": 'id="stream-sleep"',
+    "library": 'id="stream-library"',
+    "share as a QR code": 'id="share-dialog"',
+    "scan a QR code": 'id="scan-dialog"',
+    "stage / visualizer": 'id="stage"',
+    "video playback": 'id="stream-video"',
+    "sortable download list": 'id="sort-row"',
+}
+
+
+@pytest.mark.parametrize("feature", sorted(_STREAMING_CONTROLS))
+def test_every_desktop_streaming_feature_reaches_the_phone(feature: str) -> None:
+    """Whatever the Tk page can do, the page Android shows can do as well."""
+    page = _web("index.html")
+    assert _STREAMING_CONTROLS[feature] in page, (
+        "{0} is missing from the phone interface".format(feature)
+    )
+
+
+#: Settings that must be editable from the phone as well as the desktop, and the
+#: element id that edits them.
+_REMOTE_SETTINGS = {
+    "playback_on_mobile": 'id="set-mobile"',
+    "playback_local_only": 'id="set-local-only"',
+    "discover_shuffle": 'id="set-shuffle"',
+    "discover_repeat": 'id="set-repeat"',
+    "discover_play_video": 'id="set-play-video"',
+    "discover_visualizer": 'id="set-visualizer"',
+    "discover_extend_count": 'id="set-extend-count"',
+}
+
+
+@pytest.mark.parametrize("key", sorted(_REMOTE_SETTINGS))
+def test_the_phone_can_edit_the_same_settings(key: str) -> None:
+    """A setting the phone cannot reach is a setting Android does not have."""
+    from clipster.app import ClipsterApp
+    from clipster.config import Config
+
+    assert hasattr(Config, key) or key in Config.__dataclass_fields__, key
+    assert key in ClipsterApp._REMOTE_SETTING_KEYS, "{0} is not offered remotely".format(key)
+    assert _REMOTE_SETTINGS[key] in _web("index.html"), "{0} has no field".format(key)
+    assert key in _web("app.js"), "{0} is never sent or read".format(key)
+
+
+def test_the_phone_never_decides_the_play_order_by_itself() -> None:
+    """Shuffle and repeat are one rule; the phone asks for it, it does not guess.
+
+    A local "next = index + 1" is exactly how the two platforms drifted apart
+    before, so the endpoint has to exist and the page has to use it.
+    """
+    from clipster.webapi import RemoteApi
+
+    assert hasattr(RemoteApi, "discover_next")
+    assert "/api/discover/next" in _web("app.js")
+
+
+def test_the_shared_play_order_is_what_both_sides_hold() -> None:
+    from clipster.discover_page import DiscoverPage
+    from clipster.discover_session import HeadlessDiscoverSession
+    from clipster.playorder import PlayOrder
+
+    for owner in (DiscoverPage, HeadlessDiscoverSession):
+        for name in ("next_index", "set_shuffle", "set_repeat", "set_sleep_timer"):
+            assert callable(getattr(owner, name, None)), "{0} lacks {1}".format(owner, name)
+    assert PlayOrder is not None
+
+
+def test_the_shell_cache_was_bumped_with_the_interface() -> None:
+    """An installed home-screen copy keeps serving the version it cached."""
+    worker = _web("sw.js")
+    assert "clipster-shell-v4" in worker, "bump SHELL_CACHE when index/app/style change"
+    # Live paths must never be cached, or the phone plays yesterday's queue.
+    for path in ("/api/", "/media/", "/queue/", "/stream/", "/video/"):
+        assert '"{0}"'.format(path) in worker, path
+
+
+def test_the_scanner_has_its_decoder_checked_in() -> None:
+    """A CDN would fail exactly where Clipster is most useful: with no internet."""
+    vendor = paths.PROJECT_ROOT / "clipster" / "web" / "vendor"
+    assert (vendor / "jsqr.js").is_file()
+    assert (vendor / "jsqr-LICENSE.txt").is_file(), "third-party code travels with its licence"
+    assert 'src="/vendor/jsqr.js"' in _web("index.html")
+    assert "https://" not in _web("index.html").split("<script")[-1]
+
+
+def test_the_launcher_may_open_the_camera() -> None:
+    """Without the permission and a WebChromeClient a WebView denies getUserMedia."""
+    launcher = paths.PROJECT_ROOT / "tools" / "android" / "launcher" / "app" / "src" / "main"
+    manifest = (launcher / "AndroidManifest.xml").read_text(encoding="utf-8")
+    activity = (launcher / "java" / "de" / "loresoft" / "youtubeclipster"
+                / "MainActivity.kt").read_text(encoding="utf-8")
+    assert "android.permission.CAMERA" in manifest
+    assert "WebChromeClient" in activity
+    assert "RESOURCE_VIDEO_CAPTURE" in activity

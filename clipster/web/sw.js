@@ -13,8 +13,9 @@
 
 // Bumped whenever index.html / app.js / style.css change, so an installed
 // home-screen copy does not keep serving the previous interface.
-const SHELL_CACHE = "clipster-shell-v3";
-const SHELL = ["/", "/index.html", "/style.css", "/app.js", "/icon.png"];
+const SHELL_CACHE = "clipster-shell-v4";
+const SHELL = ["/", "/index.html", "/style.css", "/app.js", "/icon.png",
+               "/vendor/jsqr.js"];
 
 self.addEventListener("install", (event) => {
     event.waitUntil(
@@ -40,7 +41,10 @@ self.addEventListener("fetch", (event) => {
     const url = new URL(request.url);
     const live = request.method !== "GET"
         || url.pathname.startsWith("/api/")
-        || url.pathname.startsWith("/media/");
+        || url.pathname.startsWith("/media/")
+        || url.pathname.startsWith("/queue/")
+        || url.pathname.startsWith("/stream/")
+        || url.pathname.startsWith("/video/");
     if (live) {
         // Never answer these from a cache - and never store them either.
         return;

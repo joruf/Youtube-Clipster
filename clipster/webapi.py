@@ -26,8 +26,10 @@ from .app import (
     SUBMIT_RUNNING,
     SUBMIT_WAITING,
 )
+from .downloader import extract_video_id, share_url
 from .history import HistoryEntry
 from .logging_setup import get_logger
+from .qrview import qr_svg
 
 log = get_logger(__name__)
 
@@ -125,12 +127,21 @@ class RemoteApi:
         entries: List[HistoryEntry] = self._app.history.entries
         return 200, {"downloads": [entry_to_dict(entry) for entry in entries]}
 
-    def status(self) -> Tuple[int, Dict[str, Any]]:
+    def status(self, connection: str = "") -> Tuple[int, Dict[str, Any]]:
         """Return what is downloading right now.
 
+        The device reports its own connection here rather than through a call
+        of its own: it polls this while the page is open anyway, so the backend
+        learns about a walk out of Wi-Fi within one poll and without extra
+        traffic.  Only the device on the connection can know this - the PC
+        cannot see which network a phone is holding.
+
+        :param connection: What ``navigator.connection`` reported, if anything.
         :return: ``(200, {"active": [...], "queued": int, "parallel": int, ...})``
         """
         self._record_contact()
+        if connection:
+            self._app.set_connection_type(connection)
         return 200, self._app.remote_status()
 
     def quit(self) -> Tuple[int, Dict[str, Any]]:
@@ -288,6 +299,79 @@ class RemoteApi:
             return 200, result
         return _DISCOVER_STATUS.get(str(result.get("error")), 400), result
 
+    def share_code(self, video_id: str) -> Tuple[int, str]:
+        """Return a QR code for one song, as SVG.
+
+        Only a video id is accepted, and the URL around it is built here: this
+        is a share button, not a service that turns arbitrary text into codes.
+
+        :param video_id: The eleven character YouTube id.
+        :return: ``(status, svg)``; the SVG is empty when nothing was produced.
+        """
+        self._record_contact()
+        url = share_url(video_id)
+        if not url:
+            return 404, ""
+        svg = qr_svg(url)
+        if svg is None:
+            # The optional qrcode package is missing; say so rather than
+            # serving a broken image the page cannot explain.
+            log.info("No QR code for %s: the qrcode package is not installed.", video_id)
+            return 503, ""
+        return 200, svg
+
+    def scan(self, text: str) -> Tuple[int, Dict[str, Any]]:
+        """Take what a camera read and put the song in the queue.
+
+        The scanned text is parsed with the same
+        :func:`clipster.downloader.extract_video_id` the clipboard watcher uses,
+        so a link that works when copied also works when scanned - and the
+        pattern is not maintained twice, once here and once in JavaScript.
+
+        :param text: Whatever the scanner decoded.
+        :return: The HTTP status and the result including the new state.
+        """
+        self._record_contact()
+        video_id = extract_video_id(str(text or ""))
+        if not video_id:
+            return 400, {"ok": False, "error": "not_a_youtube_link"}
+        try:
+            # Queued, not started: a song somebody just shared should not cut
+            # off whatever is currently playing.
+            result = self._app.discover_remote_enqueue(video_id, "", "", 0, False)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            log.debug("Scan enqueue refused: %s", exc)
+            return 503, {"ok": False, "error": "closing"}
+        result["video_id"] = video_id
+        if result.get("ok"):
+            return 200, result
+        return _DISCOVER_STATUS.get(str(result.get("error")), 400), result
+
+    def streaming_allowed(self) -> bool:
+        """Return ``True`` when tracks that are not on disk may be fetched.
+
+        :return: Whether the current connection allows streaming.
+        """
+        try:
+            return bool(self._app.streaming_allowed())
+        except Exception:  # pragma: no cover - a shutting-down app must not 500
+            log.debug("The playback rule could not be read", exc_info=True)
+            return True
+
+    def discover_next(self, index: int, automatic: bool = True) -> Tuple[int, Dict[str, Any]]:
+        """Ask which queue row the device should play next.
+
+        :param index: The row the device is on.
+        :param automatic: ``True`` when the song ended by itself.
+        :return: The HTTP status and ``{"ok", "index"}``.
+        """
+        self._record_contact()
+        try:
+            return 200, self._app.discover_remote_next(index, automatic)
+        except RuntimeError as exc:
+            log.debug("Streaming next refused: %s", exc)
+            return 503, {"ok": False, "index": -1, "error": "closing"}
+
     def discover_audio(self, video_id: str) -> Tuple[str, Dict[str, str]]:
         """Resolve the audio stream of a queued track for playback on a device.
 
@@ -299,6 +383,20 @@ class RemoteApi:
             url, headers = self._app.discover_remote_audio(video_id)
         except RuntimeError as exc:
             log.debug("Streaming audio refused: %s", exc)
+            return "", {}
+        return str(url or ""), dict(headers or {})
+
+    def discover_video(self, video_id: str) -> Tuple[str, Dict[str, str]]:
+        """Resolve the video stream of a queued track for playback on a device.
+
+        :param video_id: The video id from the queue.
+        :return: ``(url, headers)``; the URL is empty when nothing was resolved.
+        """
+        self._record_contact()
+        try:
+            url, headers = self._app.discover_remote_video(video_id)
+        except RuntimeError as exc:
+            log.debug("Streaming video refused: %s", exc)
             return "", {}
         return str(url or ""), dict(headers or {})
 
@@ -317,6 +415,32 @@ class RemoteApi:
         if entry is None:
             return None
         return entry.file_path()
+
+    def queue_media(self, position: str) -> Optional[Path]:
+        """Resolve a queue position to the file it plays from.
+
+        The Streaming queue can hold songs that are already on disk - the
+        library.  Those must play on the phone without touching the network,
+        which is the whole point of the mobile-data rule, and ``/stream/`` can
+        only serve things that come from YouTube.
+
+        Like :meth:`media`, no part of the request reaches the file system: the
+        position picks a track the queue already holds and the path stored on it
+        is used, so nothing can be talked into serving an arbitrary file.
+
+        :param position: The queue index, as it arrived in the path.
+        :return: The existing file, or ``None``.
+        """
+        self._record_contact()
+        try:
+            index = int(position)
+        except (TypeError, ValueError):
+            return None
+        try:
+            return self._app.queue_track_path(index)
+        except RuntimeError as exc:
+            log.debug("Queue media refused: %s", exc)
+            return None
 
     # ------------------------------------------------------------------
     # Changing

@@ -252,6 +252,41 @@ Content types come from the fixed `webserver.CONTENT_TYPES` table, never from
 page, style, script and icon at once puts four server threads into it simultaneously - which can abort
 the process and take the downloader with it.
 
+Three more media routes exist next to `/stream/`:
+
+* `GET /queue/<index>` serves a queue row that plays from disk - the library. On Android the backend
+  *is* on the phone, so this is how downloaded songs play with the radio switched off. The path never
+  travels; only the index does, and `ClipsterApp.queue_track_path` resolves it.
+* `GET /video/<video_id>` is the same relay with `player.BROWSER_VIDEO_FORMAT`: one progressive MP4,
+  because a `<video>` element cannot mux separate streams the way mpv does.
+* `GET /api/qr?v=<video_id>` returns the share code as SVG, built by `qrview.qr_svg`. Only a video id
+  is accepted and the URL is built server-side - a share button, not a text-to-QR service.
+
+`POST /api/scan` takes what a camera read and parses it with `downloader.extract_video_id`, the same
+function the clipboard watcher uses, then queues it without starting it. The decoder runs in the
+browser (`web/vendor/jsqr.js`, checked in) because decoding in Python would mean `pyzbar` or OpenCV -
+native libraries, on Termux, on a phone. `getUserMedia` needs a secure context, which the Android
+launcher has because it loads `http://127.0.0.1`; over a LAN address the Scan button hides itself.
+
+### Feature parity with Android
+
+Android is not a second program - it is this page, wrapped in a WebView by
+`tools/android/launcher/`. So a desktop feature is only finished when `clipster/web/` has it too, and
+`tests/test_platform_parity.py` fails when it does not: every Streaming control and every remotely
+editable setting has a row there.
+
+Two rules keep the platforms from drifting rather than merely re-synchronising them:
+
+* **One play order.** `playorder.PlayOrder` decides what comes after a song. `DiscoverPage` and
+  `HeadlessDiscoverSession` both hold one, and the phone asks over `POST /api/discover/next` instead
+  of taking the next row down the list - which is exactly how shuffle and repeat used to be
+  desktop-only.
+* **One connection rule.** `netmode` decides between streaming and the download folder. Only the
+  device on the connection can know what it is, so `app.js` reports it with its status polls
+  (`/api/status?net=cellular`); a desktop reports nothing and is therefore never restricted. The rule
+  is applied twice on purpose - in the queue and again in `discover_remote_audio` - so a page left
+  open on a phone cannot keep pulling audio after the user walks out of Wi-Fi.
+
 ### Bootstrap / installer
 
 `cli.py` + `installer.py` + `dependencies.py`: ensure Python, tkinter, venv, yt-dlp, ffmpeg, clipboard helpers, optional tray stack. `setup_ui.py` shows the setup window while deps install - naming the component in progress, and reporting an unfinished setup in a dialog, because `run.bat` starts `pythonw.exe` and there is no console to print to.
@@ -279,8 +314,10 @@ the process and take the downloader with it.
 | `installer.py` | Install missing deps |
 | `logging_setup.py` | Console + file logging |
 | `navwindow.py` | Small download prompt / progress window |
+| `netmode.py` | The one rule deciding streaming vs. downloaded files on a connection |
 | `paths.py` | Platform paths; `YOUTUBE_CLIPSTER_HOME` override |
 | `player.py` | In-tab Streaming player |
+| `playorder.py` | Shuffle, repeat and the shuffle bag, shared by the page and the phone |
 | `recommend.py` | Deezer / ListenBrainz similarity helpers |
 | `setup_ui.py` | Early setup window: progress, failure dialog |
 | `shortcuts.py` | Desktop shortcut + autostart |
@@ -294,13 +331,14 @@ the process and take the downloader with it.
 | `webapi.py` | Phone interface endpoints as plain data, no HTTP |
 | `phone_page.py` | The Remote page (file name unchanged): switch, QR code, live status, firewall hint |
 | `phonesetup.py` | The same setup as a console wizard (`--phone-setup`) |
-| `qrview.py` | Draws a QR code onto a Tk canvas (no Pillow needed) |
+| `qrview.py` | Draws a QR code onto a Tk canvas or as SVG (no Pillow needed) |
 | `scroller.py` | Scrollable container shared by the table and the Phone page |
 | `tooltip.py` | The hover popup shared by the Streaming page and the download list |
 | `headless.py` | `--headless`: a timer-only event loop plus a do-nothing interface |
 | `android.py` | adb wrapper: device states, bundle, push with progress |
 | `android_dialog.py` | The four-step "Install on Android" window |
 | `web/` | The page the phone loads (HTML, CSS, JS, manifest, service worker) |
+| `web/vendor/` | Third-party code served to the phone, checked in with its licence |
 | `viewwindow.py` | Large multi-page window |
 | `visualizer.py` | Stage mode ids and drawing helpers |
 | `locales/*.json` | UI strings (`en`, `de`) |
@@ -355,6 +393,10 @@ Defaults live on `Config` and in `config.example.json`.
 | `discover_extend_count` | `8` | How many to fetch on extend |
 | `discover_play_video` | `false` | Video vs audio playback preference |
 | `discover_visualizer` | `pulse` | Stage mode (Beat ring default) |
+| `discover_shuffle` | `false` | Play the queue in random order |
+| `discover_repeat` | `off` | `off` / `all` / `one` |
+| `playback_on_mobile` | `stream` | On a mobile connection: `stream` / `local` / `ask` |
+| `playback_local_only` | `false` | Manual override: downloaded songs only, any connection |
 
 ### Terms
 

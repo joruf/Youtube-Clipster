@@ -54,11 +54,15 @@ you can see it working; it also shows the firewall command if one is needed.
 
 ![The Remote page](images/phone-page.png)
 
-The phone has two tabs: **Downloads** for links and the download list, and **Streaming** as a remote
-control - search, queue, transport, likes, volume and *Find similar*. Type into the search box, stop
-typing, and the results appear; tap one and it plays and joins the queue. **Play on** decides whether
-the sound comes out of the PC or out of the device itself - the latter is what you want when the phone
-is paired with a speaker. Streaming needs its terms accepted once on the PC before the phone may use it.
+The phone has four tabs, and they can do what the desktop windows do - the phone interface *is* the
+Android version, so it is kept level with the desktop rather than trailing it. **Downloads** for links
+and the download list (sortable by name, length, size or date), **Streaming** as a remote control -
+search, queue, transport, likes, volume, *Find similar*, *My downloads*, shuffle, repeat, the sleep
+timer and the stage - plus **Settings** and **About**. Type into the search box, stop typing, and the
+results appear; tap one and it plays and joins the queue. **Play on** decides whether the sound comes
+out of the PC or out of the device itself - the latter is what you want when the phone is paired with a
+speaker, and it is also when the stage is driven by the phone's own audio. Streaming needs its terms
+accepted once on the PC before the phone may use it.
 
 ![Streaming from the phone](images/phone-streaming.png)
 
@@ -167,6 +171,40 @@ New installations default to **Beat ring** (`pulse`). Changing the Stage selecti
 - Click a queue row to play it; use transport controls for previous / next / pause.
 - Per-row download sends that track through the normal download pipeline.
 - Like / dislike (taste) votes are stored locally and help shape future recommendations.
+- **Shuffle** plays the queue in random order — every song once before anything repeats, rather than
+  the same three all evening.
+- **Repeat** steps through off, the whole queue, and this one song. Repeating one song only applies
+  when it ends by itself; pressing *next* always moves on.
+- **Sleep timer** stops playback after 15 to 90 minutes.
+
+### Your own downloads, and mobile data
+
+**My downloads** fills the queue from your download folder instead of from YouTube. Those songs need
+no connection at all — which is the point of the next setting.
+
+Under **Settings → Playback**, *On mobile data* decides what Streaming does when the device is on a
+mobile connection:
+
+| Choice | What happens |
+|--------|--------------|
+| Stream online | Behaves as always. The default, so nothing changes for an existing install. |
+| Downloaded songs only | The queue switches to your download folder, with a note saying why. |
+| Ask every time | You are asked once per connection before anything is streamed. |
+
+Only the device that is *on* the connection can tell what it is, so this takes effect on the phone;
+a PC never reports a mobile connection and is never restricted by it. When you know the allowance is
+gone, the *Always play downloaded songs only* switch overrides the detection everywhere.
+
+### Sharing a song
+
+Long-press a queue row or a download row (right-click on a desktop) and Clipster shows a QR code.
+Someone else scans it — with Clipster's own **Scan** button, and the song drops straight into their
+playlist. The code holds a plain YouTube link, so an ordinary camera app can read it too; it just
+opens YouTube instead of Clipster.
+
+Scanning needs a camera, so it appears in the Clipster app on Android. Opening the same page in a
+browser over a network address hides the button: browsers only allow camera access on a local or
+encrypted address, and no setting changes that.
 
 Streaming requires accepting the Streaming terms once (see [First start](#first-start-terms)).
 
@@ -193,6 +231,12 @@ If update checks are enabled, Clipster compares your install to the `main` branc
 
 - Git clone: fast-forward `git pull` when the tree is clean.
 - Archive install: download ZIP overlay without touching your config or history.
+
+Which version you have is read from git in a clone, and from a small marker file
+(`clipster/BUILD_COMMIT`) in every other kind of install — including the one on your phone, which
+carries no `.git` at all. The marker is written when the Android bundle is packed and again after
+every update. An installation that predates this and has no marker says so and offers to fetch the
+newest version rather than claiming to be current.
 
 yt-dlp itself is updated on its own schedule (`update_check_hours`), or force with `python3 run.py --update`.
 

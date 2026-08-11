@@ -58,14 +58,46 @@ def test_a_directory_without_git_is_not_a_checkout(tmp_path: Path) -> None:
 
 
 # ----------------------------------------------------------------------
+# The build marker: how an installation without .git names its version
+# ----------------------------------------------------------------------
+def test_a_written_marker_is_read_back(tmp_path: Path) -> None:
+    assert updater.write_marker("c" * 40, tmp_path) is True
+    assert updater.read_marker(tmp_path) == "c" * 40
+
+
+def test_no_marker_reads_as_no_version(tmp_path: Path) -> None:
+    assert updater.read_marker(tmp_path) == ""
+
+
+def test_a_damaged_marker_counts_as_no_version(tmp_path: Path) -> None:
+    """Half a file is worse than none: it would be compared and never match."""
+    target = updater.marker_path(tmp_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("not a commit\n", encoding="utf-8")
+    assert updater.read_marker(tmp_path) == ""
+
+
+def test_an_empty_commit_is_not_written(tmp_path: Path) -> None:
+    assert updater.write_marker("", tmp_path) is False
+    assert not updater.marker_path(tmp_path).exists()
+
+
+def test_a_bundle_installation_names_its_commit_from_the_marker(tmp_path: Path) -> None:
+    """No .git, but the version is known - this is the Android case."""
+    updater.write_marker("d" * 40, tmp_path)
+    assert updater.is_git_checkout(tmp_path) is False
+    assert updater.installed_commit(tmp_path) == "d" * 40
+
+
+# ----------------------------------------------------------------------
 # Checking
 # ----------------------------------------------------------------------
 def test_a_different_commit_means_an_update(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(updater.urllib.request, "urlopen",
                         lambda *a, **k: _Response(_api_answer("b" * 40).getvalue()))
-    monkeypatch.setattr(updater, "local_commit", lambda root=None: "a" * 40)
+    monkeypatch.setattr(updater, "installed_commit", lambda root=None: "a" * 40)
     info = updater.check(tmp_path)
-    assert info.known and info.available
+    assert info.known and info.available and not info.unknown
     assert info.local == "a" * 10 and info.remote == "b" * 10
     assert info.summary == "A new commit"
 
@@ -73,18 +105,37 @@ def test_a_different_commit_means_an_update(monkeypatch, tmp_path: Path) -> None
 def test_the_same_commit_means_nothing_to_do(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(updater.urllib.request, "urlopen",
                         lambda *a, **k: _Response(_api_answer("a" * 40).getvalue()))
-    monkeypatch.setattr(updater, "local_commit", lambda root=None: "a" * 40)
+    monkeypatch.setattr(updater, "installed_commit", lambda root=None: "a" * 40)
     info = updater.check(tmp_path)
-    assert info.known and not info.available
+    assert info.known and not info.available and not info.unknown
 
 
-def test_an_unknown_local_commit_never_claims_an_update(monkeypatch, tmp_path: Path) -> None:
-    """Without a checkout there is nothing to compare, so do not offer one."""
+def test_an_unknown_version_offers_the_update_instead_of_claiming_to_be_current(
+        monkeypatch, tmp_path: Path) -> None:
+    """An installation that cannot name its commit must not answer "newest".
+
+    This is what kept the Android update button dead: the Termux bundle has no
+    ``.git``, so there was nothing to compare and the phone was told it was up
+    to date every single time.
+    """
     monkeypatch.setattr(updater.urllib.request, "urlopen",
                         lambda *a, **k: _Response(_api_answer("b" * 40).getvalue()))
-    monkeypatch.setattr(updater, "local_commit", lambda root=None: "")
     info = updater.check(tmp_path)
-    assert info.known and not info.available
+    assert info.known and info.available and info.unknown
+    assert info.local == "" and info.remote == "b" * 10
+
+
+def test_a_marked_installation_is_compared_like_a_checkout(monkeypatch, tmp_path: Path) -> None:
+    """The whole point of the marker: the phone can tell old from current."""
+    monkeypatch.setattr(updater.urllib.request, "urlopen",
+                        lambda *a, **k: _Response(_api_answer("b" * 40).getvalue()))
+    updater.write_marker("a" * 40, tmp_path)
+    info = updater.check(tmp_path)
+    assert info.available and not info.unknown
+
+    updater.write_marker("b" * 40, tmp_path)
+    info = updater.check(tmp_path)
+    assert not info.available and not info.unknown
 
 
 def test_a_network_failure_is_reported_not_raised(monkeypatch, tmp_path: Path) -> None:
@@ -185,6 +236,45 @@ def test_the_archive_replaces_files_but_keeps_user_data(tmp_path: Path, monkeypa
     assert (target / "README.md").read_text() == "new readme\n"
     assert (target / "config.json").read_text() == "mine\n", "user data must survive"
     assert (target / "history.json").read_text() == "mine\n"
+
+
+def test_the_archive_records_which_commit_it_installed(tmp_path: Path, monkeypatch) -> None:
+    """Otherwise the next check has nothing to compare and offers a reinstall forever."""
+    target = tmp_path / "install"
+    (target / "clipster").mkdir(parents=True)
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        bundle.writestr("youtube-clipster-main/clipster/app.py", "new\n")
+
+    answers = [_api_answer("e" * 40).getvalue(), buffer.getvalue()]
+
+    def next_answer(*args, **kwargs):
+        """Serve the commit lookup first, the archive second."""
+        return _Response(answers.pop(0))
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", next_answer)
+    ok, message = updater.apply(target)
+    assert ok, message
+    assert updater.read_marker(target) == "e" * 40
+    assert updater.installed_commit(target) == "e" * 40
+
+
+def test_an_unreachable_api_still_installs_the_archive(tmp_path: Path, monkeypatch) -> None:
+    """A missing marker costs the next comparison, never the update itself."""
+    target = tmp_path / "install"
+    target.mkdir()
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        bundle.writestr("youtube-clipster-main/run.py", "new\n")
+    monkeypatch.setattr(updater.urllib.request, "urlopen",
+                        lambda *a, **k: _Response(buffer.getvalue()))
+
+    ok, message = updater.apply(target)
+    assert ok, message
+    assert (target / "run.py").read_text() == "new\n"
+    assert updater.read_marker(target) == ""
 
 
 def test_a_failed_download_is_reported(tmp_path: Path, monkeypatch) -> None:

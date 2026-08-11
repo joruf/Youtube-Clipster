@@ -75,6 +75,8 @@
         <h2>Now playing</h2>
         <p id="stream-title" class="stream-title">Nothing yet.</p>
         <p id="stream-uploader" class="meta"></p>
+        <canvas id="stage" class="stage" hidden></canvas>
+        <video id="stream-video" class="stream-video" playsinline controls hidden></video>
         <div class="track" id="stream-track">
             <div class="fill" id="stream-fill"></div>
         </div>
@@ -95,8 +97,26 @@
     <section class="card" id="queue-card" hidden>
         <div class="row between">
             <h2>Queue</h2>
-            <button id="stream-refresh" type="button" class="quiet">Find similar</button>
+            <div class="row">
+                <button id="stream-library" type="button" class="quiet">My downloads</button>
+                <button id="stream-refresh" type="button" class="quiet">Find similar</button>
+            </div>
         </div>
+        <div class="row" id="playback-modes">
+            <button id="stream-shuffle" class="icon" type="button" aria-label="Shuffle">🔀</button>
+            <button id="stream-repeat" class="icon" type="button" aria-label="Repeat">🔁</button>
+            <label class="meta" for="stream-sleep">Sleep</label>
+            <select id="stream-sleep" class="field narrow">
+                <option value="0">Off</option>
+                <option value="15">15 min</option>
+                <option value="30">30 min</option>
+                <option value="45">45 min</option>
+                <option value="60">60 min</option>
+                <option value="90">90 min</option>
+            </select>
+            <button id="stream-scan" class="icon" type="button" aria-label="Scan a code" hidden>📷</button>
+        </div>
+        <p id="playback-note" class="meta"></p>
         <ul id="queue" class="downloads"></ul>
         <p id="queue-empty" class="message" hidden>No songs yet — tap Find similar.</p>
     </section>
@@ -147,6 +167,13 @@
             <label class="chip"><input type="radio" name="dl-filter" value="ok"><span>Ready</span></label>
             <label class="chip"><input type="radio" name="dl-filter" value="failed"><span>Failed</span></label>
             <label class="chip"><input type="radio" name="dl-filter" value="canceled"><span>Canceled</span></label>
+        </div>
+        <div class="row sort-row" id="sort-row" role="group" aria-label="Sort">
+            <span class="meta">Sort</span>
+            <button class="sort" type="button" data-sort="name">Name</button>
+            <button class="sort" type="button" data-sort="duration">Length</button>
+            <button class="sort" type="button" data-sort="size">Size</button>
+            <button class="sort on" type="button" data-sort="date">Date ▼</button>
         </div>
         <ul id="downloads" class="downloads"></ul>
         <p id="empty" class="message" hidden>Nothing here yet.</p>
@@ -200,6 +227,36 @@
         <label class="label" for="set-max-results">Max results</label>
         <input id="set-max-results" class="field" type="number" min="1" step="1">
         <label class="check"><input id="set-require-suffix" type="checkbox"> Require suffix in titles</label>
+
+        <h2 class="section">Playback</h2>
+        <label class="label" for="set-mobile">On mobile data</label>
+        <select id="set-mobile" class="field">
+            <option value="stream">Stream online</option>
+            <option value="local">Downloaded songs only</option>
+            <option value="ask">Ask every time</option>
+        </select>
+        <label class="check"><input id="set-local-only" type="checkbox"> Always play downloaded songs only</label>
+        <p class="meta">Overrides the detection — useful once the data allowance is gone.</p>
+        <label class="check"><input id="set-shuffle" type="checkbox"> Shuffle the queue</label>
+        <label class="label" for="set-repeat">Repeat</label>
+        <select id="set-repeat" class="field">
+            <option value="off">Off</option>
+            <option value="all">Whole queue</option>
+            <option value="one">This song</option>
+        </select>
+        <label class="check"><input id="set-play-video" type="checkbox"> Play video instead of audio</label>
+        <label class="label" for="set-visualizer">Stage</label>
+        <select id="set-visualizer" class="field">
+            <option value="off">Off</option>
+            <option value="text">Text only</option>
+            <option value="waveform">Waveform</option>
+            <option value="cover">Cover</option>
+            <option value="pulse">Beat ring</option>
+            <option value="spectrum">Spectrum</option>
+            <option value="visualizer">Visualizer</option>
+        </select>
+        <label class="label" for="set-extend-count">Songs to add when topping up</label>
+        <input id="set-extend-count" class="field" type="number" min="1" step="1">
 
         <h2 class="section">Cookies (YouTube)</h2>
         <p class="meta">Only needed when downloads are blocked. Use your own account and accept the risk.</p>
@@ -265,6 +322,27 @@
     </div>
 </dialog>
 
+<dialog id="share-dialog" class="share-dialog">
+    <h2 id="share-title">Share</h2>
+    <img id="share-code" class="share-code" alt="QR code for this song">
+    <p id="share-hint" class="meta">Let the other person scan this with Clipster.</p>
+    <p id="share-link" class="meta share-link"></p>
+    <div class="row">
+        <button id="share-copy" type="button" class="quiet">Copy link</button>
+        <button id="share-close" type="button" class="primary">Close</button>
+    </div>
+</dialog>
+
+<dialog id="scan-dialog" class="scan-dialog">
+    <h2>Scan a code</h2>
+    <video id="scan-video" class="scan-video" playsinline muted></video>
+    <p id="scan-hint" class="meta">Hold the code in front of the camera.</p>
+    <div class="row">
+        <button id="scan-close" type="button" class="primary">Cancel</button>
+    </div>
+</dialog>
+
+<script src="/vendor/jsqr.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

@@ -169,6 +169,51 @@ def test_build_leftovers_stay_behind(checkout: Path, tmp_path: Path, unwanted: s
     assert not [name for name in names if unwanted in name.split("/")], unwanted
 
 
+def test_the_bundle_records_the_commit_it_was_built_from(checkout: Path, tmp_path: Path,
+                                                        monkeypatch) -> None:
+    """The phone has no .git, so this marker is its only way to know its version."""
+    from clipster import updater
+
+    monkeypatch.setattr(updater, "installed_commit", lambda root=None: "f" * 40)
+    archive = android.make_bundle(checkout, tmp_path / "bundle.tar.gz")
+    with tarfile.open(archive) as opened:
+        assert "youtube-clipster/clipster/BUILD_COMMIT" in opened.getnames()
+        member = opened.extractfile("youtube-clipster/clipster/BUILD_COMMIT")
+        assert member is not None
+        assert member.read().decode("utf-8").strip() == "f" * 40
+
+
+def test_an_existing_marker_is_replaced_not_duplicated(checkout: Path, tmp_path: Path,
+                                                       monkeypatch) -> None:
+    """Building a bundle from an installation that already carries one."""
+    from clipster import updater
+
+    stale = checkout / updater.MARKER_NAME
+    stale.write_text("a" * 40 + "\n", encoding="utf-8")
+    monkeypatch.setattr(updater, "installed_commit", lambda root=None: "f" * 40)
+
+    archive = android.make_bundle(checkout, tmp_path / "bundle.tar.gz")
+    with tarfile.open(archive) as opened:
+        names = opened.getnames()
+        member = opened.extractfile("youtube-clipster/clipster/BUILD_COMMIT")
+        assert member is not None
+        assert member.read().decode("utf-8").strip() == "f" * 40
+    assert names.count("youtube-clipster/clipster/BUILD_COMMIT") == 1
+
+
+def test_a_checkout_that_cannot_name_its_commit_still_packs(checkout: Path,
+                                                            tmp_path: Path, monkeypatch) -> None:
+    """No marker is a worse update experience, never a failed bundle."""
+    from clipster import updater
+
+    monkeypatch.setattr(updater, "installed_commit", lambda root=None: "")
+    archive = android.make_bundle(checkout, tmp_path / "bundle.tar.gz")
+    with tarfile.open(archive) as opened:
+        names = opened.getnames()
+    assert "youtube-clipster/run.py" in names
+    assert not [name for name in names if name.endswith("BUILD_COMMIT")]
+
+
 def test_the_progress_counts_every_file(checkout: Path, tmp_path: Path) -> None:
     seen: list = []
     android.make_bundle(checkout, tmp_path / "bundle.tar.gz",

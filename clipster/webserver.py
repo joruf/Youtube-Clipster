@@ -479,7 +479,8 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
             elif path == "/api/downloads":
                 self._answer(*api.downloads())
             elif path == "/api/status":
-                self._answer(*api.status())
+                query = parse_qs(urlparse(self.path).query)
+                self._answer(*api.status(str((query.get("net") or [""])[0])))
             elif path == "/api/about":
                 self._answer(*api.about())
             elif path == "/api/terms":
@@ -490,10 +491,17 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
                 self._answer(*api.update_check())
             elif path == "/api/discover":
                 self._answer(*api.discover())
+            elif path == "/api/qr":
+                query = parse_qs(urlparse(self.path).query)
+                self._serve_qr(str((query.get("v") or [""])[0]))
             elif path.startswith("/media/"):
                 self._serve_media(path[len("/media/"):])
+            elif path.startswith("/queue/"):
+                self._serve_queue_media(path[len("/queue/"):])
             elif path.startswith("/stream/"):
                 self._relay_stream(path[len("/stream/"):])
+            elif path.startswith("/video/"):
+                self._relay_stream(path[len("/video/"):], want_video=True)
             elif path in static:
                 self._serve_static(path)
             else:
@@ -512,7 +520,7 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
             if route not in ("/api/submit", "/api/discover", "/api/discover/search",
                              "/api/discover/queue", "/api/quit", "/api/settings",
                              "/api/terms", "/api/downloads/clear", "/api/downloads/hide",
-                             "/api/update"):
+                             "/api/update", "/api/scan", "/api/discover/next"):
                 self._not_found()
                 return
             if route == "/api/quit":
@@ -548,6 +556,15 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
                 return
             if route == "/api/discover/queue":
                 self._answer(*api.discover_enqueue(payload))
+                return
+            if route == "/api/scan":
+                self._answer(*api.scan(str(payload.get("text") or "")))
+                return
+            if route == "/api/discover/next":
+                self._answer(*api.discover_next(
+                    _as_int(payload.get("index"), -1),
+                    bool(payload.get("automatic", True)),
+                ))
                 return
             if route == "/api/discover":
                 self._answer(*api.discover_command(
@@ -595,9 +612,47 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
                 extra["Cache-Control"] = "no-store"
             self._send(HTTPStatus.OK, body, content_type(target.name), extra)
 
+        def _serve_qr(self, video_id: str) -> None:
+            """Send the share code for one song as an SVG image.
+
+            :param video_id: The video id taken from the query string.
+            :return: None
+            """
+            status, svg = api.share_code(video_id)
+            if status != 200 or not svg:
+                self._send_json(HTTPStatus(status), {"error": "no_code"})
+                return
+            payload = svg.encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            # The code for a given id never changes, but it is cheap to build
+            # and a stale one would be confusing; no caching keeps it simple.
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(payload)
+
         def _serve_media(self, entry_id: str) -> None:
-            """Stream a downloaded file, honouring a ``Range`` request."""
-            target = api.media(entry_id)
+            """Stream a file from the download list, honouring a ``Range`` request."""
+            self._serve_file(api.media(entry_id))
+
+        def _serve_queue_media(self, position: str) -> None:
+            """Stream a queued library track, honouring a ``Range`` request.
+
+            Needed so the phone can play what is already on disk: those songs
+            keep working with no connection at all, which is what the queue
+            falls back to on mobile data.
+            """
+            self._serve_file(api.queue_media(position))
+
+        def _serve_file(self, target: Optional[Path]) -> None:
+            """Send one file to the device, honouring a ``Range`` request.
+
+            :param target: The resolved file, or ``None`` for a 404.
+            :return: None
+            """
             if target is None:
                 self._not_found()
                 return
@@ -651,7 +706,7 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
             log.debug("The source ignored the range; serving %s-%s of %s here", start, end, total)
             return start, (start, end, total)
 
-        def _relay_stream(self, video_id: str) -> None:
+        def _relay_stream(self, video_id: str, *, want_video: bool = False) -> None:
             """Pass a Streaming track through to the device that asked for it.
 
             Relayed rather than redirected: YouTube's own URLs are bound to the
@@ -659,9 +714,18 @@ def _make_handler(api: Any, token: str, static: Dict[str, Path]) -> type:
             the request out of this origin, where the token protects it.
 
             :param video_id: The video id from the queue.
+            :param want_video: Serve picture and sound rather than sound alone.
             :return: None
             """
-            upstream, upstream_headers = api.discover_audio(video_id)
+            if not api.streaming_allowed():
+                # Said plainly rather than as a 404: the page has to tell the
+                # difference between "no such track" and "not on mobile data",
+                # because only one of those is worth offering the library for.
+                log.info("Refused to relay %s: playback is limited to local files.", video_id)
+                self._send_json(HTTPStatus.FORBIDDEN, {"error": "local_only"})
+                return
+            upstream, upstream_headers = (api.discover_video(video_id) if want_video
+                                          else api.discover_audio(video_id))
             if not upstream:
                 self._not_found()
                 return

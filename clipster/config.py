@@ -103,6 +103,13 @@ class Config:
     discover_shuffle: bool = False
     #: ``off``, ``all`` (queue starts over) or ``one`` (the same song again).
     discover_repeat: str = "off"
+    #: What Streaming does on a mobile connection: ``stream`` as usual,
+    #: ``local`` for downloaded files only, or ``ask`` once per connection.
+    #: See :mod:`clipster.netmode`.
+    playback_on_mobile: str = "stream"
+    #: Play only downloaded files, whatever the connection is. The manual
+    #: override for "I know what my data plan looks like right now".
+    playback_local_only: bool = False
     #: Serve the phone interface on the local network. Off by default on
     #: purpose: it lets other devices start downloads and read finished files.
     remote_enabled: bool = False

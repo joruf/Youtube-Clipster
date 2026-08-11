@@ -48,20 +48,20 @@ def test_the_queue_plays_in_order_and_then_stops(page) -> None:
 
 
 def test_repeat_all_starts_the_queue_over(page) -> None:
-    page._repeat = REPEAT_ALL
+    page.set_repeat(REPEAT_ALL)
     page._selected = 2
     assert page.next_index(automatic=True) == 0
 
 
 def test_repeat_one_plays_the_same_song_again(page) -> None:
-    page._repeat = REPEAT_ONE
+    page.set_repeat(REPEAT_ONE)
     page._selected = 1
     assert page.next_index(automatic=True) == 1
 
 
 def test_pressing_next_never_repeats_the_same_song(page) -> None:
     """Repeat-one is for a song that ended, not for a deliberate skip."""
-    page._repeat = REPEAT_ONE
+    page.set_repeat(REPEAT_ONE)
     page._selected = 1
     assert page.next_index(automatic=False) == 2
 
@@ -70,7 +70,7 @@ def test_pressing_next_never_repeats_the_same_song(page) -> None:
 # Shuffle
 # ----------------------------------------------------------------------
 def test_shuffle_plays_every_song_before_repeating_one(page) -> None:
-    page._shuffle = True
+    page.set_shuffle(True)
     page._tracks = _tracks(6)
     page.player.set_playlist(page._tracks)
     page._selected = 0
@@ -86,14 +86,14 @@ def test_shuffle_plays_every_song_before_repeating_one(page) -> None:
 
 
 def test_shuffle_does_not_hand_back_the_running_song(page) -> None:
-    page._shuffle = True
+    page.set_shuffle(True)
     page._selected = 1
     for _ in range(2):
         assert page.next_index(automatic=True) != 1
 
 
 def test_shuffle_without_repeat_ends_after_one_round(page) -> None:
-    page._shuffle = True
+    page.set_shuffle(True)
     page._selected = 0
     for _ in range(len(page._tracks) - 1):
         index = page.next_index(automatic=True)
@@ -103,8 +103,8 @@ def test_shuffle_without_repeat_ends_after_one_round(page) -> None:
 
 
 def test_shuffle_with_repeat_all_starts_a_new_round(page) -> None:
-    page._shuffle = True
-    page._repeat = REPEAT_ALL
+    page.set_shuffle(True)
+    page.set_repeat(REPEAT_ALL)
     page._selected = 0
     for _ in range(len(page._tracks) - 1):
         page._selected = page.next_index(automatic=True)
@@ -112,21 +112,21 @@ def test_shuffle_with_repeat_all_starts_a_new_round(page) -> None:
 
 
 def test_a_new_queue_starts_a_new_random_round(page) -> None:
-    page._shuffle = True
+    page.set_shuffle(True)
     page._selected = 0
     page.next_index(automatic=True)
     page.set_tracks(_tracks(4))
-    assert page._shuffle_bag == [] and page._shuffle_started is False
+    assert page._order._bag == [] and page._order._started is False
 
 
 def test_a_single_track_repeats_only_when_asked_to(page) -> None:
-    page._shuffle = True
+    page.set_shuffle(True)
     page._tracks = _tracks(1)
     page.player.set_playlist(page._tracks)
     page._selected = 0
     page._reset_shuffle_bag()
     assert page.next_index(automatic=True) is None
-    page._repeat = REPEAT_ALL
+    page.set_repeat(REPEAT_ALL)
     page._reset_shuffle_bag()
     assert page.next_index(automatic=True) == 0
 
@@ -137,18 +137,18 @@ def test_a_single_track_repeats_only_when_asked_to(page) -> None:
 def test_shuffle_is_remembered_for_the_next_start(page) -> None:
     assert page.config.discover_shuffle is False
     page.toggle_shuffle()
-    assert page._shuffle is True
+    assert page._order.shuffle is True
     assert page.config.discover_shuffle is True
 
 
 def test_the_repeat_button_steps_through_its_three_modes(page) -> None:
-    assert page._repeat == REPEAT_OFF
+    assert page._order.repeat == REPEAT_OFF
     page.cycle_repeat()
-    assert page._repeat == REPEAT_ALL
+    assert page._order.repeat == REPEAT_ALL
     page.cycle_repeat()
-    assert page._repeat == REPEAT_ONE
+    assert page._order.repeat == REPEAT_ONE
     page.cycle_repeat()
-    assert page._repeat == REPEAT_OFF
+    assert page._order.repeat == REPEAT_OFF
     assert page.config.discover_repeat == REPEAT_OFF
 
 

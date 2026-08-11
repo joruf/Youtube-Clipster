@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import math
-import random
 import threading
 import time
 import tkinter as tk
 from tkinter import ttk
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from . import theme
+from . import playorder, theme
 from .config import Config
 from .discover import (
     MODE_DEEZER,
@@ -92,11 +91,13 @@ _ICON_SHUFFLE = "🔀"
 _ICON_REPEAT = "🔁"
 _ICON_REPEAT_ONE = "🔂"
 
-#: Repeat modes, in the order the button cycles through them.
-REPEAT_OFF = "off"
-REPEAT_ALL = "all"
-REPEAT_ONE = "one"
-_REPEAT_ORDER = (REPEAT_OFF, REPEAT_ALL, REPEAT_ONE)
+#: Repeat modes, in the order the button cycles through them.  Re-exported from
+#: :mod:`clipster.playorder`, which owns the rules; the names stay here because
+#: the page is what everything else imports them from.
+REPEAT_OFF = playorder.REPEAT_OFF
+REPEAT_ALL = playorder.REPEAT_ALL
+REPEAT_ONE = playorder.REPEAT_ONE
+_REPEAT_ORDER = playorder.REPEAT_ORDER
 
 #: What each repeat mode shows and says.
 _REPEAT_LOOK = {
@@ -198,8 +199,13 @@ class DiscoverPage(ttk.Frame):
         self._on_play_vote: Optional[Callable[[str, str, str], None]] = None
         #: Fill the queue with the downloads that are already on disk.
         self.on_library: Optional[Callable[[], None]] = None
+        #: Show the share code for one song (right-click on a queue row).
+        self.on_share: Optional[Callable[[DiscoverTrack], None]] = None
         #: Optional gate: return ``False`` to block Streaming actions (terms declined).
         self.ensure_terms: Optional[Callable[[], bool]] = None
+        #: Optional gate: return ``False`` when a track that is not on disk may
+        #: not be streamed right now (mobile data, see :mod:`clipster.netmode`).
+        self.allow_stream: Optional[Callable[[], bool]] = None
         #: Optional lookup of stored taste vote for a video id (``up`` / ``down``).
         self.vote_for: Optional[Callable[[str], Optional[str]]] = None
         #: Fired after the playlist changes so the app can persist it.
@@ -219,14 +225,12 @@ class DiscoverPage(ttk.Frame):
         self._play_token = 0
         #: When the queue runs out mid-session, continue once new tracks arrive.
         self._resume_after_extend = False
-        #: Play in a random order, and what is left to play in this round.
-        self._shuffle = bool(getattr(config, "discover_shuffle", False))
-        self._shuffle_bag: List[int] = []
-        self._shuffle_started = False
-        #: ``off``, ``all`` or ``one``.
-        self._repeat = str(getattr(config, "discover_repeat", REPEAT_OFF))
-        if self._repeat not in _REPEAT_ORDER:
-            self._repeat = REPEAT_OFF
+        #: Shuffle, repeat and the shuffle bag - the same object the headless
+        #: session uses, so both platforms answer "what plays next" alike.
+        self._order = playorder.PlayOrder(
+            shuffle=bool(getattr(config, "discover_shuffle", False)),
+            repeat=str(getattr(config, "discover_repeat", REPEAT_OFF)),
+        )
         #: Sleep timer: the Tk job that stops playback, and when it fires.
         self._sleep_job: Optional[str] = None
         self._sleep_ends_at = 0.0
@@ -989,97 +993,80 @@ class DiscoverPage(ttk.Frame):
     def _paint_playback_modes(self) -> None:
         """Show which modes are on, on the buttons and in their tooltips."""
         self._shuffle_btn.configure(
-            style="PlayerAccent.TButton" if self._shuffle else "Player.TButton"
+            style="PlayerAccent.TButton" if self._order.shuffle else "Player.TButton"
         )
         self._shuffle_tip.set_text(
-            self.messages["discover_shuffle_on" if self._shuffle else "discover_shuffle_off"]
+            self.messages["discover_shuffle_on" if self._order.shuffle
+                          else "discover_shuffle_off"]
         )
-        icon, message_key = _REPEAT_LOOK[self._repeat]
+        icon, message_key = _REPEAT_LOOK[self._order.repeat]
         self._repeat_btn.configure(
             text=icon,
-            style="Player.TButton" if self._repeat == REPEAT_OFF else "PlayerAccent.TButton",
+            style="Player.TButton" if self._order.repeat == REPEAT_OFF
+            else "PlayerAccent.TButton",
         )
         self._repeat_tip.set_text(self.messages[message_key])
+
+    def set_shuffle(self, enabled: bool) -> None:
+        """Set random order to a known value.
+
+        Separate from :meth:`toggle_shuffle` because the setting can also arrive
+        from somewhere else - the phone saving its settings - where there is no
+        button press to announce and the configuration is already written.
+
+        :param enabled: Whether to play in random order.
+        :return: None
+        """
+        self._order.set_shuffle(enabled)
+        self.config.discover_shuffle = self._order.shuffle
+        self._paint_playback_modes()
 
     def toggle_shuffle(self) -> None:
         """Turn random order on or off.
 
         :return: None
         """
-        self._shuffle = not self._shuffle
-        self._reset_shuffle_bag()
-        self.config.discover_shuffle = self._shuffle
+        self.set_shuffle(not self._order.shuffle)
         self.config.save()
-        self._paint_playback_modes()
         self.set_status(
-            self.messages["discover_shuffle_on" if self._shuffle else "discover_shuffle_off"],
+            self.messages["discover_shuffle_on" if self._order.shuffle
+                          else "discover_shuffle_off"],
             "info",
         )
+
+    def set_repeat(self, mode: str) -> None:
+        """Set the repeat mode to a known value.
+
+        :param mode: ``off``, ``all`` or ``one``; anything else means ``off``.
+        :return: None
+        """
+        self._order.set_repeat(mode)
+        self.config.discover_repeat = self._order.repeat
+        self._paint_playback_modes()
 
     def cycle_repeat(self) -> None:
         """Step through off, repeat all and repeat one.
 
         :return: None
         """
-        position = _REPEAT_ORDER.index(self._repeat) if self._repeat in _REPEAT_ORDER else 0
-        self._repeat = _REPEAT_ORDER[(position + 1) % len(_REPEAT_ORDER)]
-        self.config.discover_repeat = self._repeat
+        self.set_repeat(self._order.cycle_repeat())
         self.config.save()
-        self._paint_playback_modes()
-        self.set_status(self.messages[_REPEAT_LOOK[self._repeat][1]], "info")
+        self.set_status(self.messages[_REPEAT_LOOK[self._order.repeat][1]], "info")
 
     def next_index(self, *, automatic: bool) -> Optional[int]:
         """Return the row to play next, or ``None`` when the queue is through.
 
-        Repeat-one only repeats a track that ended by itself: pressing *next*
-        means "something else", never the same song again.
+        The rules live in :class:`clipster.playorder.PlayOrder`, so the phone
+        follows exactly the same ones.
 
         :param automatic: ``True`` when the track ended on its own.
         :return: The index to play, or ``None``.
         """
-        if not self._tracks:
-            return None
-        if automatic and self._repeat == REPEAT_ONE:
-            return max(0, self._selected)
-        if self._shuffle:
-            return self._draw_from_bag()
-        following = self._selected + 1
-        if following < len(self._tracks):
-            return following
-        return 0 if self._repeat == REPEAT_ALL else None
-
-    def _draw_from_bag(self) -> Optional[int]:
-        """Return the next random row, playing each one before any repeats.
-
-        A plain random pick replays the same song far too often and skips
-        others for an hour.  This keeps a bag of the rows that have not come up
-        in this round and only refills it once every row has played - which is
-        also where repeat decides whether there is another round at all.
-
-        :return: The index to play, or ``None`` when the round is over.
-        """
-        self._shuffle_bag = [index for index in self._shuffle_bag if index < len(self._tracks)]
-        if not self._shuffle_bag:
-            if self._shuffle_started and self._repeat != REPEAT_ALL:
-                return None
-            self._refill_shuffle_bag()
-        if not self._shuffle_bag:
-            # A queue of one: repeat it, or stop when repeat is off.
-            return self._selected if self._repeat != REPEAT_OFF else None
-        return self._shuffle_bag.pop()
+        return self._order.next_index(len(self._tracks), self._selected, automatic=automatic)
 
     def _reset_shuffle_bag(self) -> None:
         """Start a fresh random round, e.g. after the queue changed."""
-        self._shuffle_bag = []
-        self._shuffle_started = False
-
-    def _refill_shuffle_bag(self) -> None:
-        """Put every row except the current one back into the bag, shuffled."""
-        self._shuffle_bag = [
-            index for index in range(len(self._tracks)) if index != self._selected
-        ]
-        random.shuffle(self._shuffle_bag)
-        self._shuffle_started = True
+        self._order.reset()
 
     # ------------------------------------------------------------------
     def _sleep_selected(self) -> None:
@@ -2067,6 +2054,35 @@ class DiscoverPage(ttk.Frame):
 
         self._row_frames.append(row)
         self._bind_wheel_tree(row)
+        self._bind_share_tree(row, track)
+
+    def _bind_share_tree(self, widget: tk.Misc, track: DiscoverTrack) -> None:
+        """Offer the share code on right-click, anywhere in a queue row.
+
+        The whole row reacts, including its labels: a right-click that lands
+        between two words and does nothing would just look broken.
+
+        :param widget: The row, whose descendants are bound as well.
+        :param track: The song that row shows.
+        :return: None
+        """
+        widget.bind("<Button-3>", lambda _event, t=track: self._share_track(t), add="+")
+        for child in widget.winfo_children():
+            self._bind_share_tree(child, track)
+
+    def _share_track(self, track: DiscoverTrack) -> str:
+        """Show the QR code for one queued song.
+
+        :param track: The song to share.
+        :return: ``break``, so no other handler also answers the click.
+        """
+        if self.on_share is not None and track.video_id:
+            self.on_share(track)
+        elif not track.video_id:
+            # A file that was copied into the folder by hand has no YouTube id,
+            # so there is nothing another Clipster could look up.
+            self.set_status(self.messages["share_no_id"], "warn")
+        return "break"
 
     def _bind_wheel(self, widget: tk.Misc) -> None:
         """Attach mouse-wheel / two-finger scroll for Linux, macOS and Windows."""
@@ -2228,11 +2244,32 @@ class DiscoverPage(ttk.Frame):
             self._end_poll_job = self.after(400, self._poll_track_end)
         self._refresh_seek_ui()
 
+    def _may_play(self, track: DiscoverTrack) -> bool:
+        """Return ``True`` when this track may be started right now.
+
+        A file that is already on disk always may - the whole point of the
+        mobile-data rule is that those keep playing.  Anything that would have
+        to be fetched asks the application, which knows what the connection
+        looks like; a refusal swaps the queue for the local library so the music
+        does not simply stop.
+
+        :param track: The track that is about to start.
+        :return: Whether playback may go ahead.
+        """
+        if track.is_local or self.allow_stream is None or self.allow_stream():
+            return True
+        self.set_status(self.messages["playback_local_only_switch"], "warn")
+        if self.on_library is not None:
+            self.on_library()
+        return False
+
     def play_at(self, index: int) -> None:
         """Start continuous playback of playlist index ``index``."""
         if index < 0 or index >= len(self._tracks):
             return
         if self.ensure_terms is not None and not self.ensure_terms():
+            return
+        if not self._may_play(self._tracks[index]):
             return
         self._cancel_playback_check()
         self._cancel_end_poll()

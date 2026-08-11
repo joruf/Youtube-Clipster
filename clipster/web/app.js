@@ -88,6 +88,32 @@ const elements = {
     setCookiesRisk: document.getElementById("set-cookies-risk"),
     setCookiesBrowser: document.getElementById("set-cookies-browser"),
     setCookiesFile: document.getElementById("set-cookies-file"),
+    stage: document.getElementById("stage"),
+    streamVideo: document.getElementById("stream-video"),
+    streamLibrary: document.getElementById("stream-library"),
+    streamShuffle: document.getElementById("stream-shuffle"),
+    streamRepeat: document.getElementById("stream-repeat"),
+    streamSleep: document.getElementById("stream-sleep"),
+    streamScan: document.getElementById("stream-scan"),
+    playbackNote: document.getElementById("playback-note"),
+    shareDialog: document.getElementById("share-dialog"),
+    shareTitle: document.getElementById("share-title"),
+    shareCode: document.getElementById("share-code"),
+    shareHint: document.getElementById("share-hint"),
+    shareLink: document.getElementById("share-link"),
+    shareCopy: document.getElementById("share-copy"),
+    shareClose: document.getElementById("share-close"),
+    scanDialog: document.getElementById("scan-dialog"),
+    scanVideo: document.getElementById("scan-video"),
+    scanHint: document.getElementById("scan-hint"),
+    scanClose: document.getElementById("scan-close"),
+    setMobile: document.getElementById("set-mobile"),
+    setLocalOnly: document.getElementById("set-local-only"),
+    setShuffle: document.getElementById("set-shuffle"),
+    setRepeat: document.getElementById("set-repeat"),
+    setPlayVideo: document.getElementById("set-play-video"),
+    setVisualizer: document.getElementById("set-visualizer"),
+    setExtendCount: document.getElementById("set-extend-count"),
     aboutName: document.getElementById("about-name"),
     aboutVersion: document.getElementById("about-version"),
     aboutText: document.getElementById("about-text"),
@@ -119,6 +145,15 @@ let searchDelay = 1500;
 
 /** The queue as the device knows it, needed to play the next one locally. */
 let queueTracks = [];
+
+/**
+ * What the backend says about streaming on this connection.
+ *
+ * Shape: {connection, metered, local_only, ask, mode}. The default allows
+ * everything, so a backend that never reports it behaves exactly as before.
+ */
+let playbackSource = {connection: "", metered: false, local_only: false, ask: false,
+                      mode: "stream"};
 
 /** Track being played on this device, while target is "guest". */
 let guestVideoId = "";
@@ -211,6 +246,37 @@ function say(text, kind) {
  */
 function setConnection(online) {
     elements.connection.className = online ? "dot online" : "dot offline";
+}
+
+/**
+ * Describe the connection this device is currently on.
+ *
+ * Only the device itself can know this - the PC cannot see which network a
+ * phone is holding - so it is reported with the status polls. Browsers without
+ * the Network Information API (Safari, Firefox) return an empty string, which
+ * the backend reads as "no idea" and therefore as "not metered": guessing
+ * mobile would stop the music on machines that simply never report anything.
+ *
+ * @returns {string} For example "cellular" or "wifi"; empty when unknown.
+ */
+function connectionType() {
+    const link = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (!link) {
+        return "";
+    }
+    // "type" is the honest answer; effectiveType only describes the speed, but
+    // a connection that behaves like 3g is worth treating as metered too.
+    return String(link.type || link.effectiveType || "").toLowerCase();
+}
+
+/**
+ * Return the status path, carrying what this device knows about its connection.
+ *
+ * @returns {string} "/api/status", with a "net" parameter when there is one.
+ */
+function statusPath() {
+    const link = connectionType();
+    return link ? "/api/status?net=" + encodeURIComponent(link) : "/api/status";
 }
 
 /**
@@ -461,6 +527,7 @@ function downloadRow(entry) {
         problem.textContent = entry.error;
         body.appendChild(problem);
     }
+    bindShare(body, videoIdOf(entry.url), entry.title || entry.name);
     row.appendChild(body);
 
     const actions = document.createElement("div");
@@ -541,10 +608,88 @@ async function clearHistory() {
  *
  * @returns {void}
  */
+/**
+ * How each column sorts, matching _SORT_KEYS on the Python side.
+ *
+ * Names read as text, everything else as a number, so that 9 MB sorts below
+ * 10 MB rather than above it.
+ */
+const sortValues = {
+    name: (entry) => String(entry.name || "").toLowerCase(),
+    duration: (entry) => Number(entry.duration || 0),
+    size: (entry) => Number(entry.size || 0),
+    date: (entry) => String(entry.finished_at || ""),
+};
+
+/**
+ * Which direction a column starts in, matching _SORT_DESCENDING_FIRST.
+ *
+ * Text reads best from A; numbers and dates from the largest, because the
+ * newest download is the one being looked for.
+ */
+const sortDescendingFirst = {name: false, duration: true, size: true, date: true};
+
+/** The column the list is sorted by, and which way round. */
+let sortKey = "date";
+let sortDescending = true;
+
+/**
+ * Sort the download list by the active column.
+ *
+ * @param {Array<object>} entries The rows to sort.
+ * @returns {Array<object>} A sorted copy.
+ */
+function sortDownloads(entries) {
+    const value = sortValues[sortKey] || sortValues.date;
+    // Copied first: the unsorted order is what the next signature compares.
+    return entries.slice().sort((left, right) => {
+        const a = value(left);
+        const b = value(right);
+        if (a === b) {
+            return 0;
+        }
+        return (a < b ? -1 : 1) * (sortDescending ? -1 : 1);
+    });
+}
+
+/**
+ * Sort by one column, or turn its direction around when it is already active.
+ *
+ * @param {string} key One of the keys in {@link sortValues}.
+ * @returns {void}
+ */
+function setSort(key) {
+    if (!sortValues[key]) {
+        return;
+    }
+    if (key === sortKey) {
+        sortDescending = !sortDescending;
+    } else {
+        sortKey = key;
+        sortDescending = sortDescendingFirst[key];
+    }
+    paintSortButtons();
+    renderDownloadList();
+}
+
+/**
+ * Mark the column the list is sorted by, and which way.
+ *
+ * @returns {void}
+ */
+function paintSortButtons() {
+    document.querySelectorAll("#sort-row .sort").forEach((button) => {
+        const active = button.dataset.sort === sortKey;
+        button.classList.toggle("on", active);
+        const label = button.textContent.replace(/[ ▲▼]+$/, "");
+        button.textContent = active ? label + (sortDescending ? " ▼" : " ▲") : label;
+    });
+}
+
 function renderDownloadList() {
-    const filtered = downloadFilter === "all"
+    const filtered = sortDownloads(downloadFilter === "all"
         ? downloadEntries
-        : downloadEntries.filter((entry) => entry.status === downloadFilter);
+        : downloadEntries.filter((entry) => entry.status === downloadFilter));
     elements.downloads.textContent = "";
     filtered.forEach((entry) => elements.downloads.appendChild(downloadRow(entry)));
     elements.empty.hidden = filtered.length > 0;
@@ -632,7 +777,7 @@ function renderActive(active, queued) {
 async function poll() {
     let answer;
     try {
-        answer = await api("/api/status");
+        answer = await api(statusPath());
     } catch (error) {
         setConnection(false);
         return;
@@ -810,6 +955,13 @@ async function loadSettings() {
     elements.setCookiesRisk.checked = !!s.cookies_risk_acknowledged;
     elements.setCookiesBrowser.value = s.cookies_from_browser || "";
     elements.setCookiesFile.value = s.cookies_file || "";
+    elements.setMobile.value = s.playback_on_mobile || "stream";
+    elements.setLocalOnly.checked = !!s.playback_local_only;
+    elements.setShuffle.checked = !!s.discover_shuffle;
+    elements.setRepeat.value = s.discover_repeat || "off";
+    elements.setPlayVideo.checked = !!s.discover_play_video;
+    elements.setVisualizer.value = s.discover_visualizer || "pulse";
+    elements.setExtendCount.value = String(s.discover_extend_count || 8);
     syncCookieFields();
     saySettings("", "");
 }
@@ -854,6 +1006,13 @@ async function saveSettings(event) {
         cookies_risk_acknowledged: elements.setCookiesRisk.checked,
         cookies_from_browser: elements.setCookiesBrowser.value,
         cookies_file: elements.setCookiesFile.value,
+        playback_on_mobile: elements.setMobile.value,
+        playback_local_only: elements.setLocalOnly.checked,
+        discover_shuffle: elements.setShuffle.checked,
+        discover_repeat: elements.setRepeat.value,
+        discover_play_video: elements.setPlayVideo.checked,
+        discover_visualizer: elements.setVisualizer.value,
+        discover_extend_count: Number(elements.setExtendCount.value),
     };
     try {
         const answer = await api("/api/settings", {
@@ -1049,7 +1208,8 @@ function transport(command) {
             elements.player.pause();
         }
     } else if (command === "next") {
-        playNextHere();
+        // Pressed, not ended: repeat-one must not hand back the same song.
+        playNextHere(false);
     } else if (command === "previous") {
         if (guestIndex > 0) {
             playHere(queueTracks[guestIndex - 1].video_id);
@@ -1231,6 +1391,7 @@ function queueRow(track, current) {
         body.appendChild(meta);
     }
     body.addEventListener("click", () => playTrack(track));
+    bindShare(body, track.video_id, track.title);
     row.appendChild(body);
 
     const actions = document.createElement("div");
@@ -1294,6 +1455,32 @@ function renderStream(state) {
     if (typeof state.terms_accepted === "boolean") {
         streamingTermsOk = state.terms_accepted;
     }
+    if (state.playback_source) {
+        playbackSource = state.playback_source;
+    }
+    if (state.playback_modes) {
+        playbackModes = state.playback_modes;
+    }
+    if (typeof state.visualizer === "string") {
+        const wanted = STAGE_MODES.indexOf(state.visualizer) >= 0 ? state.visualizer : "pulse";
+        if (wanted !== stageMode) {
+            stageMode = wanted;
+            // Switched to a mode that measures sound while something is already
+            // playing: attach the analyser now rather than at the next song.
+            if (target === "guest" && !elements.player.paused) {
+                ensureAnalyser();
+            }
+            syncStage();
+        }
+    }
+    if (typeof state.play_video === "boolean") {
+        wantVideo = state.play_video;
+    }
+    if (Array.isArray(state.bands)) {
+        remoteBands = state.bands;
+    }
+    remoteLevel = Number(state.level || 0);
+    paintPlaybackModes();
     if (!state.available) {
         elements.streamTitle.textContent = standalone
             ? "Streaming is starting…"
@@ -1823,7 +2010,847 @@ async function setTarget(name) {
  * @param {string} videoId The video id to play.
  * @returns {void}
  */
+/**
+ * Whether what a media element is playing came from the Streaming queue.
+ *
+ * The same audio element also plays a finished download straight from the
+ * list - that must not advance a queue the user is not even looking at. Queue
+ * playback is "/stream/" for a song from YouTube and "/queue/" for one that is
+ * already on disk; a download plays from "/media/".
+ *
+ * @param {HTMLMediaElement} element The element to look at.
+ * @returns {boolean} Whether the queue is what is playing.
+ */
+function fromQueue(element) {
+    const source = element.currentSrc || "";
+    return source.indexOf("/stream/") !== -1 || source.indexOf("/queue/") !== -1;
+}
+
+/**
+ * Return where the audio for one queue entry comes from.
+ *
+ * A song that is already in the download folder plays straight off the disk of
+ * the machine running Clipster - on the phone that is the phone itself, so it
+ * costs no data at all and works with the radio switched off. Only what is not
+ * there yet goes through the YouTube relay.
+ *
+ * @param {string} videoId The YouTube id, when the track has one.
+ * @param {number} index Queue position, used for local files.
+ * @returns {string} The URL to hand to the audio element.
+ */
+function trackSource(videoId, index) {
+    const track = index >= 0 ? queueTracks[index] : null;
+    if (track && track.local) {
+        return "/queue/" + encodeURIComponent(String(index));
+    }
+    return "/stream/" + encodeURIComponent(videoId);
+}
+
+// ------------------------------------------------------------------- stage
+/**
+ * The stage: the same seven modes the desktop offers, drawn on a canvas.
+ *
+ * Where the numbers come from depends on who is making the sound. Playing on
+ * this device, the Web Audio API measures the audio element directly - real
+ * bands and a real waveform, same-origin so no CORS problem. Playing on the PC,
+ * there is nothing here to measure, so the backend's own analysis arrives with
+ * the state poll as `bands` and `level`.
+ */
+const STAGE_MODES = ["off", "text", "waveform", "cover", "pulse", "spectrum", "visualizer"];
+
+/** Bars the spectrum draws - matches EQ_BAR_COUNT on the Python side. */
+const STAGE_BARS = 12;
+
+/** Which mode the stage is in, as the backend reports it. */
+let stageMode = "pulse";
+
+/** Web Audio pieces, built once on the first user gesture that starts audio. */
+let audioContext = null;
+let audioAnalyser = null;
+let audioBins = null;
+let audioWave = null;
+
+/** Handle of the draw loop while the stage animates. */
+let stageFrame = 0;
+
+/** Bands and loudness the PC reported, used when it is the one playing. */
+let remoteBands = [];
+let remoteLevel = 0;
+
+/**
+ * Attach an analyser to the audio element, once.
+ *
+ * Must happen after a user gesture or the browser keeps the context suspended.
+ * Failure is not fatal: the stage falls back to what the PC reports.
+ *
+ * @returns {void}
+ */
+function ensureAnalyser() {
+    // Routing the element through an AudioContext is not free: from then on its
+    // sound only reaches the speaker through the graph, and a suspended context
+    // means silence. So it is only done for the modes that genuinely measure
+    // audio, and never for a stage that is off or only shows text.
+    if (!needsAudioData()) {
+        resumeAudio();
+        return;
+    }
+    if (audioAnalyser || !window.AudioContext) {
+        resumeAudio();
+        return;
+    }
+    try {
+        audioContext = new AudioContext();
+        const source = audioContext.createMediaElementSource(elements.player);
+        audioAnalyser = audioContext.createAnalyser();
+        audioAnalyser.fftSize = 1024;
+        audioAnalyser.smoothingTimeConstant = 0.75;
+        audioBins = new Uint8Array(audioAnalyser.frequencyBinCount);
+        audioWave = new Uint8Array(audioAnalyser.fftSize);
+        // On to the speaker as well, or playback goes silent.
+        source.connect(audioAnalyser);
+        audioAnalyser.connect(audioContext.destination);
+    } catch (error) {
+        audioAnalyser = null;
+    }
+    resumeAudio();
+}
+
+/**
+ * Whether the current stage mode needs the audio measured at all.
+ *
+ * @returns {boolean} True for the modes driven by real sound.
+ */
+function needsAudioData() {
+    return stageMode === "spectrum" || stageMode === "waveform"
+        || stageMode === "pulse" || stageMode === "visualizer";
+}
+
+/**
+ * Wake the audio graph if a browser suspended it.
+ *
+ * Once the element plays through a context, a suspended context is silence -
+ * so this is called on every start and whenever playback actually begins.
+ *
+ * @returns {void}
+ */
+function resumeAudio() {
+    if (audioContext && audioContext.state === "suspended") {
+        audioContext.resume().catch(() => undefined);
+    }
+}
+
+/**
+ * Return the current spectrum as STAGE_BARS values in [0, 1].
+ *
+ * @returns {number[]} One value per bar.
+ */
+function stageBands() {
+    if (audioAnalyser && target === "guest") {
+        audioAnalyser.getByteFrequencyData(audioBins);
+        const bars = [];
+        // Logarithmic grouping: even bins would put ten bars on the hi-hats.
+        for (let bar = 0; bar < STAGE_BARS; bar += 1) {
+            const from = Math.floor(Math.pow(bar / STAGE_BARS, 2) * audioBins.length);
+            const to = Math.max(from + 1,
+                Math.floor(Math.pow((bar + 1) / STAGE_BARS, 2) * audioBins.length));
+            let sum = 0;
+            for (let bin = from; bin < to && bin < audioBins.length; bin += 1) {
+                sum += audioBins[bin];
+            }
+            bars.push(Math.min(1, (sum / (to - from)) / 200));
+        }
+        return bars;
+    }
+    if (remoteBands.length > 0) {
+        return remoteBands.slice(0, STAGE_BARS);
+    }
+    return new Array(STAGE_BARS).fill(0);
+}
+
+/**
+ * Return the current loudness in [0, 1].
+ *
+ * @returns {number} How loud it is right now.
+ */
+function stageLevel() {
+    if (audioAnalyser && target === "guest") {
+        audioAnalyser.getByteTimeDomainData(audioWave);
+        let sum = 0;
+        for (let index = 0; index < audioWave.length; index += 1) {
+            const value = (audioWave[index] - 128) / 128;
+            sum += value * value;
+        }
+        return Math.min(1, Math.sqrt(sum / audioWave.length) * 2.2);
+    }
+    return Math.min(1, Math.max(0, remoteLevel));
+}
+
+/**
+ * Draw one frame of the stage and ask for the next.
+ *
+ * @returns {void}
+ */
+function drawStage() {
+    stageFrame = 0;
+    const canvas = elements.stage;
+    if (!canvas || canvas.hidden) {
+        return;
+    }
+    const ratio = window.devicePixelRatio || 1;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (canvas.width !== Math.round(width * ratio)) {
+        canvas.width = Math.round(width * ratio);
+        canvas.height = Math.round(height * ratio);
+    }
+    const context = canvas.getContext("2d");
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.clearRect(0, 0, width, height);
+
+    const styles = getComputedStyle(document.documentElement);
+    const accent = styles.getPropertyValue("--accent").trim() || "#e0393e";
+    const muted = styles.getPropertyValue("--muted").trim() || "#8b8f98";
+
+    if (stageMode === "spectrum" || stageMode === "visualizer") {
+        drawBars(context, width, height, accent,
+                 stageMode === "visualizer" ? 48 : STAGE_BARS);
+    } else if (stageMode === "waveform") {
+        drawWave(context, width, height, accent);
+    } else if (stageMode === "pulse") {
+        drawPulse(context, width, height, accent);
+    } else if (stageMode === "text" || stageMode === "cover") {
+        drawStageText(context, width, height, muted);
+    }
+    stageFrame = window.requestAnimationFrame(drawStage);
+}
+
+/**
+ * Draw the spectrum, or the denser mountain the visualizer mode wants.
+ *
+ * @param {CanvasRenderingContext2D} context Where to draw.
+ * @param {number} width Canvas width in CSS pixels.
+ * @param {number} height Canvas height in CSS pixels.
+ * @param {string} colour The accent colour.
+ * @param {number} count How many bars to draw.
+ * @returns {void}
+ */
+function drawBars(context, width, height, colour, count) {
+    const bands = stageBands();
+    /**
+     * Clamp one band value into [0, 1], treating anything odd as silence.
+     *
+     * @param {number} value The reported band level.
+     * @returns {number} A drawable value.
+     */
+    const level = (value) => {
+        const number = Number(value);
+        return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : 0;
+    };
+    const gap = count > 20 ? 1 : 3;
+    const barWidth = Math.max(1, (width - gap * (count - 1)) / count);
+    context.fillStyle = colour;
+    for (let index = 0; index < count; index += 1) {
+        // More bars than the analyser gives: interpolate rather than repeat.
+        const at = (index / count) * bands.length;
+        const low = level(bands[Math.floor(at)]);
+        const high = level(bands[Math.min(bands.length - 1, Math.ceil(at))]);
+        const value = low + (high - low) * (at - Math.floor(at));
+        // Clamped when drawn, not only where the numbers come from: a bar taller
+        // than the stage is drawn from a negative y and spills over the card.
+        const barHeight = Math.min(height - 2, Math.max(2, value * (height - 6)));
+        context.fillRect(index * (barWidth + gap), height - barHeight, barWidth, barHeight);
+    }
+}
+
+/**
+ * Draw the oscilloscope line.
+ *
+ * @param {CanvasRenderingContext2D} context Where to draw.
+ * @param {number} width Canvas width in CSS pixels.
+ * @param {number} height Canvas height in CSS pixels.
+ * @param {string} colour The accent colour.
+ * @returns {void}
+ */
+function drawWave(context, width, height, colour) {
+    const middle = height / 2;
+    context.strokeStyle = colour;
+    context.lineWidth = 2;
+    context.beginPath();
+    if (audioAnalyser && target === "guest") {
+        audioAnalyser.getByteTimeDomainData(audioWave);
+        const step = Math.max(1, Math.floor(audioWave.length / width));
+        for (let x = 0, index = 0; x < width; x += 1, index += step) {
+            const value = ((audioWave[index] || 128) - 128) / 128;
+            const y = middle - value * (middle - 4);
+            if (x === 0) {
+                context.moveTo(x, y);
+            } else {
+                context.lineTo(x, y);
+            }
+        }
+    } else {
+        // No audio here to measure: a level-driven line, like the PC's fallback.
+        const level = stageLevel();
+        for (let x = 0; x < width; x += 1) {
+            const phase = (x / width) * Math.PI * 6 + Date.now() / 200;
+            const y = middle - Math.sin(phase) * level * (middle - 4);
+            if (x === 0) {
+                context.moveTo(x, y);
+            } else {
+                context.lineTo(x, y);
+            }
+        }
+    }
+    context.stroke();
+}
+
+/**
+ * Draw the beat ring, the desktop's default stage.
+ *
+ * @param {CanvasRenderingContext2D} context Where to draw.
+ * @param {number} width Canvas width in CSS pixels.
+ * @param {number} height Canvas height in CSS pixels.
+ * @param {string} colour The accent colour.
+ * @returns {void}
+ */
+function drawPulse(context, width, height, colour) {
+    const level = stageLevel();
+    const middleX = width / 2;
+    const middleY = height / 2;
+    const base = Math.min(width, height) * 0.18;
+    const radius = base + level * base * 1.6;
+    context.strokeStyle = colour;
+    context.lineWidth = 2 + level * 4;
+    context.globalAlpha = 0.35 + level * 0.65;
+    context.beginPath();
+    context.arc(middleX, middleY, Math.max(2, radius), 0, Math.PI * 2);
+    context.stroke();
+    context.globalAlpha = 1;
+}
+
+/**
+ * Write the title on the stage, for the text and cover modes.
+ *
+ * @param {CanvasRenderingContext2D} context Where to draw.
+ * @param {number} width Canvas width in CSS pixels.
+ * @param {number} height Canvas height in CSS pixels.
+ * @param {string} colour The muted colour.
+ * @returns {void}
+ */
+function drawStageText(context, width, height, colour) {
+    context.fillStyle = colour;
+    context.font = "600 14px system-ui, sans-serif";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    const text = elements.streamTitle.textContent || "";
+    context.fillText(text.slice(0, 48), width / 2, height / 2);
+}
+
+/**
+ * Show or hide the stage and keep its draw loop in step with the mode.
+ *
+ * @returns {void}
+ */
+function syncStage() {
+    const canvas = elements.stage;
+    if (!canvas) {
+        return;
+    }
+    // No stage when it is switched off, and none behind a video - the picture
+    // is the stage then.
+    canvas.hidden = stageMode === "off" || !elements.streamVideo.hidden;
+    if (canvas.hidden) {
+        window.cancelAnimationFrame(stageFrame);
+        stageFrame = 0;
+        return;
+    }
+    if (!stageFrame) {
+        drawStage();
+    }
+}
+
+// --------------------------------------------------- how the queue is played
+/** Shuffle, repeat and the sleep timer, as the backend reports them. */
+let playbackModes = {shuffle: false, repeat: "off", sleep_minutes: 0};
+
+/** The order the repeat button steps through, matching the desktop. */
+const repeatOrder = ["off", "all", "one"];
+
+/** Whether the sleep timer was still running at the previous poll. */
+let sleepWasRunning = false;
+
+/** Whether the settings ask for video rather than audio only. */
+let wantVideo = false;
+
+/**
+ * Return the repeat mode after this one.
+ *
+ * @param {string} mode The current mode.
+ * @returns {string} The next one in the cycle.
+ */
+function nextRepeat(mode) {
+    const at = repeatOrder.indexOf(mode);
+    return repeatOrder[(at < 0 ? 0 : at + 1) % repeatOrder.length];
+}
+
+/**
+ * Save one playback mode and show the answer straight away.
+ *
+ * Saved rather than commanded: these are settings on the desktop too, so a
+ * phone that turns shuffle on finds it on next time.
+ *
+ * @param {object} body The setting keys to change.
+ * @returns {Promise<void>}
+ */
+async function saveMode(body) {
+    try {
+        const answer = await api("/api/settings", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(body),
+        });
+        if (answer.status === 200) {
+            playbackModes.shuffle = !!answer.body.discover_shuffle;
+            playbackModes.repeat = answer.body.discover_repeat || "off";
+            paintPlaybackModes();
+        }
+    } catch (error) {
+        setConnection(false);
+    }
+}
+
+/**
+ * Show the state of shuffle, repeat, the sleep timer and the source rule.
+ *
+ * @returns {void}
+ */
+function paintPlaybackModes() {
+    const words = mobileWords();
+    // The backend's own player is silent on a phone - the sound comes out of
+    // this page - so the sleep timer has to be honoured here as well.
+    const running = Number(playbackModes.sleep_minutes || 0);
+    if (sleepWasRunning && running === 0 && target === "guest") {
+        elements.player.pause();
+        sayStream(/^de\b/i.test(navigator.language || "")
+            ? "Einschlaftimer abgelaufen — Wiedergabe gestoppt."
+            : "Sleep timer reached — playback stopped.", "");
+    }
+    sleepWasRunning = running > 0;
+    elements.streamShuffle.classList.toggle("on", playbackModes.shuffle);
+    elements.streamRepeat.textContent = playbackModes.repeat === "one" ? "🔂" : "🔁";
+    elements.streamRepeat.classList.toggle("on", playbackModes.repeat !== "off");
+    if (document.activeElement !== elements.streamSleep) {
+        elements.streamSleep.value = String(playbackModes.sleep_minutes || 0);
+    }
+    const notes = [];
+    if (playbackSource.local_only) {
+        notes.push(words.switched);
+    }
+    if (playbackModes.sleep_minutes > 0) {
+        notes.push(/^de\b/i.test(navigator.language || "")
+            ? "Stopp in " + playbackModes.sleep_minutes + " Min"
+            : "Stops in " + playbackModes.sleep_minutes + " min");
+    }
+    elements.playbackNote.textContent = notes.join(" · ");
+}
+
+// ---------------------------------------------------------------- sharing
+/** How long a press has to last before it counts as "share this", in ms. */
+const SHARE_PRESS_MS = 500;
+
+/** Words the share and scan dialogs need, per language. */
+const shareWords = {
+    en: {
+        title: "Share",
+        hint: "Let the other person scan this with Clipster.",
+        missing: "No code could be drawn — the qrcode package is missing on the PC.",
+        noId: "That song came from a file, so there is nothing to share.",
+        copied: "Link copied.",
+        scanHint: "Hold the code in front of the camera.",
+        scanNoCamera: "This device has no camera Clipster may use.",
+        scanInsecure: "Scanning only works in the Clipster app, not over the network address.",
+        scanDenied: "Without the camera there is nothing to scan.",
+        scanUnknown: "That code is not a YouTube link.",
+        scanQueued: "Added to the queue.",
+    },
+    de: {
+        title: "Teilen",
+        hint: "Der andere scannt das hier mit Clipster.",
+        missing: "Kein Code möglich — auf dem PC fehlt das Paket qrcode.",
+        noId: "Dieser Titel kommt aus einer Datei, da gibt es nichts zu teilen.",
+        copied: "Link kopiert.",
+        scanHint: "Den Code vor die Kamera halten.",
+        scanNoCamera: "Dieses Gerät hat keine Kamera, die Clipster benutzen darf.",
+        scanInsecure: "Scannen geht nur in der Clipster-App, nicht über die Netzwerkadresse.",
+        scanDenied: "Ohne Kamera gibt es nichts zu scannen.",
+        scanUnknown: "Dieser Code ist kein YouTube-Link.",
+        scanQueued: "In die Warteschlange übernommen.",
+    },
+};
+
+/**
+ * Return the share wording for the phone's language.
+ *
+ * @returns {object} One entry of {@link shareWords}.
+ */
+function shareText() {
+    return /^de\b/i.test(navigator.language || "") ? shareWords.de : shareWords.en;
+}
+
+/**
+ * Pick the YouTube id out of a stored download URL.
+ *
+ * Only used to decide whether a row has anything to share; anything actually
+ * scanned goes to the PC, which owns the real pattern.
+ *
+ * @param {string} url The URL the download came from.
+ * @returns {string} The eleven character id, or an empty string.
+ */
+function videoIdOf(url) {
+    const match = /(?:v=|youtu\.be\/|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/.exec(
+        String(url || ""));
+    return match ? match[1] : "";
+}
+
+/**
+ * Make a long press on one element offer the share code.
+ *
+ * A phone has no right mouse button, so the gesture is a press that lasts.
+ * Moving the finger cancels it, otherwise scrolling the queue would keep
+ * opening dialogs.
+ *
+ * @param {HTMLElement} element The element to watch.
+ * @param {string} videoId The YouTube id of the song it shows.
+ * @param {string} title Its title, shown above the code.
+ * @returns {void}
+ */
+function bindShare(element, videoId, title) {
+    let timer = 0;
+    let fired = false;
+
+    const start = () => {
+        fired = false;
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+            fired = true;
+            showShare(videoId, title);
+        }, SHARE_PRESS_MS);
+    };
+    const cancel = () => window.clearTimeout(timer);
+
+    element.addEventListener("touchstart", start, {passive: true});
+    element.addEventListener("touchend", cancel);
+    element.addEventListener("touchmove", cancel, {passive: true});
+    element.addEventListener("touchcancel", cancel);
+    // A desktop browser pointed at the same page gets the familiar gesture.
+    element.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        showShare(videoId, title);
+    });
+    // The press already did the work; the release must not also start playback.
+    element.addEventListener("click", (event) => {
+        if (fired) {
+            event.stopPropagation();
+            event.preventDefault();
+            fired = false;
+        }
+    }, true);
+}
+
+/**
+ * Show the QR code for one song.
+ *
+ * @param {string} videoId The YouTube id.
+ * @param {string} title The song title.
+ * @returns {void}
+ */
+function showShare(videoId, title) {
+    const words = shareText();
+    if (!videoId) {
+        sayStream(words.noId, "");
+        return;
+    }
+    const link = "https://www.youtube.com/watch?v=" + encodeURIComponent(videoId);
+    elements.shareTitle.textContent = title || words.title;
+    elements.shareHint.textContent = words.hint;
+    elements.shareLink.textContent = link;
+    elements.shareCode.alt = words.title;
+    elements.shareCode.onerror = () => {
+        elements.shareCode.removeAttribute("src");
+        elements.shareHint.textContent = words.missing;
+    };
+    elements.shareCode.src = "/api/qr?v=" + encodeURIComponent(videoId);
+    openDialog(elements.shareDialog);
+}
+
+/**
+ * Put the shared link on the clipboard, for people with no camera to hand.
+ *
+ * @returns {Promise<void>}
+ */
+async function copyShareLink() {
+    const link = elements.shareLink.textContent || "";
+    if (!link) {
+        return;
+    }
+    try {
+        await navigator.clipboard.writeText(link);
+        elements.shareHint.textContent = shareText().copied;
+    } catch (error) {
+        // Clipboard access can be refused; the link is on screen to read.
+        elements.shareHint.textContent = link;
+    }
+}
+
+// ---------------------------------------------------------------- scanning
+/** The running camera stream, so it can be stopped again. */
+let scanStream = null;
+
+/** Handle of the frame loop while the scanner is open. */
+let scanTimer = 0;
+
+/**
+ * Whether this page is allowed to open a camera at all.
+ *
+ * Browsers only hand out getUserMedia in a secure context. The Clipster app on
+ * Android loads http://127.0.0.1, which counts as one; the same page opened
+ * over a LAN address from another device does not, and no amount of asking
+ * changes that - so the button stays hidden there rather than failing later.
+ *
+ * @returns {boolean} Whether scanning can work here.
+ */
+function canScan() {
+    return Boolean(window.isSecureContext
+        && navigator.mediaDevices
+        && navigator.mediaDevices.getUserMedia
+        && window.jsQR);
+}
+
+/**
+ * Open the camera and look for a code until one is found.
+ *
+ * @returns {Promise<void>}
+ */
+async function startScan() {
+    const words = shareText();
+    if (!window.isSecureContext) {
+        sayStream(words.scanInsecure, "bad");
+        return;
+    }
+    if (!canScan()) {
+        sayStream(words.scanNoCamera, "bad");
+        return;
+    }
+    elements.scanHint.textContent = words.scanHint;
+    openDialog(elements.scanDialog);
+    try {
+        scanStream = await navigator.mediaDevices.getUserMedia({
+            video: {facingMode: "environment"},
+            audio: false,
+        });
+    } catch (error) {
+        closeDialog(elements.scanDialog);
+        sayStream(words.scanDenied, "bad");
+        return;
+    }
+    elements.scanVideo.srcObject = scanStream;
+    try {
+        await elements.scanVideo.play();
+    } catch (error) {
+        // Some browsers want a gesture; the dialog itself was one.
+    }
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d", {willReadFrequently: true});
+
+    const look = () => {
+        if (!scanStream) {
+            return;
+        }
+        const width = elements.scanVideo.videoWidth;
+        const height = elements.scanVideo.videoHeight;
+        if (width > 0 && height > 0) {
+            canvas.width = width;
+            canvas.height = height;
+            context.drawImage(elements.scanVideo, 0, 0, width, height);
+            const frame = context.getImageData(0, 0, width, height);
+            const found = window.jsQR(frame.data, width, height,
+                                     {inversionAttempts: "dontInvert"});
+            if (found && found.data) {
+                stopScan();
+                handleScanned(found.data);
+                return;
+            }
+        }
+        scanTimer = window.setTimeout(look, 120);
+    };
+    look();
+}
+
+/**
+ * Stop the camera and close the scanner.
+ *
+ * @returns {void}
+ */
+function stopScan() {
+    window.clearTimeout(scanTimer);
+    scanTimer = 0;
+    if (scanStream) {
+        scanStream.getTracks().forEach((track) => track.stop());
+        scanStream = null;
+    }
+    elements.scanVideo.srcObject = null;
+    closeDialog(elements.scanDialog);
+}
+
+/**
+ * Send a decoded code to the PC, which turns it into a queue entry.
+ *
+ * The link is parsed on the Python side so the pattern that recognises a
+ * YouTube URL is maintained once, not once here and once there.
+ *
+ * @param {string} text Whatever the camera read.
+ * @returns {Promise<void>}
+ */
+async function handleScanned(text) {
+    const words = shareText();
+    try {
+        const answer = await api("/api/scan", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({text: text}),
+        });
+        if (answer.status === 403 && answer.body.error === "terms_required") {
+            await offerStreamingTerms();
+            return;
+        }
+        if (!answer.body.ok) {
+            const unreadable = answer.body.error === "not_a_youtube_link";
+            sayStream(unreadable
+                ? words.scanUnknown
+                : "Could not add it (" + (answer.body.error || answer.status) + ").", "bad");
+            return;
+        }
+        sayStream(words.scanQueued, "good");
+        if (answer.body.state) {
+            renderStream(answer.body.state);
+        }
+    } catch (error) {
+        setConnection(false);
+    }
+}
+
+/**
+ * Show a dialog, with a fallback for browsers without showModal.
+ *
+ * @param {HTMLDialogElement} dialog The dialog to open.
+ * @returns {void}
+ */
+function openDialog(dialog) {
+    // Android fires contextmenu *as well* after a long press, so this can be
+    // asked for twice for one gesture - and showModal on an open dialog throws.
+    if (dialog.open) {
+        return;
+    }
+    if (typeof dialog.showModal === "function") {
+        dialog.showModal();
+        return;
+    }
+    dialog.setAttribute("open", "open");
+}
+
+/**
+ * Hide a dialog again.
+ *
+ * @param {HTMLDialogElement} dialog The dialog to close.
+ * @returns {void}
+ */
+function closeDialog(dialog) {
+    if (typeof dialog.close === "function") {
+        dialog.close();
+        return;
+    }
+    dialog.removeAttribute("open");
+}
+
+/**
+ * Say the mobile-data words in the language the phone is set to.
+ *
+ * @returns {{ask: string, switched: string, blocked: string}} The wording.
+ */
+function mobileWords() {
+    const german = /^de\b/i.test(navigator.language || "");
+    if (german) {
+        return {
+            ask: "Du bist im Mobilfunknetz. Titel aus dem Netz streamen und dafür " +
+                 "Datenvolumen verbrauchen?",
+            switched: "Mobile Daten: Es werden nur die heruntergeladenen Titel abgespielt.",
+            blocked: "Dieser Titel liegt nicht lokal vor.",
+        };
+    }
+    return {
+        ask: "You are on a mobile connection. Stream from the network and use data for it?",
+        switched: "Mobile data: only downloaded songs are played.",
+        blocked: "That song is not on this device.",
+    };
+}
+
+/**
+ * Decide whether a track that is not on disk may be fetched right now.
+ *
+ * Asking happens here rather than on the PC: this is the device that knows it
+ * is on mobile data, and a dialog on a PC in another room helps nobody.
+ *
+ * @param {object|null} track The queue entry that is about to play.
+ * @returns {Promise<boolean>} Whether playback may go ahead.
+ */
+async function mayStream(track) {
+    if (track && track.local) {
+        return true;
+    }
+    const words = mobileWords();
+    if (playbackSource.local_only) {
+        sayStream(words.switched, "");
+        await stream("library");
+        return false;
+    }
+    if (playbackSource.ask) {
+        if (window.confirm(words.ask)) {
+            await stream("allow_mobile");
+            playbackSource.ask = false;
+            return true;
+        }
+        sayStream(words.switched, "");
+        await stream("library");
+        return false;
+    }
+    return true;
+}
+
 function playHere(videoId) {
+    const index = queueTracks.findIndex((track) => track.video_id === videoId);
+    const track = index >= 0 ? queueTracks[index] : null;
+    const gated = !(track && track.local)
+        && (playbackSource.local_only || playbackSource.ask);
+    if (gated) {
+        // Asking is asynchronous; every caller of playHere is not. Deciding
+        // first and starting afterwards keeps them all unchanged.
+        mayStream(track).then((allowed) => {
+            if (allowed) {
+                startHere(videoId);
+            }
+        });
+        return;
+    }
+    startHere(videoId);
+}
+
+/**
+ * Actually start a track on this device, once it is allowed to.
+ *
+ * @param {string} videoId The YouTube id of the queued track.
+ * @returns {void}
+ */
+function startHere(videoId) {
     const generation = ++playGeneration;
     guestVideoId = videoId;
     // May be -1 for a fresh search hit the queue has not caught up with yet;
@@ -1832,8 +2859,25 @@ function playHere(videoId) {
     markQueueCurrent(videoId);
     // New title → show that title's own rating, not the previous one's.
     syncVoteDisplay(videoId);
-    elements.player.hidden = false;
-    elements.player.src = "/stream/" + encodeURIComponent(videoId);
+    const track = guestIndex >= 0 ? queueTracks[guestIndex] : null;
+    // Video only for what comes off YouTube: a local file plays as it is, and
+    // a phone that switched to its library wants sound, not a black rectangle.
+    const asVideo = wantVideo && !(track && track.local);
+    elements.player.hidden = asVideo;
+    elements.streamVideo.hidden = !asVideo;
+    if (asVideo) {
+        elements.player.pause();
+        elements.player.removeAttribute("src");
+        elements.streamVideo.src = "/video/" + encodeURIComponent(videoId);
+        elements.streamVideo.play().catch(() => undefined);
+        syncStage();
+        return;
+    }
+    elements.streamVideo.pause();
+    elements.streamVideo.removeAttribute("src");
+    ensureAnalyser();
+    syncStage();
+    elements.player.src = trackSource(videoId, guestIndex);
     window.clearTimeout(playWatchTimer);
     playWatchTimer = window.setTimeout(() => {
         if (generation !== playGeneration || guestVideoId !== videoId) {
@@ -1899,44 +2943,69 @@ function skipUnplayable(videoId, reason) {
     const title = ((queueTracks.find((track) => track.video_id === videoId) || {}).title) || "track";
     sayStream("Could not play “" + title + "” — skipping.", "bad");
     const start = queueTracks.findIndex((track) => track.video_id === videoId);
-    for (let index = Math.max(0, start + 1); index < queueTracks.length; index += 1) {
-        const next = queueTracks[index];
-        if (next && next.video_id && !unplayableIds[next.video_id]) {
-            playHere(next.video_id);
+    if (start >= 0) {
+        guestIndex = start;
+    }
+    // A failure is not the song ending, so repeat-one must not send it back.
+    playNextHere(false).then(() => {
+        if (guestVideoId !== videoId) {
             return;
         }
-    }
-    // Nothing left after this failure.
-    guestVideoId = "";
-    guestIndex = -1;
-    markQueueCurrent("");
-    try {
-        elements.player.pause();
-        elements.player.removeAttribute("src");
-        elements.player.load();
-    } catch (error) {
-        // ignore
-    }
-    sayStream("No further playable tracks in the queue.", "bad");
+        // Nothing usable came back after this failure.
+        guestVideoId = "";
+        guestIndex = -1;
+        markQueueCurrent("");
+        try {
+            elements.player.pause();
+            elements.player.removeAttribute("src");
+            elements.player.load();
+        } catch (error) {
+            // ignore
+        }
+        sayStream("No further playable tracks in the queue.", "bad");
+    });
     void reason;
 }
 
 /**
  * Play whatever follows the track this device is on.
  *
- * @returns {void}
+ * Which row that is comes from the PC, not from here: shuffle and repeat are
+ * one rule for both platforms, and a phone that just took the next row down the
+ * list would silently ignore both.
+ *
+ * @param {boolean} [automatic] True when the song ended by itself, which is the
+ *     only case where repeat-one repeats it.
+ * @returns {Promise<void>}
  */
-function playNextHere() {
-    if (guestIndex < 0 || guestIndex + 1 >= queueTracks.length) {
-        return;
-    }
-    // Prefer the next id that has not already failed this session.
-    for (let index = guestIndex + 1; index < queueTracks.length; index += 1) {
+async function playNextHere(automatic) {
+    const ended = automatic !== false;
+    const skipped = {};
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        let answer;
+        try {
+            answer = await api("/api/discover/next", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({index: guestIndex, automatic: ended}),
+            });
+        } catch (error) {
+            setConnection(false);
+            return;
+        }
+        const index = answer.body && typeof answer.body.index === "number"
+            ? answer.body.index : -1;
+        if (index < 0 || index >= queueTracks.length || skipped[index]) {
+            return;
+        }
         const next = queueTracks[index];
         if (next && next.video_id && !unplayableIds[next.video_id]) {
             playHere(next.video_id);
             return;
         }
+        // Already failed this session: move the playhead on and ask again.
+        skipped[index] = true;
+        guestIndex = index;
     }
 }
 
@@ -2092,6 +3161,9 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.streamStop.addEventListener("click", () => transport("stop"));
     }
 
+    document.querySelectorAll("#sort-row .sort").forEach((button) => {
+        button.addEventListener("click", () => setSort(button.dataset.sort));
+    });
     elements.search.addEventListener("input", scheduleSearch);
     elements.search.addEventListener("search", runSearch);
     document.querySelectorAll("input[name=target]").forEach((radio) => {
@@ -2100,27 +3172,53 @@ document.addEventListener("DOMContentLoaded", () => {
     elements.volume.addEventListener("input", applyVolume);
     // One song ends, the next starts - the same as on the PC.
     elements.player.addEventListener("ended", () => {
-        // The same element also plays finished downloads; only a relayed stream
-        // means "go on to the next song".
-        const relayed = (elements.player.currentSrc || "").indexOf("/stream/") !== -1;
-        if (target === "guest" && relayed) {
-            playNextHere();
+        if (target === "guest" && fromQueue(elements.player)) {
+            playNextHere(true);
         }
     });
     elements.player.addEventListener("error", () => {
-        const relayed = (elements.player.currentSrc || "").indexOf("/stream/") !== -1;
-        if (target === "guest" && relayed && guestVideoId) {
+        if (target === "guest" && fromQueue(elements.player) && guestVideoId) {
             skipUnplayable(guestVideoId, "error");
+        }
+    });
+    elements.streamVideo.addEventListener("ended", () => {
+        if (target === "guest") {
+            playNextHere(true);
+        }
+    });
+    elements.streamVideo.addEventListener("error", () => {
+        if (target === "guest" && guestVideoId) {
+            skipUnplayable(guestVideoId, "video");
         }
     });
     elements.player.addEventListener("playing", () => {
         window.clearTimeout(playWatchTimer);
+        // A browser may have suspended the graph while the tab was away; an
+        // element that plays through it would then be silent.
+        resumeAudio();
     });
     elements.streamRefresh.addEventListener("click", () => {
         sayStream("Looking for similar songs...");
         unplayableIds = {};
         stream("refresh");
     });
+    elements.streamLibrary.addEventListener("click", () => {
+        unplayableIds = {};
+        stream("library");
+    });
+    elements.streamShuffle.addEventListener("click", () => saveMode(
+        {discover_shuffle: !playbackModes.shuffle}));
+    elements.streamRepeat.addEventListener("click", () => saveMode(
+        {discover_repeat: nextRepeat(playbackModes.repeat)}));
+    elements.streamSleep.addEventListener("change", () => stream("sleep", {
+        seconds: Number(elements.streamSleep.value) * 60,
+    }));
+    elements.streamScan.hidden = !canScan();
+    elements.streamScan.addEventListener("click", startScan);
+    elements.scanClose.addEventListener("click", stopScan);
+    elements.scanDialog.addEventListener("close", stopScan);
+    elements.shareClose.addEventListener("click", () => closeDialog(elements.shareDialog));
+    elements.shareCopy.addEventListener("click", copyShareLink);
     elements.streamTrack.addEventListener("click", seekFromClick);
     elements.resultsToggle.addEventListener("click", () => showResults());
     document.addEventListener("visibilitychange", syncPolling);
@@ -2145,7 +3243,7 @@ document.addEventListener("DOMContentLoaded", () => {
  */
 async function bootstrapStatus() {
     try {
-        const answer = await api("/api/status");
+        const answer = await api(statusPath());
         if (answer.status === 200) {
             if (elements.quit) {
                 elements.quit.hidden = !answer.body.can_quit;

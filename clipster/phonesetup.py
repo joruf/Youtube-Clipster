@@ -95,8 +95,13 @@ class _PairingApi:
         self.seen = threading.Event()
         self.visitors: List[str] = []
 
-    def status(self) -> Tuple[int, Dict[str, Any]]:
-        """Record that a device got through and answer it."""
+    def status(self, connection: str = "") -> Tuple[int, Dict[str, Any]]:
+        """Record that a device got through and answer it.
+
+        :param connection: What the device says about its connection; there is
+            no playback to apply it to yet, so it is only noted.
+        """
+        del connection
         self.seen.set()
         return 200, {"active": [], "queued": 0, "parallel": 1, "pairing": True}
 
@@ -107,6 +112,22 @@ class _PairingApi:
     def media(self, entry_id: str) -> Optional[Path]:
         """Nothing is playable during pairing."""
         return None
+
+    def queue_media(self, position: str) -> Optional[Path]:
+        """No queue exists during pairing."""
+        return None
+
+    def streaming_allowed(self) -> bool:
+        """Nothing is streamed during pairing, so the question is moot."""
+        return False
+
+    def share_code(self, video_id: str) -> Tuple[int, str]:
+        """No song can be shared before the program runs."""
+        return 404, ""
+
+    def scan(self, text: str) -> Tuple[int, Dict[str, Any]]:
+        """Nothing can be queued during pairing."""
+        return 503, {"ok": False, "error": "closing"}
 
     def submit(self, url: str, media_format: str, force: bool = False) -> Tuple[int, Dict[str, Any]]:
         """Refuse downloads: the program itself is not running yet."""

@@ -184,6 +184,16 @@ class _CachedStream:
 #: plays AAC but not the Opus-in-WebM that "bestaudio" usually picks.
 BROWSER_AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio/best"
 
+#: Format for video in a phone browser.  A progressive MP4 - one file with both
+#: streams already in it - because a ``<video>`` element cannot mux a separate
+#: video and audio track the way mpv does, and 720p keeps it watchable over a
+#: home network.  The fallbacks give up resolution before they give up playing.
+BROWSER_VIDEO_FORMAT = (
+    "best[ext=mp4][height<=720][acodec!=none][vcodec!=none]/"
+    "best[ext=mp4][acodec!=none][vcodec!=none]/"
+    "best[acodec!=none][vcodec!=none]/best"
+)
+
 
 def resolve_stream(
     page_url: str,

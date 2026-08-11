@@ -1,9 +1,11 @@
 package de.loresoft.youtubeclipster
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.ActivityManager
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +14,8 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.webkit.JavascriptInterface
+import android.webkit.PermissionRequest
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -39,6 +43,7 @@ class MainActivity : Activity() {
     private var attempts = 0
     private var loadedOk = false
     private var stopping = false
+    private var pendingCameraRequest: PermissionRequest? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -115,6 +120,27 @@ class MainActivity : Activity() {
             useWideViewPort = true
         }
         webView.addJavascriptInterface(ClipsterBridge(), "ClipsterBridge")
+        webView.webChromeClient = object : WebChromeClient() {
+            /**
+             * A WebView denies getUserMedia unless the app answers for it.
+             * The page only ever asks after the user taps Scan, so the request
+             * is granted once Android itself has granted the camera to us.
+             */
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                if (request == null) return
+                if (!request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) {
+                    request.deny()
+                    return
+                }
+                if (hasCamera()) {
+                    request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+                    return
+                }
+                // Ask Android first; the page retries after the answer comes back.
+                pendingCameraRequest = request
+                requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_REQUEST)
+            }
+        }
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 if (loadedOk) return
@@ -273,6 +299,34 @@ class MainActivity : Activity() {
         setIntent(intent)
     }
 
+    /** Whether Android has already granted us the camera. */
+    private fun hasCamera(): Boolean =
+        checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Hand the answer back to the waiting page.
+     *
+     * A denial is answered as a denial rather than left hanging, so the scanner
+     * can say why it did not open instead of showing a black rectangle.
+     */
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != CAMERA_REQUEST) return
+        val request = pendingCameraRequest ?: return
+        pendingCameraRequest = null
+        val granted = grantResults.isNotEmpty() &&
+            grantResults[0] == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+        } else {
+            request.deny()
+        }
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         // Back = Beenden: tear the server down, do not leave it running.
@@ -305,6 +359,7 @@ class MainActivity : Activity() {
         private const val RETRY_DELAY_MS = 1500L
         private const val TERMUX_WAKE_MS = 800L
         private const val MAX_ATTEMPTS = 20
+        private const val CAMERA_REQUEST = 4711
 
         private const val TERMUX_PACKAGE = "com.termux"
         private const val TERMUX_RUN_SERVICE = "com.termux.app.RunCommandService"

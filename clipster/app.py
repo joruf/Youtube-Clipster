@@ -35,7 +35,9 @@ from .downloader import (
     Progress,
     VideoInfo,
     cookies_are_configured,
+    extract_video_id,
     extract_youtube_url,
+    share_url,
     user_facing_ytdlp_error,
 )
 from . import discover
@@ -49,6 +51,8 @@ from .discover import (
 from .discover_taste import DiscoverTaste, VOTE_DOWN, VOTE_UP
 from .discover_queue import DiscoverQueueStore
 from .history import STATUS_CANCELED, STATUS_FAILED, STATUS_OK, History, HistoryEntry, format_size
+from . import netmode
+from .visualizer import normalize_visualizer
 from .i18n import Messages
 from .library import library_tracks
 from .logging_setup import get_logger
@@ -95,10 +99,12 @@ REMOTE_AUDIO_TTL = 1800.0
 DISCOVER_COMMANDS = (
     "refresh", "extend", "play", "toggle", "stop", "next", "previous",
     "like", "dislike", "hide", "download", "seek", "volume", "clear_vote",
+    "library", "allow_mobile", "sleep",
 )
 
 #: Of those, the ones that reach YouTube and therefore need the Streaming terms.
-#: Turning the volume down or stopping takes nothing new from anywhere.
+#: Turning the volume down or stopping takes nothing new from anywhere - and
+#: neither does ``library``, which only reads the download folder.
 DISCOVER_TERMS_COMMANDS = ("refresh", "extend", "play", "toggle", "next", "previous", "download")
 
 
@@ -261,18 +267,26 @@ class ClipsterApp:
         if self.gui.view is not None and self.gui.view.discover is not None:
             self.gui.view.discover.player.set_options_provider(self.downloader._base_options)
             self.gui.view.discover.ensure_terms = self._ensure_streaming_terms
+            self.gui.view.discover.allow_stream = self.streaming_allowed
             self.gui.view.discover.vote_for = self.taste.vote_for
             self.gui.view.discover._on_hide = self._discover_hide
             self.gui.view.discover._on_clear_vote = self._discover_clear_vote
             self.gui.view.discover._on_play_vote = self._discover_play_vote
             self.gui.view.discover.on_queue_changed = self._schedule_queue_save
             self.gui.view.discover.on_library = self._discover_library
+            self.gui.view.discover.on_share = self._share_track
             self.gui.view.on_play_here = self.play_entry_in_app
+            self.gui.view.on_share_entry = self._share_entry
             self.gui.view.discover.set_votes(self.taste.entries)
 
         self._discover_cancel = threading.Event()
         self._discover_busy = False
         self._discover_extending = False
+        #: What the remote interface last said about its connection; empty on a
+        #: desktop, which has no way to know and no reason to care.
+        self._connection = netmode.UNKNOWN
+        #: Connection the user agreed to stream on, for ``playback_on_mobile=ask``.
+        self._mobile_stream_allowed_for = ""
         #: Auto Find-Similar already ran (or was skipped) for this process.
         self._auto_discover_done = False
         #: Tk ``after`` id for the deferred auto Discover start, if any.
@@ -285,6 +299,8 @@ class ClipsterApp:
             session = HeadlessDiscoverSession(config, messages)
             session.player.set_options_provider(self.downloader._base_options)
             session.ensure_terms = self._ensure_streaming_terms
+            session.allow_stream = self.streaming_allowed
+            session.on_library = self._discover_library
             session._on_like = self._discover_like
             session._on_dislike = self._discover_dislike
             session._on_hide = self._discover_hide
@@ -436,10 +452,15 @@ class ClipsterApp:
             "extending": self._discover_extending,
             "mode": self.config.discover_mode,
             "level": 0.0,
+            "bands": [],
+            "visualizer": normalize_visualizer(self.config.discover_visualizer),
+            "play_video": bool(self.config.discover_play_video),
             "volume": None,
             "volume_controllable": False,
             "search_delay_ms": max(200, int(self.config.remote_search_delay_ms)),
             "search_results": max(1, int(self.config.remote_search_results)),
+            "playback_source": self.playback_source_state(),
+            "playback_modes": self.playback_modes_state(),
         }
         if page is None:
             return state
@@ -456,6 +477,9 @@ class ClipsterApp:
                 "duration": track.duration,
                 "seed_title": track.seed_title,
                 "vote": self.taste.vote_for(track.video_id) or "",
+                # Plays from the download folder, so it needs no connection at
+                # all - the phone shows and treats those differently.
+                "local": bool(track.is_local),
             }
             for index, track in enumerate(player.tracks)
         ]
@@ -468,6 +492,9 @@ class ClipsterApp:
             state["level"] = float(player.energy_level())
             state["volume"] = player.volume()
             state["volume_controllable"] = bool(player.volume_controllable())
+            # Only needed while the PC is the one making the sound: a device
+            # playing for itself measures its own audio and ignores these.
+            state["bands"] = [round(float(value), 3) for value in player.spectrum_levels()]
         except Exception:  # pragma: no cover - a player without a live process
             log.debug("The player state could not be read", exc_info=True)
         current = player.current
@@ -499,8 +526,84 @@ class ClipsterApp:
         ]
         return state
 
+    def _share_track(self, track: DiscoverTrack) -> None:
+        """Show the QR code for a queued song.
+
+        :param track: The song the user right-clicked.
+        :return: None
+        """
+        self._show_share_code(track.video_id, track.title)
+
+    def _share_entry(self, entry: HistoryEntry) -> None:
+        """Show the QR code for a finished download.
+
+        :param entry: The download list row the user right-clicked.
+        :return: None
+        """
+        self._show_share_code(extract_video_id(entry.url) or "", entry.title or entry.name)
+
+    def _show_share_code(self, video_id: str, title: str) -> None:
+        """Put one song on screen as a scannable code.
+
+        :param video_id: The YouTube id, empty for a file with no origin.
+        :param title: What to write above the code.
+        :return: None
+        """
+        url = share_url(video_id)
+        if not url:
+            # A file copied into the folder by hand has no id, so there is
+            # nothing another Clipster could look up from a code.
+            self.gui.toast(self.messages["share_no_id"])
+            return
+        self.gui.show_share_code(url, title)
+
+    def queue_track_path(self, index: int) -> Optional[Path]:
+        """Return the file a queued track plays from, when it has one.
+
+        The path never travels to the device - only this index does - so the
+        phone can play a library track without learning where anything lives.
+
+        :param index: Position in the Streaming queue.
+        :return: The existing file, or ``None`` for an online track.
+        :raises RuntimeError: When the GUI bridge is no longer running.
+        """
+        if not self.bridge.on_gui_thread():
+            return self.bridge.call(self.queue_track_path, index)
+        page = self._discover_page()
+        if page is None:
+            return None
+        tracks = page.player.tracks
+        if index < 0 or index >= len(tracks):
+            return None
+        target = str(getattr(tracks[index], "path", "") or "")
+        if not target:
+            return None
+        path = Path(target)
+        return path if path.is_file() else None
+
     def discover_remote_audio(self, video_id: str) -> Tuple[str, Dict[str, str]]:
         """Resolve a browser-playable audio URL for one queued track.
+
+        :param video_id: The video id from the queue.
+        :return: ``(url, headers)``; the URL is empty when nothing was resolved.
+        """
+        return self._resolve_remote_stream(video_id, want_video=False)
+
+    def discover_remote_video(self, video_id: str) -> Tuple[str, Dict[str, str]]:
+        """Resolve a browser-playable *video* URL for one queued track.
+
+        Separate from :meth:`discover_remote_audio` only in the format asked
+        for: a ``<video>`` element needs one file with picture and sound already
+        muxed together, which is not what "bestaudio" or a split stream gives.
+
+        :param video_id: The video id from the queue.
+        :return: ``(url, headers)``; the URL is empty when nothing was resolved.
+        """
+        return self._resolve_remote_stream(video_id, want_video=True)
+
+    def _resolve_remote_stream(self, video_id: str, *,
+                               want_video: bool) -> Tuple[str, Dict[str, str]]:
+        """Resolve one stream for a device that plays it itself.
 
         Runs on the caller's thread - the web server's - because resolving means
         asking YouTube, which must never happen on the GUI thread. Nothing here
@@ -508,18 +611,28 @@ class ClipsterApp:
 
         The result is cached, because these URLs stay valid for hours while
         resolving one costs a second or two that the phone would wait for on
-        every single track.
+        every single track.  Audio and video are cached apart: the same song can
+        be wanted both ways.
 
         :param video_id: The video id from the queue.
+        :param want_video: Ask for picture and sound rather than sound alone.
         :return: ``(url, headers)``; the URL is empty when nothing was resolved.
             The headers have to be replayed by whoever fetches it - YouTube
             answers 403 to a request that arrives without them.
         """
         if not video_id or not streaming_terms_accepted(self.config):
             return "", {}
+        if not self.streaming_allowed():
+            # The rule lives here as well as in the queue, so a page that was
+            # left open on a phone cannot keep pulling audio after the user
+            # walked out of Wi-Fi.
+            log.info("Refusing to resolve %s: streaming is off on this connection.", video_id)
+            return "", {}
+        kind = "video" if want_video else "audio"
+        key = "{0}:{1}".format(kind, video_id)
         now = time.monotonic()
         with self._audio_lock:
-            cached = self._audio_urls.get(video_id)
+            cached = self._audio_urls.get(key)
             if cached is not None and now - cached[2] < REMOTE_AUDIO_TTL:
                 return cached[0], dict(cached[1])
 
@@ -533,16 +646,18 @@ class ClipsterApp:
             return "", {}
         watch = "https://www.youtube.com/watch?v={0}".format(video_id)
         try:
-            from .player import BROWSER_AUDIO_FORMAT, resolve_stream
+            from .player import BROWSER_AUDIO_FORMAT, BROWSER_VIDEO_FORMAT, resolve_stream
 
-            url, headers = resolve_stream(watch, self.downloader._base_options(),
-                                          format_selector=BROWSER_AUDIO_FORMAT)
+            url, headers = resolve_stream(
+                watch, self.downloader._base_options(),
+                format_selector=BROWSER_VIDEO_FORMAT if want_video else BROWSER_AUDIO_FORMAT,
+            )
         except Exception as exc:  # pragma: no cover - needs the network
-            log.warning("No remote audio stream for %s: %s", video_id, exc)
+            log.warning("No remote %s stream for %s: %s", kind, video_id, exc)
             return "", {}
         with self._audio_lock:
-            self._audio_urls[video_id] = (url, dict(headers), now)
-        log.info("Resolved a remote audio stream for %s (%s headers)", video_id, len(headers))
+            self._audio_urls[key] = (url, dict(headers), now)
+        log.info("Resolved a remote %s stream for %s (%s headers)", kind, video_id, len(headers))
         return url, dict(headers)
 
     def discover_remote_search(self, query: str) -> Dict[str, Any]:
@@ -593,6 +708,32 @@ class ClipsterApp:
                 for track in found
             ],
         }
+
+    def discover_remote_next(self, current: int, automatic: bool = True) -> Dict[str, Any]:
+        """Answer which queue row a remote device should play next.
+
+        The device plays the audio itself, but it must not decide the order:
+        shuffle and repeat live in :class:`clipster.playorder.PlayOrder` and
+        asking here is what keeps the phone and the desktop in step instead of
+        giving the phone a second, simpler rule of its own.
+
+        :param current: The row the device is on.
+        :param automatic: ``True`` when the song ended by itself, which is the
+            only case where repeat-one repeats it.
+        :return: ``{"ok": bool, "index": int}``; ``-1`` when the queue is through.
+        :raises RuntimeError: When the GUI bridge is no longer running.
+        """
+        if not self.bridge.on_gui_thread():
+            return dict(self.bridge.call(self.discover_remote_next, current, automatic))
+        page = self._discover_page()
+        if page is None:
+            return {"ok": False, "index": -1}
+        # Tell the page where the device actually is, or the answer would be
+        # computed from whatever the PC last played.
+        if hasattr(page, "select_at"):
+            page.select_at(int(current))
+        following = page.next_index(automatic=bool(automatic))
+        return {"ok": True, "index": -1 if following is None else int(following)}
 
     def discover_remote_enqueue(self, video_id: str, title: str = "", uploader: str = "",
                                 duration: int = 0, play: bool = True) -> Dict[str, Any]:
@@ -704,6 +845,16 @@ class ClipsterApp:
         """
         if command == "refresh":
             self._discover_refresh(require_terms=False)
+        elif command == "library":
+            self._discover_library()
+        elif command == "allow_mobile":
+            self.allow_mobile_stream()
+        elif command == "sleep":
+            setter = getattr(page, "set_sleep_timer", None)
+            if callable(setter):
+                # The phone sends seconds like every other position; the timer
+                # is set in whole minutes, as the desktop combobox offers them.
+                setter(max(0, int(seconds // 60)))
         elif command == "extend":
             page.maybe_extend(reason="remote")
         elif command == "play":
@@ -987,6 +1138,82 @@ class ClipsterApp:
         log.info("User accepted the general terms of use (v%s).", self.config.terms_app_version)
         return True
 
+    def set_connection_type(self, connection: str) -> None:
+        """Record what the interface says about the connection it is on.
+
+        Only a device that is actually on the connection can know this, so the
+        phone reports it with its status polls; a desktop never says anything
+        and therefore never counts as metered.  A change of connection forgets
+        an earlier "yes, stream anyway" - that answer was about the old one.
+
+        :param connection: What ``navigator.connection`` reported.
+        :return: None
+        """
+        value = netmode.normalize_connection(connection)
+        if value == self._connection:
+            return
+        log.debug("The remote interface reports a %s connection.", value or "unknown")
+        self._connection = value
+        self._mobile_stream_allowed_for = ""
+
+    def streaming_allowed(self) -> bool:
+        """Return ``True`` when a track that is not on disk may be fetched.
+
+        :return: Whether streaming is permitted on the current connection.
+        """
+        if netmode.local_only(self.config, self._connection):
+            return False
+        if netmode.should_ask(self.config, self._connection):
+            return self._mobile_stream_allowed_for == self._connection
+        return True
+
+    def allow_mobile_stream(self) -> None:
+        """Remember that the user agreed to stream on this connection.
+
+        The answer lasts as long as the connection does, not one track: asking
+        again for every song would be unusable.
+
+        :return: None
+        """
+        self._mobile_stream_allowed_for = self._connection
+
+    def playback_modes_state(self) -> Dict[str, Any]:
+        """Return how the queue is being played, for the phone.
+
+        Read off the page when there is one, so a mode toggled on the PC shows
+        up on the phone within one poll; the configuration is the fallback.
+
+        :return: ``{"shuffle", "repeat", "sleep_minutes"}``.
+        """
+        page = self._discover_page()
+        remaining = 0
+        if page is not None:
+            left = getattr(page, "sleep_minutes_left", None)
+            if callable(left):
+                try:
+                    remaining = max(0, int(left()))
+                except Exception:  # pragma: no cover - defensive
+                    remaining = 0
+        return {
+            "shuffle": bool(self.config.discover_shuffle),
+            "repeat": str(self.config.discover_repeat or "off"),
+            "sleep_minutes": remaining,
+        }
+
+    def playback_source_state(self) -> Dict[str, Any]:
+        """Return what the interfaces need to explain the current rule.
+
+        :return: ``{"connection", "metered", "local_only", "ask", "mode"}``.
+        """
+        return {
+            "connection": self._connection,
+            "metered": netmode.is_metered(self._connection),
+            "local_only": netmode.local_only(self.config, self._connection),
+            "ask": netmode.should_ask(self.config, self._connection)
+            and self._mobile_stream_allowed_for != self._connection,
+            "mode": netmode.normalize_mode(self.config.playback_on_mobile),
+        }
+
     def _ensure_streaming_terms(self) -> bool:
         """Require Streaming-specific terms before Discover actions run."""
         if streaming_terms_accepted(self.config):
@@ -1082,6 +1309,23 @@ class ClipsterApp:
 
         threading.Thread(target=work, name="clipster-update-check", daemon=True).start()
 
+    def _update_message(self, info: "updater.UpdateInfo") -> str:
+        """Put one update result into words.
+
+        Shared by the desktop About page and the phone, so both platforms say
+        the same thing about the same state instead of drifting apart.
+
+        :param info: The result of :func:`clipster.updater.check`.
+        :return: The sentence to show.
+        """
+        if not info.known:
+            return self.messages.format("update_failed", details=info.error or "?")
+        if info.unknown:
+            return self.messages.format("update_unversioned", commit=info.remote)
+        if info.available:
+            return self.messages.format("update_available", summary=info.summary or info.remote)
+        return self.messages.format("update_current", commit=info.remote)
+
     def _update_checked(self, info: "updater.UpdateInfo", announce: bool) -> None:
         """Show what the check found.
 
@@ -1090,21 +1334,24 @@ class ClipsterApp:
         :return: None
         """
         self._checking_update = False
+        text = self._update_message(info)
         if not info.known:
-            text = self.messages.format("update_failed", details=info.error or "?")
             self.gui.show_update_state(text, False)
             if announce:
                 log.warning("%s", text)
             return
+        self.gui.show_update_state(text, info.available)
+        if info.unknown:
+            # Worth offering, not worth a notification on every start: this
+            # state stays until the first update writes a build marker.
+            if announce:
+                log.info("%s", text)
+            return
         if info.available:
-            text = self.messages.format("update_available", summary=info.summary or info.remote)
-            self.gui.show_update_state(text, True)
             log.info("%s", text)
             if not self.tray.notify(text):
                 self.gui.toast(text)
             return
-        text = self.messages.format("update_current", commit=info.remote)
-        self.gui.show_update_state(text, False)
         if announce:
             log.info("%s", text)
 
@@ -2205,6 +2452,13 @@ class ClipsterApp:
         "cookies_risk_acknowledged",
         "cookies_from_browser",
         "cookies_file",
+        "discover_shuffle",
+        "discover_repeat",
+        "discover_play_video",
+        "discover_visualizer",
+        "discover_extend_count",
+        "playback_on_mobile",
+        "playback_local_only",
     )
 
     def remote_terms(self) -> Dict[str, Any]:
@@ -2277,17 +2531,12 @@ class ClipsterApp:
         :return: ``{"ok", "available", "local", "remote", "summary", "error"}``.
         """
         info = updater.check()
-        text = (
-            self.messages.format("update_available", summary=info.summary or info.remote)
-            if info.available
-            else self.messages.format("update_current", commit=info.remote)
-        )
-        if not info.known:
-            text = self.messages.format("update_failed", details=info.error or "?")
+        text = self._update_message(info)
         self.bridge.post(self.gui.show_update_state, text, bool(info.available))
         return {
             "ok": bool(info.known),
             "available": bool(info.available),
+            "unknown": bool(info.unknown),
             "local": info.local,
             "remote": info.remote,
             "summary": info.summary,
@@ -2405,8 +2654,54 @@ class ClipsterApp:
                 config.cookies_from_browser = browser
         if "cookies_file" in updates and config.cookies_risk_acknowledged:
             config.cookies_file = str(updates["cookies_file"] or "").strip()
+        if "discover_shuffle" in updates:
+            config.discover_shuffle = bool(updates["discover_shuffle"])
+        if "discover_repeat" in updates:
+            repeat = str(updates["discover_repeat"] or "").strip().lower()
+            if repeat in ("off", "all", "one"):
+                config.discover_repeat = repeat
+        if "discover_play_video" in updates:
+            config.discover_play_video = bool(updates["discover_play_video"])
+        if "discover_visualizer" in updates:
+            from .visualizer import VISUALIZER_MODES
+
+            mode = str(updates["discover_visualizer"] or "").strip().lower()
+            if mode in VISUALIZER_MODES:
+                config.discover_visualizer = mode
+        if "discover_extend_count" in updates:
+            try:
+                config.discover_extend_count = max(1, int(updates["discover_extend_count"]))
+            except (TypeError, ValueError):
+                pass
+        if "playback_on_mobile" in updates:
+            config.playback_on_mobile = netmode.normalize_mode(updates["playback_on_mobile"])
+        if "playback_local_only" in updates:
+            config.playback_local_only = bool(updates["playback_local_only"])
         self._save_settings()
+        self._sync_playback_settings()
         return self.remote_settings()
+
+    def _sync_playback_settings(self) -> None:
+        """Push changed playback settings into a live Streaming page.
+
+        Settings saved from the phone must reach the page that is already
+        running, or shuffle would stay off until the next start.
+
+        :return: None
+        """
+        page = self._discover_page()
+        if page is None:
+            return
+        for attribute, value in (
+            ("set_shuffle", bool(self.config.discover_shuffle)),
+            ("set_repeat", str(self.config.discover_repeat)),
+        ):
+            setter = getattr(page, attribute, None)
+            if callable(setter):
+                try:
+                    setter(value)
+                except Exception:  # pragma: no cover - a page error must not fail a save
+                    log.debug("%s could not be applied to the page", attribute, exc_info=True)
 
     def _auto_language(self, info: VideoInfo) -> str:
         """Return the audio track to use without asking the user.

@@ -134,6 +134,23 @@ def test_dedupe_tracks_collapses_lyrics_variants() -> None:
     assert dedupe_tracks([extra], against=kept) == []
 
 
+def test_dedupe_keeps_every_file_even_when_the_names_look_alike() -> None:
+    """Two files are two songs - an album would otherwise lose most of itself."""
+    album = [
+        DiscoverTrack(url="", video_id="", title="Nightfall Part 1", path="/music/a.mp3"),
+        DiscoverTrack(url="", video_id="", title="Nightfall Part 2", path="/music/b.mp3"),
+        DiscoverTrack(url="", video_id="", title="Nightfall Part 3", path="/music/c.mp3"),
+    ]
+    assert titles_similar(album[0].title, album[1].title), "the titles really are alike"
+    assert len(dedupe_tracks(album)) == 3
+
+
+def test_the_same_file_twice_is_still_one_song() -> None:
+    same = DiscoverTrack(url="", video_id="", title="Song", path="/music/song.mp3")
+    other = DiscoverTrack(url="", video_id="", title="Different name", path="/music/song.mp3")
+    assert len(dedupe_tracks([same, other])) == 1
+
+
 def test_title_from_media_filename_strips_id_and_extension() -> None:
     assert title_from_media_filename("Hello World [abcdefghijk].mp3") == "Hello World"
     assert title_from_media_filename("track.mp4") == "track"

@@ -4,6 +4,12 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+    <!-- Reading a shared QR code off another screen. Asked for only when the
+         scanner is opened, never at start, and used for nothing else. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- A phone without a camera still installs and runs; only scanning is out. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <queries>
         <package android:name="com.termux" />

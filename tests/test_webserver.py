@@ -40,6 +40,12 @@ class FakeApp:
         self.audio_url = ""
         self.terms_missing = False
         self.history = self  # the API reaches the history through the app
+        #: What the last status poll reported about the device's connection.
+        self.connection = ""
+        #: Whether tracks that are not on disk may be fetched.
+        self.may_stream = True
+        #: Files the queue plays from, by position.
+        self.queue_paths: Dict[int, Path] = {}
 
     # -- history -------------------------------------------------------
     def find_by_id(self, identifier: str) -> Optional[HistoryEntry]:
@@ -186,6 +192,15 @@ class FakeApp:
         if len(video_id) != 11:
             return {"ok": False, "error": "unknown_track", "state": {}}
         return {"ok": True, "error": "", "state": self.discover_remote_state()}
+
+    def set_connection_type(self, connection: str) -> None:
+        self.connection = connection
+
+    def streaming_allowed(self) -> bool:
+        return self.may_stream
+
+    def queue_track_path(self, index: int) -> Optional[Path]:
+        return self.queue_paths.get(index)
 
     def discover_remote_audio(self, video_id: str) -> Tuple[str, Dict[str, str]]:
         # The headers travel with the URL: YouTube hands them out per format.
@@ -645,6 +660,146 @@ def test_a_whole_file_is_served(media) -> None:
     assert status == 200
     assert body == target.read_bytes()
     assert headers["Accept-Ranges"] == "bytes"
+
+
+# ----------------------------------------------------------------------
+# Library tracks and the mobile-data rule
+# ----------------------------------------------------------------------
+def test_a_queued_library_track_is_served_from_disk(served, tmp_path: Path) -> None:
+    """The phone has to be able to play what is already on it."""
+    app, base, _ = served
+    target = tmp_path / "already-here.mp3"
+    target.write_bytes(bytes(range(256)))
+    app.queue_paths[0] = target
+
+    status, headers, body = _request("{0}/queue/0".format(base))
+    assert status == 200
+    assert body == target.read_bytes()
+    assert headers["Accept-Ranges"] == "bytes"
+
+
+def test_a_library_track_can_be_seeked(served, tmp_path: Path) -> None:
+    app, base, _ = served
+    target = tmp_path / "already-here.mp3"
+    target.write_bytes(bytes(range(256)))
+    app.queue_paths[0] = target
+
+    status, headers, body = _request("{0}/queue/0".format(base),
+                                     headers={"Range": "bytes=10-19"})
+    assert status == 206
+    assert body == target.read_bytes()[10:20]
+
+
+@pytest.mark.parametrize("position", ["1", "-1", "nonsense", ""])
+def test_a_queue_position_with_no_file_is_a_404(served, position: str) -> None:
+    _, base, _ = served
+    status, _headers, _body = _request("{0}/queue/{1}".format(base, position))
+    assert status == 404
+
+
+def test_a_library_track_needs_the_token(served, tmp_path: Path) -> None:
+    """Local files are the user's music, not the network's."""
+    app, base, _ = served
+    target = tmp_path / "already-here.mp3"
+    target.write_bytes(b"\0")
+    app.queue_paths[0] = target
+
+    status, _headers, _body = _request("{0}/queue/0".format(base), token=None)
+    assert status == 401
+
+
+def test_the_stream_relay_says_why_it_refuses_on_mobile_data(served) -> None:
+    """A 404 would be a lie the page cannot act on."""
+    app, base, _ = served
+    app.may_stream = False
+
+    status, _headers, body = _request("{0}/stream/aaaaaaaaaaa".format(base))
+    assert status == 403
+    assert json.loads(body)["error"] == "local_only"
+
+
+def test_the_share_code_is_served_as_an_svg(served) -> None:
+    pytest.importorskip("qrcode")
+    _, base, _ = served
+    status, headers, body = _request("{0}/api/qr?v=dQw4w9WgXcQ".format(base))
+    assert status == 200
+    assert headers["Content-Type"].startswith("image/svg+xml")
+    assert body.startswith(b"<svg")
+    # The code has to carry the plain link, or a normal camera app is useless.
+    assert b"<rect" in body
+
+
+@pytest.mark.parametrize("query", ["", "?v=", "?v=short", "?v=waaaaaytoolongforanid"])
+def test_a_share_code_without_a_real_id_is_refused(served, query: str) -> None:
+    _, base, _ = served
+    status, _headers, _body = _request("{0}/api/qr{1}".format(base, query))
+    assert status == 404
+
+
+def test_a_share_code_needs_the_token(served) -> None:
+    _, base, _ = served
+    status, _headers, _body = _request("{0}/api/qr?v=dQw4w9WgXcQ".format(base), token=None)
+    assert status == 401
+
+
+def test_a_scanned_link_lands_in_the_queue(served) -> None:
+    """The point of the whole feature: somebody else's code becomes your song."""
+    app, base, _ = served
+    status, _headers, body = _request(
+        "{0}/api/scan".format(base), method="POST",
+        body={"text": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+    )
+    assert status == 200
+    answer = json.loads(body)
+    assert answer["ok"] is True
+    assert answer["video_id"] == "dQw4w9WgXcQ"
+    assert app.enqueued == [("dQw4w9WgXcQ", "", False)], "queued, never auto-played"
+
+
+@pytest.mark.parametrize("text", [
+    "https://youtu.be/dQw4w9WgXcQ",
+    "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+    "watch this: https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL123",
+])
+def test_every_link_shape_the_clipboard_accepts_also_scans(served, text: str) -> None:
+    """One pattern, not one for the clipboard and another for the camera."""
+    app, base, _ = served
+    status, _headers, _body = _request("{0}/api/scan".format(base), method="POST",
+                                       body={"text": text})
+    assert status == 200
+    assert app.enqueued[-1][0] == "dQw4w9WgXcQ"
+
+
+@pytest.mark.parametrize("text", ["", "hello", "https://example.com/watch?v=nope"])
+def test_a_code_that_is_not_a_youtube_link_is_reported(served, text: str) -> None:
+    app, base, _ = served
+    status, _headers, body = _request("{0}/api/scan".format(base), method="POST",
+                                      body={"text": text})
+    assert status == 400
+    assert json.loads(body)["error"] == "not_a_youtube_link"
+    assert app.enqueued == []
+
+
+def test_scanning_needs_the_token(served) -> None:
+    _, base, _ = served
+    status, _headers, _body = _request("{0}/api/scan".format(base), method="POST",
+                                       token=None, body={"text": "x"})
+    assert status == 401
+
+
+def test_the_device_reports_its_connection_with_the_status_poll(served) -> None:
+    app, base, _ = served
+    status, _headers, _body = _request("{0}/api/status?net=cellular".format(base))
+    assert status == 200
+    assert app.connection == "cellular"
+
+
+def test_a_status_poll_without_a_connection_changes_nothing(served) -> None:
+    """Browsers without the Network Information API must not clear the state."""
+    app, base, _ = served
+    app.connection = "wifi"
+    _request("{0}/api/status".format(base))
+    assert app.connection == "wifi"
 
 
 def test_a_range_is_answered_with_206(media) -> None:
