@@ -58,6 +58,7 @@ class Gui:
         self.on_view_closed: Optional[Callable[[], None]] = None
         self.on_play_entry: Optional[Callable[[HistoryEntry], None]] = None
         self.on_reveal_entry: Optional[Callable[[HistoryEntry], None]] = None
+        self.on_retry_entry: Optional[Callable[[HistoryEntry], None]] = None
         self.on_delete_entry: Optional[Callable[[HistoryEntry], None]] = None
         self.on_hide_entry: Optional[Callable[[HistoryEntry], None]] = None
         self.on_clear_history: Optional[Callable[[], None]] = None
@@ -135,6 +136,7 @@ class Gui:
             on_quit=self._quit,
             on_play_entry=self._play_entry,
             on_reveal_entry=self._reveal_entry,
+            on_retry_entry=self._retry_entry,
             on_delete_entry=self._delete_entry,
             on_hide_entry=self._hide_entry,
             on_clear_history=self._clear_history,
@@ -179,13 +181,18 @@ class Gui:
         if self.on_play_entry is not None:
             self.on_play_entry(entry)
 
+    def _retry_entry(self, entry: HistoryEntry) -> None:
+        """Forward the "retry" button of a failed table row."""
+        if self.on_retry_entry is not None:
+            self.on_retry_entry(entry)
+
     def _delete_entry(self, entry: HistoryEntry) -> None:
         """Forward the "delete" button of a table row (file + list, no prompt)."""
         if self.on_delete_entry is not None:
             self.on_delete_entry(entry)
 
     def _hide_entry(self, entry: HistoryEntry) -> None:
-        """Forward the "hide" button — drop the row, keep the file on disk."""
+        """Forward the "hide" button: drop the row, keep the file on disk."""
         if self.on_hide_entry is not None:
             self.on_hide_entry(entry)
 

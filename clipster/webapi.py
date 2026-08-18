@@ -79,6 +79,7 @@ def entry_to_dict(entry: HistoryEntry) -> Dict[str, Any]:
         "error_kind": entry.error_kind,
         "error": entry.error,
         "playable": entry.file_path() is not None,
+        "retryable": entry.can_retry(),
     }
 
 

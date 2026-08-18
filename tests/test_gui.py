@@ -392,6 +392,7 @@ def test_play_and_folder_are_disabled_when_the_file_is_gone(gui, sample_entries,
         by_label.setdefault(str(button.cget("text")), []).append(button)
 
     assert set(by_label) == {
+        messages["history_retry"],
         messages["history_play"],
         messages["history_folder"],
         messages["history_hide"],
@@ -401,6 +402,10 @@ def test_play_and_folder_are_disabled_when_the_file_is_gone(gui, sample_entries,
         assert all("disabled" in b.state() for b in by_label[label]), label
     assert all("disabled" not in b.state() for b in by_label[messages["history_delete"]])
     assert all("disabled" not in b.state() for b in by_label[messages["history_hide"]])
+    retry = by_label[messages["history_retry"]]
+    assert "disabled" in retry[0].state()
+    assert "disabled" not in retry[1].state()
+    assert "disabled" in retry[2].state()
 
 
 def test_deleting_a_row_needs_no_confirmation(gui, sample_entries) -> None:
@@ -419,6 +424,30 @@ def test_hiding_a_row_forwards_without_prompt(gui, sample_entries) -> None:
 
     gui._hide_entry(sample_entries[0])
     assert hidden == [sample_entries[0]]
+
+
+def test_retrying_a_failed_row_forwards_without_prompt(gui, sample_entries, messages) -> None:
+    gui.render_history(sample_entries)
+    retried = []
+    gui.on_retry_entry = retried.append
+    buttons = []
+
+    def collect(widget):
+        for child in widget.winfo_children():
+            if isinstance(child, type(gui.view._clear_button)):
+                buttons.append(child)
+            collect(child)
+
+    collect(gui.view._scroller.body)
+    retry = [
+        button
+        for button in buttons
+        if str(button.cget("text")) == messages["history_retry"]
+        and "disabled" not in button.state()
+    ]
+    assert len(retry) == 1
+    retry[0].invoke()
+    assert retried == [sample_entries[1]]
 
 
 def test_removing_one_entry_keeps_other_row_widgets(gui, sample_entries) -> None:

@@ -39,6 +39,8 @@ class PipDependency:
     feature: str = ""
     #: Message key used to show :attr:`feature` translated in the UI.
     feature_key: str = ""
+    #: pip extra features, e.g. ``default`` so yt-dlp pulls in yt-dlp-ejs.
+    extras: str = ""
     #: Keep it up to date on every run (only yt-dlp needs this).
     auto_update: bool = False
 
@@ -50,9 +52,22 @@ class PipDependency:
         """
         return not self.platforms or platform in self.platforms
 
+    def pip_spec(self) -> str:
+        """Return the name pip should install, including extras.
+
+        :return: For example ``yt-dlp[default]``.
+        """
+        if self.extras:
+            return "{0}[{1}]".format(self.package, self.extras)
+        return self.package
+
     def requirement(self) -> str:
         """Return the ``requirements.txt`` line for this dependency."""
-        spec = "{0}>={1}".format(self.package, self.minimum) if self.minimum else self.package
+        spec = (
+            "{0}>={1}".format(self.pip_spec(), self.minimum)
+            if self.minimum
+            else self.pip_spec()
+        )
         if self.platforms == ("linux",):
             return spec + '; sys_platform == "linux"'
         if self.platforms == ("windows",):
@@ -112,6 +127,7 @@ PIP_DEPENDENCIES: Tuple[PipDependency, ...] = (
         module="yt_dlp",
         level=LEVEL_REQUIRED,
         minimum="2024.1.1",
+        extras="default",
         feature="downloading videos and reading video metadata",
         feature_key="dep_ytdlp",
         auto_update=True,
@@ -207,7 +223,7 @@ SYSTEM_DEPENDENCIES: Tuple[SystemDependency, ...] = (
         alternatives=("qjs", "node", "deno"),
         level=LEVEL_OPTIONAL,
         system_key="js",
-        feature="a few yt-dlp extractors that need to run JavaScript",
+        feature="YouTube signature solving together with yt-dlp-ejs",
         feature_key="dep_js",
     ),
 )

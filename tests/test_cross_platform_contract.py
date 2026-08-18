@@ -138,6 +138,16 @@ class TestDownloadRetryContract(unittest.TestCase):
 
         self.assertIn("m4a", _M4A_FIRST)
         self.assertTrue(_RETRY_PLAYER_CLIENTS)
+        self.assertNotIn("tv", _RETRY_PLAYER_CLIENTS)
+        self.assertNotIn("ios", _RETRY_PLAYER_CLIENTS)
+
+    def test_a_drm_wall_is_its_own_kind_of_error(self) -> None:
+        from clipster.downloader import classify_error
+
+        self.assertEqual(
+            classify_error("ERROR: [youtube] abc: This video is DRM protected"),
+            "drm",
+        )
 
 
 class TestUpdateContract(unittest.TestCase):
@@ -152,7 +162,28 @@ class TestUpdateContract(unittest.TestCase):
             command = updater.restart_command()
         finally:
             cli.STARTUP_ARGUMENTS[:] = original
-        self.assertEqual(command[2:], ["--headless", "--skip-checks"])
+        self.assertEqual(command[2:], ["--headless"])
+        self.assertNotIn("--skip-checks", command)
+        self.assertNotIn("--show-window", command)
+
+    def test_the_desktop_restart_comes_back_on_screen(self) -> None:
+        from clipster import cli, updater
+
+        original = list(cli.STARTUP_ARGUMENTS)
+        cli.STARTUP_ARGUMENTS[:] = ["--skip-checks"]
+        try:
+            command = updater.restart_command()
+        finally:
+            cli.STARTUP_ARGUMENTS[:] = original
+        self.assertEqual(command[2:], ["--show-window"])
+
+    def test_shutdown_does_not_restart_while_the_lock_is_held(self) -> None:
+        import inspect
+
+        from clipster.app import ClipsterApp
+
+        source = inspect.getsource(ClipsterApp._shutdown)
+        self.assertNotIn("updater.restart", source)
 
     def test_the_remote_api_can_check_and_install(self) -> None:
         from clipster.webapi import RemoteApi

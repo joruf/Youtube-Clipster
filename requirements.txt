@@ -9,7 +9,7 @@
 #   * FFmpeg  - installed by the bootstrapper (package manager / ZIP download)
 #   * tkinter - part of CPython (Linux: install the python3-tk package)
 
-yt-dlp>=2024.1.1
+yt-dlp[default]>=2024.1.1
 
 # Optional - without these the program still runs, only the named
 # feature is unavailable.

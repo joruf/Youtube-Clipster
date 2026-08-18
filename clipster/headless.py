@@ -238,6 +238,7 @@ class HeadlessGui:
         self.on_play_entry: Optional[Callable[..., None]] = None
         self.on_delete_entry: Optional[Callable[..., None]] = None
         self.on_hide_entry: Optional[Callable[..., None]] = None
+        self.on_retry_entry: Optional[Callable[..., None]] = None
         self.on_reveal_entry: Optional[Callable[..., None]] = None
         self.on_clear_history: Optional[Callable[[], None]] = None
         self.on_open_folder: Optional[Callable[[], None]] = None

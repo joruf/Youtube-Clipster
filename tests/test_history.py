@@ -67,6 +67,24 @@ def test_a_failed_entry_has_no_file() -> None:
     assert entry.file_path() is None
 
 
+def test_a_failed_entry_with_a_url_can_be_retried() -> None:
+    entry = HistoryEntry(
+        title="broken",
+        url="https://www.youtube.com/watch?v=aaaaaaaaaaa",
+        status=STATUS_FAILED,
+        error="boom",
+    )
+    assert entry.can_retry()
+
+
+def test_retry_needs_a_failed_status_and_a_url() -> None:
+    url = "https://www.youtube.com/watch?v=aaaaaaaaaaa"
+    assert not HistoryEntry(url=url, status=STATUS_OK).can_retry()
+    assert not HistoryEntry(url=url, status=STATUS_CANCELED).can_retry()
+    assert not HistoryEntry(url="", status=STATUS_FAILED).can_retry()
+    assert not HistoryEntry(url="   ", status=STATUS_FAILED).can_retry()
+
+
 # ----------------------------------------------------------------------
 # The store
 # ----------------------------------------------------------------------

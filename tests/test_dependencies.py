@@ -53,6 +53,14 @@ def test_only_yt_dlp_updates_itself() -> None:
     assert updating == ["yt-dlp"]
 
 
+def test_yt_dlp_installs_the_challenge_solver_extra() -> None:
+    item = dependencies.find_pip("yt-dlp")
+    assert item is not None
+    assert item.extras == "default"
+    assert "[default]" in item.requirement()
+    assert installer._ytdlp_pip_spec() == "yt-dlp[default]"
+
+
 def test_lookups() -> None:
     assert dependencies.find("FFmpeg") is not None
     assert dependencies.find("does not exist") is None
@@ -380,3 +388,56 @@ def test_a_terminal_install_stays_answerable(monkeypatch: pytest.MonkeyPatch) ->
 
     assert command is not None
     assert "DEBIAN_FRONTEND" not in command[-1]
+
+
+def _write_fake_node(path: Path, version: str) -> Path:
+    """Create a tiny script that prints a Node-style version.
+
+    :param path: Where to write the script.
+    :param version: Printed as ``vX.Y.Z``.
+    :return: ``path``.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\necho {0}\n".format(version), encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def test_an_old_system_node_is_skipped_for_nvm(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Ubuntu's /usr/bin/node is often 18; yt-dlp needs 22+."""
+    old = _write_fake_node(tmp_path / "usr" / "node", "v18.19.1")
+    new = _write_fake_node(
+        tmp_path / "nvm" / "versions" / "node" / "v22.21.1" / "bin" / "node",
+        "v22.21.1",
+    )
+    monkeypatch.setattr(
+        installer.shutil,
+        "which",
+        lambda name: str(old) if name in ("node", "nodejs") else None,
+    )
+    monkeypatch.setattr(installer, "_nvm_node_binaries", lambda: [new])
+    found = installer.find_js_runtime()
+    assert found == ("node", str(new.resolve()))
+
+
+def test_an_old_node_alone_is_not_supported(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    old = _write_fake_node(tmp_path / "node", "v18.19.1")
+    monkeypatch.setattr(
+        installer.shutil,
+        "which",
+        lambda name: str(old) if name in ("node", "nodejs") else None,
+    )
+    monkeypatch.setattr(installer, "_nvm_node_binaries", lambda: [])
+    assert installer.find_js_runtime() is None
+
+
+def test_a_path_node_22_is_accepted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    current = _write_fake_node(tmp_path / "node", "v22.21.1")
+    monkeypatch.setattr(
+        installer.shutil,
+        "which",
+        lambda name: str(current) if name in ("node", "nodejs") else None,
+    )
+    monkeypatch.setattr(installer, "_nvm_node_binaries", lambda: [])
+    found = installer.find_js_runtime()
+    assert found == ("node", str(current.resolve()))

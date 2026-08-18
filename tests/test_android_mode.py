@@ -120,6 +120,8 @@ def test_the_error_classification_is_the_same_everywhere(termux: bool, monkeypat
     from clipster.downloader import classify_error
 
     assert classify_error("HTTP Error 403: Forbidden") == "forbidden"
+    assert classify_error("This video is DRM protected") == "drm"
+    assert classify_error("Requested format is not available") == "noformat"
     assert classify_error("Video unavailable") == "unavailable"
     assert classify_error("No space left on device") == "diskfull"
 

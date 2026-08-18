@@ -122,6 +122,7 @@ class ViewWindow:
         on_quit: Callable[[], None],
         on_play_entry: Callable[[HistoryEntry], None],
         on_reveal_entry: Callable[[HistoryEntry], None],
+        on_retry_entry: Callable[[HistoryEntry], None],
         on_delete_entry: Callable[[HistoryEntry], None],
         on_hide_entry: Callable[[HistoryEntry], None],
         on_clear_history: Callable[[], None],
@@ -150,6 +151,7 @@ class ViewWindow:
         :param on_quit: Called by the quit button.
         :param on_play_entry: Play the file of a row in the default player.
         :param on_reveal_entry: Open the folder of a row.
+        :param on_retry_entry: Start the same download again after a failure.
         :param on_delete_entry: Delete the file of a row and the row itself.
         :param on_hide_entry: Remove the row from the list but keep the file.
         :param on_clear_history: Empty the list.
@@ -183,6 +185,7 @@ class ViewWindow:
         #: Bound to a right click on the row.
         self.on_share_entry: Optional[Callable[[HistoryEntry], None]] = None
         self._on_reveal_entry = on_reveal_entry
+        self._on_retry_entry = on_retry_entry
         self._on_delete_entry = on_delete_entry
         self._on_hide_entry = on_hide_entry
         self._on_clear_history = on_clear_history
@@ -523,7 +526,7 @@ class ViewWindow:
         """
         probe = ttk.Frame(master, style="TFrame")
         for index, key in enumerate(
-            ("history_play", "history_folder", "history_hide", "history_delete")
+            ("history_retry", "history_play", "history_folder", "history_hide", "history_delete")
         ):
             ttk.Button(probe, text=self.messages[key], style="Row.TButton").pack(
                 side="left", padx=(_ROW_BUTTON_GAP if index else 0, 0)
@@ -987,11 +990,16 @@ class ViewWindow:
         actions.grid(row=0, column=5, sticky="ne")
         available = entry.file_path() is not None
 
+        retry_button = ttk.Button(
+            actions, text=self.messages["history_retry"], style="Row.TButton",
+            command=lambda e=entry: self._on_retry_entry(e),
+        )
+        retry_button.pack(side="left")
         play_button = ttk.Button(
             actions, text=self.messages["history_play"], style="Row.TButton",
             command=lambda e=entry: self._on_play_entry(e),
         )
-        play_button.pack(side="left")
+        play_button.pack(side="left", padx=(_ROW_BUTTON_GAP, 0))
         folder_button = ttk.Button(
             actions, text=self.messages["history_folder"], style="Row.TButton",
             command=lambda e=entry: self._on_reveal_entry(e),
@@ -1010,12 +1018,16 @@ class ViewWindow:
             command=lambda e=entry: self._on_delete_entry(e),
         ).pack(side="left", padx=(_ROW_BUTTON_GAP, 0))
 
+        disabled = []
+        if not entry.can_retry():
+            disabled.append(retry_button)
         if not available:
-            for button in (play_button, folder_button):
-                try:
-                    button.state(["disabled"])
-                except tk.TclError:  # pragma: no cover
-                    pass
+            disabled.extend((play_button, folder_button))
+        for button in disabled:
+            try:
+                button.state(["disabled"])
+            except tk.TclError:  # pragma: no cover
+                pass
 
         self._scroller.bind_wheel_tree(row)
         if available:

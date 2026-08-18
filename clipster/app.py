@@ -245,6 +245,7 @@ class ClipsterApp:
         self.gui.on_play_entry = self._play_entry
         self.gui.on_delete_entry = self._delete_entry
         self.gui.on_hide_entry = self._hide_entry
+        self.gui.on_retry_entry = self._retry_entry
         self.gui.on_reveal_entry = self._reveal_entry
         self.gui.on_clear_history = self._clear_history
         self.gui.on_open_folder = self._open_download_folder
@@ -1452,10 +1453,9 @@ class ClipsterApp:
         self.bridge.stop()
         self.gui.destroy()
         log.info("%s", self.messages["stopped"])
-        if self._restart_after_update:
-            # Last thing before the process ends: the windows and the lock are
-            # gone, so the new instance can take over cleanly.
-            updater.restart()
+        # The replacement is started from ``cli.main`` after the instance lock
+        # has been released.  Restarting here would leave the lock held, and
+        # the new process would refuse to start.
 
     # ------------------------------------------------------------------
     # Window callbacks
@@ -2061,6 +2061,29 @@ class ClipsterApp:
             self.gui.render_history(self.history.entries)
             return
         shortcuts.open_path(target)
+
+    def _retry_entry(self, entry: HistoryEntry) -> None:
+        """Start the same download again after a failure.
+
+        Uses the format that was already chosen for that row, so the user is
+        not asked again.  ``force`` is set so a leftover file cannot block it.
+
+        :param entry: The failed row.
+        :return: None
+        """
+        if not entry.can_retry():
+            return
+        target = extract_youtube_url(entry.url)
+        if not target:
+            self.gui.show_error(self.messages["error_title"], self.messages["error_not_a_link"])
+            return
+        media_format = (
+            entry.media_format
+            if entry.media_format in MEDIA_FORMATS
+            else self.config.default_format
+        )
+        log.info("Retry requested from the download list: %s as %s", target, media_format)
+        self._enqueue(target, media_format, force=True)
 
     def _remove_entry_and_file(self, entry: HistoryEntry) -> str:
         """Delete the downloaded file and drop the row from the list.

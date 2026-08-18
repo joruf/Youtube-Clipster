@@ -384,6 +384,7 @@ def test_the_download_list_is_served_as_json(served, tmp_path: Path) -> None:
     payload = json.loads(body)
     assert payload["downloads"][0]["name"] == "song.mp3"
     assert payload["downloads"][0]["playable"] is True
+    assert payload["downloads"][0]["retryable"] is False
 
 
 def test_the_path_on_the_pc_is_never_disclosed(tmp_path: Path) -> None:
@@ -406,6 +407,7 @@ def test_a_failed_download_reports_its_problem(served) -> None:
     assert entry["status"] == STATUS_FAILED
     assert entry["error_kind"] == "bot"
     assert entry["playable"] is False
+    assert entry["retryable"] is True
 
 
 def test_the_status_endpoint_reports_progress(served) -> None:

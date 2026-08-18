@@ -160,6 +160,7 @@ def sample_entries():
         HistoryEntry(name="song.mp3", media_format="mp3", duration=213, size=6_940_000,
                      status=STATUS_OK, finished_at="2026-07-31T11:20:05"),
         HistoryEntry(name="broken.mp4", media_format="mp4", status=STATUS_FAILED,
+                     url="https://www.youtube.com/watch?v=aaaaaaaaaaa",
                      error="boom", error_kind="unavailable", finished_at="2026-07-30T09:00:00"),
         HistoryEntry(name="stopped.mp4", media_format="mp4", status=STATUS_CANCELED,
                      finished_at="2026-07-29T21:44:30"),

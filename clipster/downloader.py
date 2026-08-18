@@ -13,14 +13,14 @@ import shutil
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import paths
 from .clip import ClipRange
 from .clip import output_template as clip_output_template
 from .config import Config
 from .i18n import Messages
-from .installer import find_ffmpeg
+from .installer import find_ffmpeg, find_js_runtime
 from .logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -82,6 +82,24 @@ _FORBIDDEN_PATTERNS = (
     "403 forbidden",
 )
 
+#: yt-dlp reports this when every format of the requested client is Widevine.
+#: That is sometimes the video itself, and sometimes only the client (the TV
+#: HTML5 experiment).  Clipster does not decrypt DRM; it retries other clients
+#: that still offer clear streams, then tells the user if none remain.
+_DRM_PATTERNS = (
+    "this video is drm protected",
+    "drm protected",
+)
+
+#: The client that was asked had nothing Clipster can fetch: either every
+#: stream needed a PO token, or signature solving left only storyboard images.
+#: Another client often still has a clear HTTPS URL.
+_NO_FORMAT_PATTERNS = (
+    "requested format is not available",
+    "no video formats found",
+    "only images are available",
+)
+
 #: Audio preference the Streaming relay already proves fetchable.  YouTube signs
 #: the WebM/Opus stream through a player response whose media URLs the default
 #: clients cannot always redeem, while the m4a one is handed out plainly - which
@@ -89,10 +107,22 @@ _FORBIDDEN_PATTERNS = (
 #: download.  Retried first because it changes the least.
 _M4A_FIRST = "ba[ext=m4a]/ba[acodec^=mp4a]"
 
-#: Player clients tried after a 403.  Each one gets its own set of signed media
-#: URLs, so a stream the default client cannot fetch often comes back usable
-#: from one of these.  Ordered by how rarely they need extra proof.
-_RETRY_PLAYER_CLIENTS = ("tv", "ios", "web_safari")
+#: Player clients asked on the first attempt.  Named explicitly, never
+#: ``default``: with cookies ``default`` expands to ``tv_downgraded``, which is
+#: the client YouTube DRM-walls in an A/B test (yt-dlp issue 12563).
+#: ``android_vr`` does not need a JS player; ``web_embedded`` still lists dubbed
+#: audio tracks.
+_PLAYER_CLIENTS = ("android_vr", "web_embedded")
+
+#: Player clients tried after a 403, a DRM wall, or a client with no usable
+#: formats.  ``tv`` / ``tv_downgraded`` are the DRM experiment.  ``ios`` needs a
+#: PO token Clipster does not collect, so it would only abort the retry chain.
+_RETRY_PLAYER_CLIENTS = ("mweb", "web_safari")
+
+#: Errors that are worth another attempt with a different format or player.
+#: A deleted video or a bot check is not; a DRM report or an empty format list
+#: often is, because it usually means *this* client had nothing clear to offer.
+_RETRYABLE_KINDS = ("forbidden", "drm", "noformat")
 
 _TITLE_SANITIZE_RE = re.compile(r"[\r\n\t]+")
 
@@ -154,19 +184,15 @@ class MetadataError(Exception):
     """Raised when the video information could not be fetched."""
 
 
-#: yt-dlp's name for each engine, keyed by the executable we look for.
-_JS_RUNTIMES = (("qjs", "quickjs"), ("node", "node"), ("deno", "deno"))
-
-
-def _js_runtime() -> Optional[str]:
+def _js_runtime() -> Optional[Tuple[str, str]]:
     """Return the JavaScript engine yt-dlp should use, or ``None``.
 
-    :return: ``quickjs``, ``node``, ``deno`` or ``None`` when none is installed.
+    Delegates to :func:`clipster.installer.find_js_runtime` so a desktop
+    shortcut that does not load nvm still finds a Node 22+ binary.
+
+    :return: ``(yt-dlp name, absolute path)``, or ``None``.
     """
-    for executable, name in _JS_RUNTIMES:
-        if shutil.which(executable):
-            return name
-    return None
+    return find_js_runtime()
 
 
 def _import_yt_dlp() -> Any:
@@ -191,7 +217,8 @@ class DownloadFailed(Exception):
     def __init__(self, message: str, kind: str = "generic") -> None:
         """
         :param message: The raw error text from yt-dlp.
-        :param kind: ``bot``, ``unavailable`` or ``generic``.
+        :param kind: ``bot``, ``unavailable``, ``forbidden``, ``drm``,
+            ``noformat``, ``diskfull`` or ``generic``.
         """
         super().__init__(message)
         self.kind = kind
@@ -273,7 +300,8 @@ def classify_error(message: str) -> str:
     """Classify a yt-dlp error message.
 
     :param message: The raw error text.
-    :return: ``diskfull``, ``bot``, ``unavailable``, ``forbidden`` or ``generic``.
+        :return: ``diskfull``, ``bot``, ``unavailable``, ``forbidden``, ``drm``,
+            ``noformat`` or ``generic``.
     """
     lowered = (message or "").lower()
     if any(pattern in lowered for pattern in _DISK_FULL_PATTERNS):
@@ -284,6 +312,10 @@ def classify_error(message: str) -> str:
         return "unavailable"
     if any(pattern in lowered for pattern in _FORBIDDEN_PATTERNS):
         return "forbidden"
+    if any(pattern in lowered for pattern in _DRM_PATTERNS):
+        return "drm"
+    if any(pattern in lowered for pattern in _NO_FORMAT_PATTERNS):
+        return "noformat"
     return "generic"
 
 
@@ -353,6 +385,10 @@ def user_facing_ytdlp_error(
         return messages["error_unavailable"]
     if kind == "forbidden":
         return messages["error_forbidden"]
+    if kind == "drm":
+        return messages["error_drm"]
+    if kind == "noformat":
+        return messages["error_forbidden"]
     if kind == "diskfull":
         return messages.format("error_disk_full", details=sanitize_error_detail(message))
     detail = sanitize_error_detail(message) or "?"
@@ -399,22 +435,27 @@ class Downloader:
             "retries": 5,
             "fragment_retries": 5,
             "ignoreerrors": False,
-            # Asking two player clients makes YouTube hand out the dubbed audio
-            # tracks and the full format list far more reliably.
-            "extractor_args": {"youtube": {"player_client": ["default", "web_embedded"]}},
+            # Asking several player clients makes YouTube hand out the dubbed
+            # audio tracks and the full format list far more reliably.  TV
+            # clients are omitted: YouTube currently DRM-walls them in an A/B
+            # test, and ``default`` would pick one when cookies are set.
+            "extractor_args": {"youtube": {"player_client": list(_PLAYER_CLIENTS)}},
         }
         runtime = _js_runtime()
         if runtime:
+            name, path = runtime
             # Signature decryption needs a JavaScript engine. yt-dlp defaults to
             # deno alone, so the engine that is actually installed has to be
-            # named. The API wants {runtime: {config}}, not a list.
-            options["js_runtimes"] = {runtime: {}}
+            # named, with its absolute path: a desktop shortcut does not load
+            # nvm, and Ubuntu's /usr/bin/node is often too old for yt-dlp.
+            options["js_runtimes"] = {name: {"path": path}}
+            log.debug("yt-dlp js_runtimes=%s path=%s", name, path)
         if self.config.user_agent.strip():
             options["http_headers"] = {"User-Agent": self.config.user_agent.strip()}
         if self.config.cookies_risk_acknowledged:
             browser = self.config.cookies_from_browser.strip().lower()
             if browser:
-                # yt-dlp expects a tuple; never log cookie values — only the browser name.
+                # yt-dlp expects a tuple; never log cookie values, only the browser name.
                 options["cookiesfrombrowser"] = (browser,)
                 log.debug("yt-dlp cookiesfrombrowser=%s", browser)
             cookie_path = self.config.cookies_file.strip()
@@ -577,12 +618,14 @@ class Downloader:
         }
 
     def _forbidden_retries(self, media_format: str, language: str) -> List[Dict[str, Any]]:
-        """Return option patches to try after YouTube answered 403.
+        """Return option patches to try after YouTube answered 403 or DRM.
 
         The order matters: change the format first, because that is the known
         difference between a track that plays and the same track failing to
         download.  Only then ask a different player client, which costs another
-        round trip to YouTube.
+        round trip to YouTube.  A DRM report or an empty format list on one
+        client is treated the same way: another client may still offer a clear
+        stream.
 
         :param media_format: ``mp3`` or ``mp4``.
         :param language: Preferred audio language code, empty for "best".
@@ -761,7 +804,8 @@ class Downloader:
         emit(Progress(phase="preparing", percent=0.0))
 
         # The first attempt is what the caller asked for; the rest only ever run
-        # after a 403 and are dropped the moment anything else goes wrong.
+        # after a 403, a DRM wall, or a client with no usable formats, and are
+        # dropped the moment anything else goes wrong.
         attempts = [options] + [
             _merged_options(options, patch)
             for patch in self._forbidden_retries(media_format, language)
@@ -772,7 +816,7 @@ class Downloader:
                     with youtube_dl(attempt) as ydl:
                         ydl.download([url])
                     if number:
-                        log.info("Retry %s succeeded after a 403.", number)
+                        log.info("Retry %s succeeded after a refused stream.", number)
                     break
                 except DownloadCanceled:
                     log.warning("Download canceled by the user.")
@@ -784,9 +828,10 @@ class Downloader:
                     message = str(exc)
                     kind = classify_error(message)
                     last = number == len(attempts) - 1
-                    if kind == "forbidden" and not last:
+                    if kind in _RETRYABLE_KINDS and not last:
                         log.warning(
-                            "YouTube refused the stream (403); retrying with %s.",
+                            "YouTube refused the stream (%s); retrying with %s.",
+                            kind,
                             _describe_patch(attempts[number + 1], options),
                         )
                         _discard(produced["path"])

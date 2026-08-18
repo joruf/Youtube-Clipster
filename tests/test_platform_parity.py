@@ -216,6 +216,7 @@ def test_the_403_explanation_exists_in_every_language() -> None:
 
     for language in ("en", "de"):
         assert i18n.load(language)["error_forbidden"].strip()
+        assert i18n.load(language)["error_drm"].strip()
 
 
 @pytest.mark.parametrize("termux", [False, True])
@@ -317,10 +318,18 @@ def test_the_shared_play_order_is_what_both_sides_hold() -> None:
     assert PlayOrder is not None
 
 
+def test_the_phone_can_retry_a_failed_download() -> None:
+    """A failed row on the phone has to start the same download again."""
+    script = _web("app.js")
+    assert "retryDownload" in script
+    assert "retryable" in script
+    assert "force: true" in script
+
+
 def test_the_shell_cache_was_bumped_with_the_interface() -> None:
     """An installed home-screen copy keeps serving the version it cached."""
     worker = _web("sw.js")
-    assert "clipster-shell-v4" in worker, "bump SHELL_CACHE when index/app/style change"
+    assert "clipster-shell-v5" in worker, "bump SHELL_CACHE when index/app/style change"
     # Live paths must never be cached, or the phone plays yesterday's queue.
     for path in ("/api/", "/media/", "/queue/", "/stream/", "/video/"):
         assert '"{0}"'.format(path) in worker, path

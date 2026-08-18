@@ -278,8 +278,48 @@ def apply(root: Optional[Path] = None) -> Tuple[bool, str]:
     """
     target = root or paths.PROJECT_ROOT
     if is_git_checkout(target):
-        return _apply_git(target)
-    return _apply_archive(target)
+        ok, message = _apply_git(target)
+    else:
+        ok, message = _apply_archive(target)
+    if ok:
+        # Drop compiled files so the process that starts next cannot keep
+        # executing the version that was just replaced.
+        purge_bytecode(target)
+    return ok, message
+
+
+def purge_bytecode(root: Optional[Path] = None) -> None:
+    """Remove ``__pycache__`` folders from the installation.
+
+    After an archive extract the ``.py`` files can be older than leftover
+    ``.pyc`` files from the previous run.  Python then keeps the compiled
+    copy, and the user still sees the version they just updated away from.
+
+    The managed virtual environment is left alone: those files were not
+    replaced by the update.
+
+    :param root: The installation directory; defaults to the project root.
+    :return: None
+    """
+    target = root or paths.PROJECT_ROOT
+    skip = {".git", ".venv", "venv", "node_modules"}
+    caches = [
+        folder
+        for folder in target.rglob("__pycache__")
+        if folder.is_dir() and not skip.intersection(folder.parts)
+    ]
+    for folder in caches:
+        shutil.rmtree(folder, ignore_errors=True)
+    leftovers = [
+        item
+        for item in target.rglob("*.pyc")
+        if item.is_file() and not skip.intersection(item.parts)
+    ]
+    for item in leftovers:
+        try:
+            item.unlink()
+        except OSError:
+            pass
 
 
 def _apply_git(root: Path) -> Tuple[bool, str]:
@@ -373,6 +413,10 @@ def restart_command() -> List[str]:
     program runs ``--headless``, and a replacement started without that flag
     would look for a display that a phone does not have.
 
+    ``--skip-checks`` is dropped so a new ``requirements.txt`` is installed
+    before the new code runs.  On the desktop ``--show-window`` is added so
+    the updated program comes back on screen instead of only in the tray.
+
     :return: Interpreter, entry point and the original arguments.
     """
     interpreter = paths.venv_python(gui=paths.IS_WINDOWS)
@@ -381,7 +425,14 @@ def restart_command() -> List[str]:
     command = [str(interpreter), str(paths.bootstrap_script())]
     from .cli import STARTUP_ARGUMENTS
 
-    return command + list(STARTUP_ARGUMENTS)
+    arguments = [item for item in STARTUP_ARGUMENTS if item != "--skip-checks"]
+    if (
+        "--headless" not in arguments
+        and "--no-window" not in arguments
+        and "--show-window" not in arguments
+    ):
+        arguments.append("--show-window")
+    return command + arguments
 
 
 def restart() -> None:
@@ -401,7 +452,12 @@ def restart() -> None:
         # Match installer/player: under pythonw.exe a console child would flash.
         subprocess.Popen(command, env=environment, close_fds=True, **_no_window())
         return
-    os.execve(command[0], command, environment)
+    try:
+        os.execve(command[0], command, environment)
+    except OSError as exc:
+        log.error("Could not replace this process (%s); starting a new one.", exc)
+        subprocess.Popen(command, env=environment, close_fds=True)
+        os._exit(0)
 
 
 def _run(command: List[str], cwd: Path, timeout: float = 60.0) -> Tuple[int, str]:

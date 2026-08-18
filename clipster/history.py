@@ -65,6 +65,17 @@ class HistoryEntry:
         """Return ``True`` when this entry represents a finished download."""
         return self.status == STATUS_OK
 
+    def can_retry(self) -> bool:
+        """Return ``True`` when this row can be sent through the pipeline again.
+
+        Failed downloads keep the URL that was tried.  A canceled or finished
+        row does not need this button: canceling was a choice, and a finished
+        file is replayed with Play.
+
+        :return: Whether a Retry action would have something to submit.
+        """
+        return self.status == STATUS_FAILED and bool(str(self.url or "").strip())
+
     def file_path(self) -> Optional[Path]:
         """Return the downloaded file, or ``None`` when it is gone."""
         if not self.path:

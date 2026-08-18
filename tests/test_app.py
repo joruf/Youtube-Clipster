@@ -558,6 +558,46 @@ def test_a_file_that_cannot_be_deleted_keeps_its_row(app, tmp_path: Path, monkey
     assert len(app.history) == 1, "the row stays as long as the file does"
 
 
+def test_retrying_a_failed_row_starts_the_same_download(app) -> None:
+    from clipster.history import STATUS_FAILED
+
+    entry = HistoryEntry(
+        title="broken", url=URL_A, media_format="mp4", status=STATUS_FAILED, error="boom",
+    )
+    app._retry_entry(entry)
+    assert app.started == [URL_A]
+    assert app._forced_format == "mp4"
+    assert app._force_redownload is True
+
+
+def test_retrying_falls_back_to_the_default_format(app) -> None:
+    from clipster.history import STATUS_FAILED
+
+    entry = HistoryEntry(title="broken", url=URL_A, media_format="", status=STATUS_FAILED)
+    app._retry_entry(entry)
+    assert app.started == [URL_A]
+    assert app._forced_format == app.config.default_format
+    assert app._force_redownload is True
+
+
+def test_retrying_does_nothing_when_the_row_did_not_fail(app) -> None:
+    app._retry_entry(HistoryEntry(title="song", url=URL_A, media_format="mp3", status=STATUS_OK))
+    assert app.started == []
+
+
+def test_retrying_a_non_youtube_url_reports_it(app, monkeypatch) -> None:
+    from clipster.history import STATUS_FAILED
+
+    errors = []
+    monkeypatch.setattr(app.gui, "show_error", lambda *a: errors.append(a))
+    app._retry_entry(HistoryEntry(
+        title="broken", url="https://example.com/not-youtube", media_format="mp3",
+        status=STATUS_FAILED,
+    ))
+    assert app.started == []
+    assert errors
+
+
 def test_hiding_removes_the_entry_but_keeps_the_file(app, tmp_path: Path) -> None:
     target = tmp_path / "keep.mp3"
     target.write_bytes(b"x")

@@ -13,12 +13,12 @@ Component     How it is provided
 Python        Version check only - Python cannot install itself.
 tkinter       Linux: distribution package; Windows/macOS: part of the installer.
 venv          ``python -m venv`` into the application data directory.
-yt-dlp        ``pip install -U yt-dlp`` inside that virtual environment.
+yt-dlp        ``pip install -U yt-dlp[default]`` (includes yt-dlp-ejs).
 FFmpeg        Linux/macOS: package manager; Windows: official ZIP download.
 mpv           Optional (in-tab Streaming video). Linux/macOS: package manager;
-              Windows: hint only — copy ``mpv.exe`` next to bundled FFmpeg.
+              Windows: hint only, copy ``mpv.exe`` next to bundled FFmpeg.
 Clipboard     Linux only: ``xclip`` or ``wl-clipboard``.
-JS runtime    Linux only, optional: ``quickjs`` (helps some yt-dlp extractors).
+JS runtime    Linux only, optional: ``quickjs`` / node / deno (YouTube signatures).
 ============  ==================================================================
 """
 
@@ -837,6 +837,28 @@ def _ytdlp_version(interpreter: Path) -> Optional[str]:
     return version or None
 
 
+def _ejs_present(interpreter: Path) -> bool:
+    """Return ``True`` when the YouTube challenge solver package is installed.
+
+    yt-dlp can import without it, but YouTube signature solving then fails and
+    downloads collapse into 403 or a false DRM report.
+
+    :param interpreter: The interpreter to ask.
+    :return: Whether ``yt_dlp_ejs`` is importable.
+    """
+    return run_command(
+        [str(interpreter), "-c", "import yt_dlp_ejs"],
+        echo=False,
+        timeout=120.0,
+    ).ok
+
+
+def _ytdlp_pip_spec() -> str:
+    """Return the pip name used to install yt-dlp, including extras."""
+    item = dependencies.find_pip("yt-dlp")
+    return item.pip_spec() if item is not None else "yt-dlp[default]"
+
+
 def _update_due(update_check_hours: int) -> bool:
     """Return ``True`` when the yt-dlp update check is due again."""
     if update_check_hours <= 0:
@@ -858,6 +880,10 @@ def _mark_update_checked() -> None:
 def ensure_ytdlp(interpreter: Optional[Path] = None, force_update: bool = False, update_check_hours: int = 24) -> Step:
     """Install or update yt-dlp inside the target interpreter.
 
+    Also installs the ``default`` extra (yt-dlp-ejs) when it is missing, even
+    if the yt-dlp version itself is current.  Without that package YouTube
+    signature solving fails and downloads look like 403 or DRM errors.
+
     :param interpreter: Interpreter to install into; defaults to the managed venv.
     :param force_update: Always run an update, ignoring the throttle.
     :param update_check_hours: Minimum hours between two update checks.
@@ -865,8 +891,15 @@ def ensure_ytdlp(interpreter: Optional[Path] = None, force_update: bool = False,
     """
     python = interpreter or paths.venv_python()
     current = _ytdlp_version(python)
+    ejs_ok = _ejs_present(python)
+    spec = _ytdlp_pip_spec()
 
-    if current and not force_update and not _update_due(update_check_hours):
+    if (
+        current
+        and ejs_ok
+        and not force_update
+        and not _update_due(update_check_hours)
+    ):
         return Step(name="yt-dlp", ok=True, detail=current)
 
     if not ensure_pip_usable(python):
@@ -877,7 +910,10 @@ def ensure_ytdlp(interpreter: Optional[Path] = None, force_update: bool = False,
             hint="Delete {0} and start again, or run --reinstall.".format(paths.venv_dir()),
         )
 
-    log.info("%s yt-dlp ...", "Updating" if current else "Installing")
+    if current and not ejs_ok:
+        log.info("Installing the YouTube challenge solver (yt-dlp-ejs) ...")
+    else:
+        log.info("%s yt-dlp ...", "Updating" if current else "Installing")
     result = run_command(
         [
             str(python),
@@ -886,14 +922,22 @@ def ensure_ytdlp(interpreter: Optional[Path] = None, force_update: bool = False,
             "install",
             "--upgrade",
             "--disable-pip-version-check",
-            "yt-dlp",
+            spec,
         ],
         timeout=1800.0,
     )
     new_version = _ytdlp_version(python)
+    ejs_now = _ejs_present(python)
 
     if new_version:
         _mark_update_checked()
+        if not ejs_ok and ejs_now:
+            return Step(
+                name="yt-dlp",
+                ok=True,
+                detail="{0}, challenge solver installed".format(new_version),
+                changed=True,
+            )
         if current == new_version:
             return Step(name="yt-dlp", ok=True, detail=new_version)
         return Step(name="yt-dlp", ok=True, detail="{0} installed".format(new_version), changed=True)
@@ -906,7 +950,7 @@ def ensure_ytdlp(interpreter: Optional[Path] = None, force_update: bool = False,
         name="yt-dlp",
         ok=False,
         detail=result.tail(),
-        hint="Run manually: \"{0}\" -m pip install -U yt-dlp".format(python),
+        hint="Run manually: \"{0}\" -m pip install -U {1}".format(python, spec),
     )
 
 
@@ -1309,22 +1353,179 @@ def ensure_qr_support(interpreter: Optional[Path] = None, auto_install: bool = T
     )
 
 
-def ensure_js_runtime(auto_install: bool = True) -> Step:
-    """Install an optional JavaScript runtime that some yt-dlp extractors use.
+def _is_at_least(version: Tuple[int, ...], minimum: Tuple[int, ...]) -> bool:
+    """Return ``True`` when ``version`` meets ``minimum``.
 
-    Never fails the setup - yt-dlp works without it for most videos.
+    :param version: Parsed components, possibly shorter than ``minimum``.
+    :param minimum: Required version.
+    :return: Whether ``version`` is new enough.
+    """
+    padded = version + (0,) * max(0, len(minimum) - len(version))
+    return padded >= minimum
+
+
+def _parse_dotted_version(text: str) -> Tuple[int, ...]:
+    """Return the leading numeric components of a version string.
+
+    :param text: For example ``v22.21.1`` or ``2.3.0 (stable)``.
+    :return: ``(22, 21, 1)``, or an empty tuple when nothing numeric is there.
+    """
+    cleaned = text.strip()
+    if cleaned[:1] in "vV":
+        cleaned = cleaned[1:]
+    parts: List[int] = []
+    for item in cleaned.replace("-", ".").split("."):
+        digits = ""
+        for char in item:
+            if char.isdigit():
+                digits += char
+            else:
+                break
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _exe_version(path: Path, arguments: Sequence[str]) -> str:
+    """Return the combined stdout/stderr of ``path`` with ``arguments``.
+
+    :param path: Executable to run.
+    :param arguments: Arguments such as ``["-v"]``.
+    :return: Combined output, or an empty string when the process cannot run.
+    """
+    try:
+        result = subprocess.run(
+            [str(path), *list(arguments)],
+            capture_output=True,
+            text=True,
+            timeout=8.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+
+
+def _nvm_node_binaries() -> List[Path]:
+    """Return Node binaries installed by nvm, even when nvm is not on PATH.
+
+    A desktop shortcut and the login autostart do not source ``~/.nvm/nvm.sh``,
+    so :func:`shutil.which` never sees those copies.  yt-dlp needs Node 22+,
+    which Ubuntu's ``/usr/bin/node`` often is not.
+
+    :return: Existing, executable ``node`` paths.
+    """
+    found: List[Path] = []
+    nvm_dir = os.environ.get("NVM_DIR") or str(Path.home() / ".nvm")
+    unix_root = Path(nvm_dir) / "versions" / "node"
+    if unix_root.is_dir():
+        for binary in unix_root.glob("*/bin/node"):
+            if binary.is_file() and os.access(binary, os.X_OK):
+                found.append(binary)
+    nvm_home = os.environ.get("NVM_HOME")
+    if nvm_home:
+        windows_root = Path(nvm_home)
+        if windows_root.is_dir():
+            for binary in windows_root.glob("v*/node.exe"):
+                if binary.is_file():
+                    found.append(binary)
+    return found
+
+
+def find_js_runtime() -> Optional[Tuple[str, str]]:
+    """Return a JavaScript engine yt-dlp can actually use for YouTube.
+
+    yt-dlp 2026.x refuses Node below 22, Deno below 2.3 and Bun below 1.2.11.
+    Passing an older ``/usr/bin/node`` makes signature solving fail silently
+    and downloads collapse into 403 or a false DRM report.
+
+    :return: ``(yt-dlp runtime name, absolute path)``, or ``None``.
+    """
+    return _discover_js_runtime()
+
+
+def _discover_js_runtime() -> Optional[Tuple[str, str]]:
+    """Discover a supported JS engine on PATH and in nvm.
+
+    :return: ``(yt-dlp runtime name, absolute path)``, or ``None``.
+    """
+    seen = set()
+    node_candidates: List[Path] = []
+    for name in ("node", "nodejs"):
+        located = shutil.which(name)
+        if located:
+            path = Path(located).resolve()
+            if path not in seen:
+                seen.add(path)
+                node_candidates.append(path)
+    for binary in _nvm_node_binaries():
+        try:
+            path = binary.resolve()
+        except OSError:
+            continue
+        if path not in seen:
+            seen.add(path)
+            node_candidates.append(path)
+
+    best: Optional[Tuple[Tuple[int, ...], Path]] = None
+    for path in node_candidates:
+        version = _parse_dotted_version(_exe_version(path, ["-v"]))
+        if _is_at_least(version, (22, 0, 0)) and (best is None or version > best[0]):
+            best = (version, path)
+    if best is not None:
+        return ("node", str(best[1]))
+
+    deno = shutil.which("deno")
+    if deno:
+        output = _exe_version(Path(deno), ["--version"])
+        version = _parse_dotted_version(output.split("deno", 1)[-1] if output else "")
+        if _is_at_least(version, (2, 3, 0)):
+            return ("deno", str(Path(deno).resolve()))
+
+    bun = shutil.which("bun")
+    if bun:
+        version = _parse_dotted_version(_exe_version(Path(bun), ["--version"]))
+        if _is_at_least(version, (1, 2, 11)):
+            return ("bun", str(Path(bun).resolve()))
+
+    qjs = shutil.which("qjs")
+    if qjs:
+        return ("quickjs", str(Path(qjs).resolve()))
+    return None
+
+
+def ensure_js_runtime(auto_install: bool = True) -> Step:
+    """Install an optional JavaScript runtime that yt-dlp-ejs uses.
+
+    Never fails the setup.  YouTube signature solving needs both this engine
+    and the yt-dlp-ejs package; without them some formats come back 403.
 
     :param auto_install: Allow installing ``quickjs``.
     :return: The finished step (always ``ok``).
     """
-    for binary in ("deno", "node", "qjs"):
-        if shutil.which(binary):
-            return Step(name="JavaScript runtime (optional)", ok=True, detail=binary)
+    found = find_js_runtime()
+    if found is not None:
+        name, path = found
+        return Step(
+            name="JavaScript runtime (optional)",
+            ok=True,
+            detail="{0} ({1})".format(name, path),
+        )
 
     if not paths.IS_LINUX or not auto_install:
         return Step(name="JavaScript runtime (optional)", ok=True, detail="not installed")
 
     install_system_packages([_system_key("JavaScript runtime", "js")], refresh=False)
+    found = find_js_runtime()
+    if found is not None:
+        name, path = found
+        return Step(
+            name="JavaScript runtime (optional)",
+            ok=True,
+            detail="{0} installed ({1})".format(name, path),
+            changed=True,
+        )
     if shutil.which("qjs"):
         return Step(name="JavaScript runtime (optional)", ok=True, detail="quickjs installed", changed=True)
     return Step(name="JavaScript runtime (optional)", ok=True, detail="not installed")

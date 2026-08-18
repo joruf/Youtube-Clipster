@@ -532,6 +532,9 @@ function downloadRow(entry) {
 
     const actions = document.createElement("div");
     actions.className = "actions";
+    if (entry.retryable) {
+        actions.appendChild(button("↻", "Retry", () => retryDownload(entry)));
+    }
     if (entry.playable) {
         actions.appendChild(button("▶", "Play", () => play(entry)));
         const save = document.createElement("a");
@@ -547,6 +550,32 @@ function downloadRow(entry) {
     actions.appendChild(button("–", "Hide", () => hideEntry(entry)));
     row.appendChild(actions);
     return row;
+}
+
+/**
+ * Start the same download again after a failure.
+ *
+ * @param {object} entry One item of the download list.
+ * @returns {Promise<void>}
+ */
+async function retryDownload(entry) {
+    try {
+        const answer = await api("/api/submit", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                url: entry.url,
+                format: entry.format || "mp3",
+                force: true,
+            }),
+        });
+        const described = describeSubmission(answer.status, answer.body);
+        say(described.text, described.kind);
+        await loadDownloads();
+    } catch (error) {
+        setConnection(false);
+        say(standalone ? "Clipster cannot be reached." : "The PC cannot be reached.", "bad");
+    }
 }
 
 /**

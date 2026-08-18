@@ -13,7 +13,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path, PureWindowsPath
-from typing import List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
 
 from . import APP_TITLE, APP_VERSION, i18n, installer, paths, shortcuts
 from . import logging_setup
@@ -410,6 +410,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         _show_startup_error(messages["window_title"], text)
         return 1
 
+    app = None
     try:
         from .app import ClipsterApp
     except ImportError as exc:
@@ -420,10 +421,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
 
     try:
-        return ClipsterApp(config, messages, headless=args.headless,
-                           accept_terms=args.accept_terms).run()
+        app = ClipsterApp(config, messages, headless=args.headless,
+                          accept_terms=args.accept_terms)
+        return app.run()
     finally:
-        lock.release()
+        release_lock_and_relaunch(lock, app)
 
 
 def _show_startup_error(title: str, text: str) -> None:
@@ -438,6 +440,25 @@ def _show_startup_error(title: str, text: str) -> None:
     except ImportError:
         return
     show_startup_error(title, text)
+
+
+def release_lock_and_relaunch(lock: Any, app: Any) -> None:
+    """Drop the instance lock, then start the version that was just installed.
+
+    The replacement must not start while this process still holds the lock.
+    Windows would then refuse the second instance, and the user would have to
+    launch Clipster by hand even though they already asked for a restart.
+
+    :param lock: The :class:`~clipster.singleinstance.SingleInstance` of this run.
+    :param app: The application, or ``None`` when it never started.
+    :return: None
+    """
+    lock.release()
+    if app is None or not getattr(app, "_restart_after_update", False):
+        return
+    from . import updater
+
+    updater.restart()
 
 
 def print_version() -> None:

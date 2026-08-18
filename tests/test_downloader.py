@@ -254,9 +254,17 @@ def test_video_info_reports_its_original_language() -> None:
 # ----------------------------------------------------------------------
 # yt-dlp options
 # ----------------------------------------------------------------------
-def test_two_player_clients_are_requested(config: Config, messages) -> None:
+def test_the_default_clients_skip_the_drm_walled_tv_client(config: Config, messages) -> None:
+    from clipster.downloader import _PLAYER_CLIENTS, _RETRY_PLAYER_CLIENTS
+
     options = Downloader(config, messages)._base_options()
-    assert options["extractor_args"]["youtube"]["player_client"] == ["default", "web_embedded"]
+    assert options["extractor_args"]["youtube"]["player_client"] == list(_PLAYER_CLIENTS)
+    assert "android_vr" in _PLAYER_CLIENTS
+    assert "web_embedded" in _PLAYER_CLIENTS
+    assert "default" not in _PLAYER_CLIENTS
+    assert "tv" not in _PLAYER_CLIENTS
+    assert "ios" not in _RETRY_PLAYER_CLIENTS
+    assert "tv" not in _RETRY_PLAYER_CLIENTS
 
 
 def test_cookies_from_browser_are_passed_to_ytdlp(config: Config, messages) -> None:
@@ -302,7 +310,9 @@ def test_the_javascript_runtime_is_passed_as_a_dict(config: Config, messages) ->
     if runtime is None:
         assert "js_runtimes" not in options
     else:
-        assert options["js_runtimes"] == {runtime: {}}
+        name, path = runtime
+        assert options["js_runtimes"] == {name: {"path": path}}
+        assert Path(path).is_file()
 
 
 @pytest.mark.parametrize("media_format", ["mp3", "mp4"])

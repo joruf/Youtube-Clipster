@@ -238,6 +238,30 @@ def test_the_archive_replaces_files_but_keeps_user_data(tmp_path: Path, monkeypa
     assert (target / "history.json").read_text() == "mine\n"
 
 
+def test_an_update_drops_stale_bytecode(tmp_path: Path, monkeypatch) -> None:
+    """Leftover .pyc files can be newer than extracted sources and would win."""
+    target = tmp_path / "install"
+    cache = target / "clipster" / "__pycache__"
+    cache.mkdir(parents=True)
+    stale = cache / "app.cpython-312.pyc"
+    stale.write_bytes(b"old-bytecode")
+    kept = target / ".venv" / "lib" / "__pycache__"
+    kept.mkdir(parents=True)
+    (kept / "keep.pyc").write_bytes(b"keep")
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        bundle.writestr("youtube-clipster-main/clipster/app.py", "new\n")
+    monkeypatch.setattr(updater.urllib.request, "urlopen",
+                        lambda *a, **k: _Response(buffer.getvalue()))
+
+    ok, message = updater.apply(target)
+    assert ok, message
+    assert not stale.exists()
+    assert not cache.exists()
+    assert (kept / "keep.pyc").read_bytes() == b"keep"
+
+
 def test_the_archive_records_which_commit_it_installed(tmp_path: Path, monkeypatch) -> None:
     """Otherwise the next check has nothing to compare and offers a reinstall forever."""
     target = tmp_path / "install"
@@ -299,8 +323,8 @@ def test_a_broken_archive_is_reported(tmp_path: Path, monkeypatch) -> None:
 # ----------------------------------------------------------------------
 def test_the_restart_command_points_at_the_entry_point() -> None:
     command = updater.restart_command()
-    assert len(command) == 2
     assert command[1].endswith("run.py")
+    assert "--show-window" in command
 
 
 def test_the_restart_replays_the_startup_arguments(monkeypatch) -> None:
@@ -310,14 +334,27 @@ def test_the_restart_replays_the_startup_arguments(monkeypatch) -> None:
     monkeypatch.setattr(cli, "STARTUP_ARGUMENTS", ["--headless", "--skip-checks"])
     command = updater.restart_command()
     assert command[1].endswith("run.py")
-    assert command[2:] == ["--headless", "--skip-checks"]
+    assert command[2:] == ["--headless"]
+    assert "--skip-checks" not in command
+    assert "--show-window" not in command
 
 
-def test_the_restart_command_stays_bare_without_arguments(monkeypatch) -> None:
+def test_the_restart_opens_the_window_after_an_update(monkeypatch) -> None:
+    """Otherwise the new version would only sit in the tray."""
     from clipster import cli
 
-    monkeypatch.setattr(cli, "STARTUP_ARGUMENTS", [])
-    assert len(updater.restart_command()) == 2
+    monkeypatch.setattr(cli, "STARTUP_ARGUMENTS", ["--skip-checks"])
+    command = updater.restart_command()
+    assert command[2:] == ["--show-window"]
+
+
+def test_the_restart_keeps_a_deliberate_tray_start(monkeypatch) -> None:
+    from clipster import cli
+
+    monkeypatch.setattr(cli, "STARTUP_ARGUMENTS", ["--no-window"])
+    command = updater.restart_command()
+    assert command[2:] == ["--no-window"]
+    assert "--show-window" not in command
 
 
 def test_the_startup_arguments_cannot_be_changed_from_outside(monkeypatch) -> None:
@@ -342,3 +379,26 @@ def test_the_restart_clears_the_relaunch_marker(monkeypatch) -> None:
     updater.restart()
     assert "YOUTUBE_CLIPSTER_RELAUNCHED" not in seen["env"]
     assert seen.get("creationflags") == getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+
+def test_a_failed_exec_still_starts_a_new_process(monkeypatch) -> None:
+    """If the process cannot replace itself, the new version must still start."""
+    seen: dict = {}
+    monkeypatch.setattr(paths, "IS_WINDOWS", False)
+    monkeypatch.setattr(
+        updater.os, "execve",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("cannot exec")),
+    )
+    monkeypatch.setattr(
+        updater.subprocess, "Popen",
+        lambda command, **kwargs: seen.update({"command": command, **kwargs}),
+    )
+    monkeypatch.setattr(
+        updater.os, "_exit",
+        lambda code: seen.update({"exit": code}) or (_ for _ in ()).throw(SystemExit(code)),
+    )
+    with pytest.raises(SystemExit) as caught:
+        updater.restart()
+    assert caught.value.code == 0
+    assert seen["exit"] == 0
+    assert seen["command"][1].endswith("run.py")

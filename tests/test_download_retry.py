@@ -7,9 +7,9 @@ plain ``ba`` - usually the WebM/Opus stream - and fetches it itself.  YouTube
 signs those through different player responses, and the one the download picked
 is sometimes refused at transfer time even though the metadata came back fine.
 
-These tests pin the retry down: on a 403 the download tries again with the
-format playback already proves works, then with other player clients, and it
-never retries anything else.
+These tests pin the retry down: on a 403 or a DRM wall the download tries
+again with the format playback already proves works, then with other player
+clients, and it never retries a deleted video or a bot check.
 """
 
 from __future__ import annotations
@@ -35,6 +35,9 @@ CANONICAL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 FORBIDDEN = (
     "ERROR: unable to download video data: HTTP Error 403: Forbidden"
 )
+
+DRM = "ERROR: [youtube] eNvUS-6PTbs: This video is DRM protected"
+NO_FORMAT = "ERROR: [youtube] eNvUS-6PTbs: Requested format is not available"
 
 
 class _FakeYdl:
@@ -104,6 +107,21 @@ def test_the_user_sees_a_403_explained(messages) -> None:
     text = module.user_facing_ytdlp_error(FORBIDDEN, messages, context="download")
     assert text == messages["error_forbidden"]
     assert "403" in text
+
+
+def test_a_drm_wall_is_recognised() -> None:
+    assert classify_error(DRM) == "drm"
+    assert classify_error("ERROR: [youtube] abc: This video is DRM protected") == "drm"
+
+
+def test_a_client_without_formats_is_recognised() -> None:
+    assert classify_error(NO_FORMAT) == "noformat"
+
+
+def test_the_user_sees_drm_explained(messages) -> None:
+    text = module.user_facing_ytdlp_error(DRM, messages, context="download")
+    assert text == messages["error_drm"]
+    assert "DRM" in text
 
 
 # ----------------------------------------------------------------------
@@ -192,6 +210,32 @@ def test_the_retries_run_out_and_the_403_is_reported(downloader, fake_ytdlp) -> 
     assert raised.value.kind == "forbidden"
 
 
+def test_a_drm_wall_is_retried_with_another_player_client(downloader, fake_ytdlp) -> None:
+    """The TV-client experiment reports DRM; the next client often still works."""
+    fake_ytdlp.script = [Exception(FORBIDDEN), Exception(DRM), None]
+    downloader.download(CANONICAL, "mp3")
+    assert len(fake_ytdlp.seen) == 3
+    clients = fake_ytdlp.seen[2]["extractor_args"]["youtube"]["player_client"]
+    assert clients == [module._RETRY_PLAYER_CLIENTS[0]]
+    assert "tv" not in clients
+
+
+def test_the_retries_run_out_and_the_drm_is_reported(downloader, fake_ytdlp) -> None:
+    fake_ytdlp.script = [Exception(DRM)] * 10
+    with pytest.raises(DownloadFailed) as raised:
+        downloader.download(CANONICAL, "mp3")
+    assert raised.value.kind == "drm"
+
+
+def test_a_client_without_formats_moves_on(downloader, fake_ytdlp) -> None:
+    """ios-without-PO-token used to abort the chain as a generic error."""
+    fake_ytdlp.script = [Exception(FORBIDDEN), Exception(FORBIDDEN), Exception(NO_FORMAT), None]
+    downloader.download(CANONICAL, "mp3")
+    assert len(fake_ytdlp.seen) == 4
+    clients = fake_ytdlp.seen[3]["extractor_args"]["youtube"]["player_client"]
+    assert clients == [module._RETRY_PLAYER_CLIENTS[1]]
+
+
 def test_an_unavailable_video_is_never_retried(downloader, fake_ytdlp) -> None:
     """Retrying a deleted video wastes the user's time and YouTube's patience."""
     fake_ytdlp.script = [Exception("ERROR: Video unavailable")]
@@ -257,3 +301,8 @@ def test_the_retry_list_is_ordered_format_first(downloader) -> None:
     variants = downloader._forbidden_retries("mp3", "")
     assert "format" in variants[0]
     assert all("extractor_args" in item for item in variants[1:])
+    assert all(
+        "tv" not in item["extractor_args"]["youtube"]["player_client"]
+        and "ios" not in item["extractor_args"]["youtube"]["player_client"]
+        for item in variants[1:]
+    )
