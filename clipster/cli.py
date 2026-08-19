@@ -15,7 +15,7 @@ import sys
 from pathlib import Path, PureWindowsPath
 from typing import Any, List, Optional, Sequence
 
-from . import APP_TITLE, APP_VERSION, i18n, installer, paths, shortcuts
+from . import APP_TITLE, i18n, installer, paths, shortcuts
 from . import logging_setup
 from .config import Config
 
@@ -463,4 +463,6 @@ def release_lock_and_relaunch(lock: Any, app: Any) -> None:
 
 def print_version() -> None:
     """Print the application version (used by the wrapper scripts)."""
-    print("{0} ({1})".format(APP_TITLE, APP_VERSION))
+    # APP_TITLE already carries the build number, so appending APP_VERSION here
+    # would print "v2.1.0 (4) (2.1.0)".
+    print(APP_TITLE)

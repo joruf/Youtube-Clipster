@@ -21,7 +21,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Callable, List, Optional, Sequence
 
-from . import APP_SHORT_NAME, i18n, paths, theme
+from . import APP_SHORT_NAME, APP_WINDOW_TITLE, i18n, paths, theme
 from .config import Config
 from .discover import DiscoverTrack
 from .history import HistoryEntry
@@ -81,7 +81,7 @@ class Gui:
 
         self.root = tk.Tk()
         self.root.withdraw()
-        self.root.title(APP_SHORT_NAME)
+        self.root.title(APP_WINDOW_TITLE)
         self.palette = theme.apply(self.root)
         self.fonts = theme.fonts()
         self._icon = self._load_icon()
@@ -699,7 +699,7 @@ class Gui:
         """
         window = tk.Toplevel(self.root)
         window.withdraw()
-        window.title(APP_SHORT_NAME)
+        window.title(APP_WINDOW_TITLE)
         window.configure(background=self.palette.base)
         window.resizable(False, False)
         window.overrideredirect(True)

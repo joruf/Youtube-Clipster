@@ -21,8 +21,9 @@ from . import (
     APP_AUTHOR,
     APP_SHORT_NAME,
     APP_URL,
-    APP_VERSION,
+    APP_VERSION_FULL,
     APP_WEBSITE,
+    APP_WINDOW_TITLE,
     dependencies,
     netmode,
     paths,
@@ -61,6 +62,29 @@ _COL_SIZE = 78
 _COL_DATE = 118
 #: Gap between two row buttons.
 _ROW_BUTTON_GAP = 4
+
+#: The row actions, as ``(handler attribute, glyph, tooltip key)``.
+#: Symbols rather than words: the five German labels alone measured 684 px,
+#: which is more than the table has to give at the default window size - the
+#: last two buttons were pushed out of the window, and with them the only way
+#: to get a failed row out of the list.  Every symbol names itself in a tooltip.
+_ROW_ACTIONS = (
+    ("_on_retry_entry", "\u27f3", "history_retry_tip"),
+    ("_on_play_entry", "\u25b6", "history_play_tip"),
+    ("_on_reveal_entry", "\U0001f4c2", "history_folder_tip"),
+    ("_on_hide_entry", "\u2296", "history_hide_tip"),
+    ("_on_delete_entry", "\U0001f5d1", "history_delete_tip"),
+)
+
+#: How many characters wide a symbol button is.  Two, not one: Tk sizes a button
+#: in average character widths, and a single one clips the wider symbols.
+_ROW_BUTTON_CHARS = 2
+
+#: Pixels reserved for the table's vertical scrollbar and the window border.
+_SCROLLBAR_ALLOWANCE = 28
+
+#: The smallest the window may get, before the table's own needs are added.
+_MIN_WINDOW = (960, 620)
 #: How far a dragged column may be taken, in pixels.
 _COL_MIN_WIDTH = 40
 _COL_MAX_WIDTH = 320
@@ -234,9 +258,9 @@ class ViewWindow:
 
         self.window = tk.Toplevel(master)
         self.window.withdraw()
-        self.window.title(APP_SHORT_NAME)
+        self.window.title(APP_WINDOW_TITLE)
         self.window.configure(background=palette.base)
-        self.window.minsize(960, 620)
+        self.window.minsize(*_MIN_WINDOW)
         self.window.geometry("1120x720")
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
         if icon is not None:
@@ -421,6 +445,7 @@ class ViewWindow:
         sidebar = ttk.Frame(body, style="Sidebar.TFrame", padding=(0, PAD_SMALL))
         sidebar.pack(side="left", fill="y")
         sidebar.configure(width=170)
+        self._sidebar = sidebar
         for key, label in _FILTERS:
             button = ttk.Button(
                 sidebar,
@@ -439,6 +464,7 @@ class ViewWindow:
 
         self._actions_width = self._measure_actions(table)
         self._widen_for_headings(table)
+        self._apply_minimum_width()
 
         self._scroller = _Scroller(table, self.palette)
         self._scroller.pack(fill="both", expand=True)
@@ -518,25 +544,54 @@ class ViewWindow:
         Built once, measured and thrown away.  The header has no widget in that
         column, so the width has to be reserved explicitly - otherwise the
         weighted name column swallows the difference and every heading sits
-        left of its values.  Measuring beats a constant, because "Abspielen" is
-        wider than "Play".
+        left of its values.  Still measured rather than fixed: the symbols are
+        language independent now, but their width still depends on the font the
+        desktop hands us.
 
         :param master: Any widget of the right window, used as a parent.
         :return: The required width including the gaps between the buttons.
         """
         probe = ttk.Frame(master, style="TFrame")
-        for index, key in enumerate(
-            ("history_retry", "history_play", "history_folder", "history_hide", "history_delete")
-        ):
-            ttk.Button(probe, text=self.messages[key], style="Row.TButton").pack(
-                side="left", padx=(_ROW_BUTTON_GAP if index else 0, 0)
-            )
+        for index, (_handler, glyph, _tip) in enumerate(_ROW_ACTIONS):
+            ttk.Button(
+                probe, text=glyph, style="Row.TButton", width=_ROW_BUTTON_CHARS
+            ).pack(side="left", padx=(_ROW_BUTTON_GAP if index else 0, 0))
         # The assembled frame is measured, not the sum of its parts: only a
         # layout pass knows the real geometry.
         probe.update_idletasks()
         width = probe.winfo_reqwidth()
         probe.destroy()
         return width
+
+    def _apply_minimum_width(self) -> None:
+        """Raise the window minimum until the whole table fits inside it.
+
+        The table columns have minimum sizes, but Tk does not grow a window to
+        honour them - it clips the row at the right edge instead, and the last
+        thing in a row is the Delete button.  A window that cannot be made
+        narrower than its content therefore is the fix, and the number is
+        derived rather than typed: column widths follow the desktop font, and a
+        hard-coded 960 was already too small for the actions to fit.
+
+        :return: None
+        """
+        table_needs = (
+            _COL_BADGE
+            + _COL_NAME_MIN
+            + sum(self._col_widths.values())
+            + self._actions_width
+            # One gap per column, plus the padding the table frame adds itself.
+            + PAD_SMALL * 5
+            + PAD * 2
+        )
+        sidebar = getattr(self, "_sidebar", None)
+        if sidebar is not None:
+            sidebar.update_idletasks()
+            table_needs += max(int(sidebar.winfo_reqwidth()), 170)
+        # Room for the vertical scrollbar and the window border.
+        table_needs += _SCROLLBAR_ALLOWANCE
+        _current_min, height = _MIN_WINDOW
+        self.window.minsize(max(_current_min, table_needs), height)
 
     def _widen_for_headings(self, master: tk.Misc) -> None:
         """Grow the starting widths until every heading is readable.
@@ -990,39 +1045,34 @@ class ViewWindow:
         actions.grid(row=0, column=5, sticky="ne")
         available = entry.file_path() is not None
 
-        retry_button = ttk.Button(
-            actions, text=self.messages["history_retry"], style="Row.TButton",
-            command=lambda e=entry: self._on_retry_entry(e),
-        )
-        retry_button.pack(side="left")
-        play_button = ttk.Button(
-            actions, text=self.messages["history_play"], style="Row.TButton",
-            command=lambda e=entry: self._on_play_entry(e),
-        )
-        play_button.pack(side="left", padx=(_ROW_BUTTON_GAP, 0))
-        folder_button = ttk.Button(
-            actions, text=self.messages["history_folder"], style="Row.TButton",
-            command=lambda e=entry: self._on_reveal_entry(e),
-        )
-        folder_button.pack(side="left", padx=(_ROW_BUTTON_GAP, 0))
-        ttk.Button(
-            actions,
-            text=self.messages["history_hide"],
-            style="Row.TButton",
-            command=lambda e=entry: self._on_hide_entry(e),
-        ).pack(side="left", padx=(_ROW_BUTTON_GAP, 0))
-        # Deleting stays possible for entries whose file is already gone, so a
-        # failed or stale row can be cleared away.
-        ttk.Button(
-            actions, text=self.messages["history_delete"], style="Row.TButton",
-            command=lambda e=entry: self._on_delete_entry(e),
-        ).pack(side="left", padx=(_ROW_BUTTON_GAP, 0))
+        # Hide and Delete are the last two, and they are the ones a failed row
+        # needs, so nothing here may depend on the window being wide: the
+        # buttons are symbols with tooltips instead of labels for exactly that
+        # reason.  Both stay enabled even when the file is already gone - that
+        # is the only way to clear a failed or stale row out of the list.
+        buttons: Dict[str, ttk.Button] = {}
+        for index, (handler, glyph, tip_key) in enumerate(_ROW_ACTIONS):
+            button = ttk.Button(
+                actions,
+                text=glyph,
+                style="Row.TButton",
+                width=_ROW_BUTTON_CHARS,
+                command=lambda e=entry, h=handler: getattr(self, h)(e),
+            )
+            button.pack(side="left", padx=(_ROW_BUTTON_GAP if index else 0, 0))
+            tooltip.attach(
+                button,
+                self.messages[tip_key],
+                background=self.palette.elevated,
+                foreground=self.palette.text,
+            )
+            buttons[handler] = button
 
         disabled = []
         if not entry.can_retry():
-            disabled.append(retry_button)
+            disabled.append(buttons["_on_retry_entry"])
         if not available:
-            disabled.extend((play_button, folder_button))
+            disabled.extend((buttons["_on_play_entry"], buttons["_on_reveal_entry"]))
         for button in disabled:
             try:
                 button.state(["disabled"])
@@ -1657,7 +1707,7 @@ class ViewWindow:
         page.pack(fill="both", expand=True)
 
         ttk.Label(page, text=APP_SHORT_NAME, style="Title.TLabel").pack(anchor="w")
-        ttk.Label(page, text="Version {0}".format(APP_VERSION), style="Muted.TLabel").pack(anchor="w")
+        ttk.Label(page, text="Version {0}".format(APP_VERSION_FULL), style="Muted.TLabel").pack(anchor="w")
 
         update = ttk.Frame(page, style="TFrame")
         update.pack(fill="x", pady=(PAD_SMALL, 0))

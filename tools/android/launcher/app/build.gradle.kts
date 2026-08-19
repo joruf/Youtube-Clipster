@@ -11,8 +11,12 @@ android {
         applicationId = "de.loresoft.youtubeclipster"
         minSdk = 24
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.1.0"
+        // Kept in step with clipster/__init__.py (APP_BUILD / APP_VERSION).
+        // tests/test_version.py fails when the two drift apart: an APK that
+        // reports a different version from the program inside it is worse than
+        // no version at all.
+        versionCode = 4
+        versionName = "2.1.0"
     }
 
     buildTypes {

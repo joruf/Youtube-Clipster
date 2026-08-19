@@ -17,7 +17,7 @@ from pathlib import Path
 from tkinter import ttk
 from typing import Any, Callable, Dict, List, Optional
 
-from . import APP_SHORT_NAME, clip, theme
+from . import APP_WINDOW_TITLE, clip, theme
 from .bridge import Prompt
 from .history import STATUS_CANCELED, STATUS_FAILED, STATUS_OK, format_duration
 from .i18n import Messages
@@ -77,7 +77,7 @@ class NavWindow:
 
         self.window = tk.Toplevel(master)
         self.window.withdraw()
-        self.window.title(APP_SHORT_NAME)
+        self.window.title(APP_WINDOW_TITLE)
         self.window.configure(background=palette.base)
         self.window.resizable(False, False)
         self.window.protocol("WM_DELETE_WINDOW", self._closed)

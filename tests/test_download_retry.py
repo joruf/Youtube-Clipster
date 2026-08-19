@@ -40,6 +40,18 @@ DRM = "ERROR: [youtube] eNvUS-6PTbs: This video is DRM protected"
 NO_FORMAT = "ERROR: [youtube] eNvUS-6PTbs: Requested format is not available"
 
 
+@pytest.fixture()
+def with_js_runtime(monkeypatch: pytest.MonkeyPatch):
+    """Pretend a JavaScript engine is installed.
+
+    Needed because a missing engine now outranks the status code in the message:
+    without one, a 403 is explained as the missing engine it actually is, and
+    these tests are about the other case.
+    """
+    monkeypatch.setattr(module, "_js_runtime", lambda: ("deno", "/usr/bin/deno"))
+    return ("deno", "/usr/bin/deno")
+
+
 class _FakeYdl:
     """Stands in for ``yt_dlp.YoutubeDL`` and records every attempt."""
 
@@ -103,7 +115,8 @@ def test_an_unrelated_error_is_still_generic() -> None:
     assert classify_error("Postprocessing: Conversion failed!") == "generic"
 
 
-def test_the_user_sees_a_403_explained(messages) -> None:
+def test_the_user_sees_a_403_explained(messages, with_js_runtime) -> None:
+    """With an engine in place, a 403 really is about the stream itself."""
     text = module.user_facing_ytdlp_error(FORBIDDEN, messages, context="download")
     assert text == messages["error_forbidden"]
     assert "403" in text
@@ -118,10 +131,21 @@ def test_a_client_without_formats_is_recognised() -> None:
     assert classify_error(NO_FORMAT) == "noformat"
 
 
-def test_the_user_sees_drm_explained(messages) -> None:
+def test_the_user_sees_drm_explained(messages, with_js_runtime) -> None:
     text = module.user_facing_ytdlp_error(DRM, messages, context="download")
     assert text == messages["error_drm"]
     assert "DRM" in text
+
+
+def test_without_an_engine_the_403_names_the_engine(messages, monkeypatch) -> None:
+    """The far more common cause, and the one the old wording hid.
+
+    A machine with no JavaScript engine cannot solve YouTube's ``n`` challenge,
+    so every stream URL is refused - a 403 that no cookie and no retry fixes.
+    """
+    monkeypatch.setattr(module, "_js_runtime", lambda: None)
+    text = module.user_facing_ytdlp_error(FORBIDDEN, messages, context="download")
+    assert text == messages["error_no_js_runtime"]
 
 
 # ----------------------------------------------------------------------

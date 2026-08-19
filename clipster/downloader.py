@@ -110,9 +110,13 @@ _M4A_FIRST = "ba[ext=m4a]/ba[acodec^=mp4a]"
 #: Player clients asked on the first attempt.  Named explicitly, never
 #: ``default``: with cookies ``default`` expands to ``tv_downgraded``, which is
 #: the client YouTube DRM-walls in an A/B test (yt-dlp issue 12563).
-#: ``android_vr`` does not need a JS player; ``web_embedded`` still lists dubbed
-#: audio tracks.
-_PLAYER_CLIENTS = ("android_vr", "web_embedded")
+#: ``web_embedded`` comes first *and stays first*: when two clients offer the
+#: same format, yt-dlp keeps the URL of whichever was asked earlier, and
+#: ``android_vr``'s media URLs now need a GVS PO token Clipster does not collect
+#: - so leading with it hands out URLs that answer 403 while the perfectly
+#: usable ``web_embedded`` one is deduplicated away.  ``android_vr`` is kept
+#: behind it because it needs no JS player and still fills in formats.
+_PLAYER_CLIENTS = ("web_embedded", "android_vr")
 
 #: Player clients tried after a 403, a DRM wall, or a client with no usable
 #: formats.  ``tv`` / ``tv_downgraded`` are the DRM experiment.  ``ios`` needs a
@@ -319,6 +323,21 @@ def classify_error(message: str) -> str:
     return "generic"
 
 
+#: Error kinds that a missing JavaScript engine explains far better than the
+#: HTTP status they surface as.  Without one, yt-dlp cannot solve YouTube's
+#: ``n`` challenge, so the URLs it is handed are refused (403) or dropped from
+#: the format list entirely - neither of which is a block or a DRM wall.
+_JS_EXPLAINED_KINDS = ("forbidden", "drm", "noformat")
+
+
+def js_runtime_missing() -> bool:
+    """Return ``True`` when yt-dlp has no JavaScript engine it accepts.
+
+    :return: Whether signature and ``n`` challenge solving is impossible.
+    """
+    return _js_runtime() is None
+
+
 def cookies_are_configured(config: Config) -> bool:
     """Return ``True`` when cookies would actually be passed to yt-dlp.
 
@@ -365,6 +384,10 @@ def user_facing_ytdlp_error(
     :return: Localized message for the user.
     """
     kind = classify_error(message)
+    if kind in _JS_EXPLAINED_KINDS and js_runtime_missing():
+        # Naming the cookies here would send the user after a bot check that is
+        # not happening; the engine is what is missing.
+        return messages["error_no_js_runtime"]
     if kind == "bot":
         if context == "playback":
             key = (
@@ -388,7 +411,7 @@ def user_facing_ytdlp_error(
     if kind == "drm":
         return messages["error_drm"]
     if kind == "noformat":
-        return messages["error_forbidden"]
+        return messages["error_no_format"]
     if kind == "diskfull":
         return messages.format("error_disk_full", details=sanitize_error_detail(message))
     detail = sanitize_error_detail(message) or "?"

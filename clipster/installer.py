@@ -18,13 +18,17 @@ FFmpeg        Linux/macOS: package manager; Windows: official ZIP download.
 mpv           Optional (in-tab Streaming video). Linux/macOS: package manager;
               Windows: hint only, copy ``mpv.exe`` next to bundled FFmpeg.
 Clipboard     Linux only: ``xclip`` or ``wl-clipboard``.
-JS runtime    Linux only, optional: ``quickjs`` / node / deno (YouTube signatures).
+JS runtime    Needed for every YouTube download: without one yt-dlp cannot solve
+              the ``n`` challenge and every stream URL comes back 403.  A system
+              Deno / Node / Bun / QuickJS that is new enough is used; otherwise a
+              private Deno build is downloaded, like FFmpeg on Windows.
 ============  ==================================================================
 """
 
 from __future__ import annotations
 
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -58,6 +62,44 @@ FFMPEG_WINDOWS_URLS = (
 )
 
 _DOWNLOAD_USER_AGENT = "Mozilla/5.0 (compatible; YouTubeClipster/2.0; +https://github.com/joruf/youtube-clipster)"
+
+#: Where a private Deno build is fetched from.  Deno ships one self-contained
+#: executable per platform, which is why it - and not Node - is what Clipster
+#: installs itself: no toolchain, no PATH surgery, nothing to uninstall but a
+#: directory.
+DENO_DOWNLOAD_URL = "https://github.com/denoland/deno/releases/latest/download/deno-{0}.zip"
+
+#: ``platform.machine()`` values mapped to the architecture part of a Deno
+#: release asset.  Anything not listed here gets no download and a hint instead.
+_DENO_TARGETS = {
+    "linux": {
+        "x86_64": "x86_64-unknown-linux-gnu",
+        "amd64": "x86_64-unknown-linux-gnu",
+        "aarch64": "aarch64-unknown-linux-gnu",
+        "arm64": "aarch64-unknown-linux-gnu",
+    },
+    "windows": {
+        "x86_64": "x86_64-pc-windows-msvc",
+        "amd64": "x86_64-pc-windows-msvc",
+        "aarch64": "aarch64-pc-windows-msvc",
+        "arm64": "aarch64-pc-windows-msvc",
+    },
+    "darwin": {
+        "x86_64": "x86_64-apple-darwin",
+        "amd64": "x86_64-apple-darwin",
+        "aarch64": "aarch64-apple-darwin",
+        "arm64": "aarch64-apple-darwin",
+    },
+}
+
+#: The minimum versions yt-dlp accepts, mirrored from its own
+#: ``utils/_jsruntime.py``.  Passing an engine it rejects is worse than passing
+#: none: the run looks configured and still fails the ``n`` challenge, which
+#: surfaces as an unexplained HTTP 403.  quickjs-ng is accepted at any version.
+_MIN_DENO = (2, 3, 0)
+_MIN_NODE = (22, 0, 0)
+_MIN_BUN = (1, 2, 11)
+_MIN_QUICKJS = (2023, 12, 9)
 
 
 # ----------------------------------------------------------------------
@@ -184,9 +226,13 @@ _PACKAGE_MANAGERS: List[PackageManager] = [
             "xclip": "xclip",
             "wl-clipboard": "wl-clipboard",
             "appindicator": "python3-gi gir1.2-ayatanaappindicator3-0.1",
-            "js": "quickjs",
             "python": "python3",
         },
+        # Debian and Ubuntu still ship QuickJS 2021.03.27 and Node 18, both of
+        # which yt-dlp rejects.  Declared unsupported instead of installing them
+        # anyway: asking for sudo to add a package that cannot solve YouTube's
+        # "n" challenge only delays the private Deno download that follows.
+        unsupported=("js",),
     ),
     PackageManager(
         name="dnf",
@@ -1436,20 +1482,79 @@ def _nvm_node_binaries() -> List[Path]:
 def find_js_runtime() -> Optional[Tuple[str, str]]:
     """Return a JavaScript engine yt-dlp can actually use for YouTube.
 
-    yt-dlp 2026.x refuses Node below 22, Deno below 2.3 and Bun below 1.2.11.
-    Passing an older ``/usr/bin/node`` makes signature solving fail silently
-    and downloads collapse into 403 or a false DRM report.
+    yt-dlp refuses Node below 22, Deno below 2.3, Bun below 1.2.11 and QuickJS
+    below 2023-12-09.  Passing an engine it rejects makes signature and ``n``
+    challenge solving fail silently, and the download then collapses into an
+    unexplained HTTP 403 or a false DRM report - so every candidate is version
+    checked here with the same minimums yt-dlp uses.
 
     :return: ``(yt-dlp runtime name, absolute path)``, or ``None``.
     """
     return _discover_js_runtime()
 
 
+def _deno_version(path: Path) -> Tuple[int, ...]:
+    """Return the version of the Deno build at ``path``.
+
+    :param path: A ``deno`` executable.
+    :return: Parsed components, empty when it cannot be run or read.
+    """
+    output = _exe_version(path, ["--version"])
+    return _parse_dotted_version(output.split("deno", 1)[-1] if output else "")
+
+
+def bundled_deno() -> Optional[Path]:
+    """Return the privately installed Deno, if it exists and is new enough.
+
+    :return: The executable, or ``None``.
+    """
+    candidate = paths.bundled_deno_exe()
+    if not candidate.is_file():
+        return None
+    if not _is_at_least(_deno_version(candidate), _MIN_DENO):
+        return None
+    return candidate
+
+
+def _quickjs_runtime(path: Path) -> Optional[Tuple[str, str]]:
+    """Return the yt-dlp runtime entry for a QuickJS binary, if usable.
+
+    QuickJS has no ``--version`` and answers ``--help`` with exit code 1, so the
+    banner is parsed instead.  The two flavours differ: quickjs-ng is accepted at
+    any version, plain QuickJS only from 2023-12-09 on - which rules out the
+    2021 build that Debian and Ubuntu still ship.
+
+    :param path: A ``qjs`` executable.
+    :return: ``(name, path)``, or ``None`` when yt-dlp would reject it.
+    """
+    output = _exe_version(path, ["--help"])
+    if not output:
+        return None
+    marker = "quickjs-ng" if "quickjs-ng" in output.lower() else "quickjs"
+    lowered = output.lower()
+    index = lowered.find("version", lowered.find(marker))
+    version = _parse_dotted_version(output[index + 7:].strip()) if index >= 0 else ()
+    if marker == "quickjs-ng":
+        return ("quickjs-ng", str(path)) if version else None
+    if _is_at_least(version, _MIN_QUICKJS):
+        return ("quickjs", str(path))
+    log.debug("Ignoring %s: QuickJS %s is older than yt-dlp accepts", path, version)
+    return None
+
+
 def _discover_js_runtime() -> Optional[Tuple[str, str]]:
-    """Discover a supported JS engine on PATH and in nvm.
+    """Discover a supported JS engine, preferring Clipster's own Deno.
+
+    The private build comes first because it is the one Clipster installed on
+    purpose: a system engine can be upgraded, downgraded or shadowed on PATH
+    behind our back, and a rejected one costs a failed download to notice.
 
     :return: ``(yt-dlp runtime name, absolute path)``, or ``None``.
     """
+    private = bundled_deno()
+    if private is not None:
+        return ("deno", str(private))
+
     seen = set()
     node_candidates: List[Path] = []
     for name in ("node", "nodejs"):
@@ -1471,64 +1576,168 @@ def _discover_js_runtime() -> Optional[Tuple[str, str]]:
     best: Optional[Tuple[Tuple[int, ...], Path]] = None
     for path in node_candidates:
         version = _parse_dotted_version(_exe_version(path, ["-v"]))
-        if _is_at_least(version, (22, 0, 0)) and (best is None or version > best[0]):
+        if _is_at_least(version, _MIN_NODE) and (best is None or version > best[0]):
             best = (version, path)
     if best is not None:
         return ("node", str(best[1]))
 
     deno = shutil.which("deno")
     if deno:
-        output = _exe_version(Path(deno), ["--version"])
-        version = _parse_dotted_version(output.split("deno", 1)[-1] if output else "")
-        if _is_at_least(version, (2, 3, 0)):
-            return ("deno", str(Path(deno).resolve()))
+        resolved = Path(deno).resolve()
+        if _is_at_least(_deno_version(resolved), _MIN_DENO):
+            return ("deno", str(resolved))
 
     bun = shutil.which("bun")
     if bun:
         version = _parse_dotted_version(_exe_version(Path(bun), ["--version"]))
-        if _is_at_least(version, (1, 2, 11)):
+        if _is_at_least(version, _MIN_BUN):
             return ("bun", str(Path(bun).resolve()))
 
     qjs = shutil.which("qjs")
     if qjs:
-        return ("quickjs", str(Path(qjs).resolve()))
+        return _quickjs_runtime(Path(qjs).resolve())
     return None
 
 
+def deno_download_url() -> Optional[str]:
+    """Return the Deno archive URL for this machine, or ``None``.
+
+    :return: The download URL, or ``None`` on an unsupported platform.
+    """
+    if paths.is_termux():
+        # Android is neither a Deno target nor in need of one: Termux's own
+        # nodejs package is current enough for yt-dlp.
+        return None
+    if paths.IS_WINDOWS:
+        system = "windows"
+    elif paths.IS_MACOS:
+        system = "darwin"
+    elif paths.IS_LINUX:
+        system = "linux"
+    else:
+        return None
+    machine = (platform.machine() or "").strip().lower()
+    target = _DENO_TARGETS.get(system, {}).get(machine)
+    if target is None:
+        log.debug("No Deno build known for %s/%s", system, machine)
+        return None
+    return DENO_DOWNLOAD_URL.format(target)
+
+
+def install_deno() -> Optional[str]:
+    """Download a private Deno build into the application data directory.
+
+    Mirrors what :func:`_install_ffmpeg_windows` does for FFmpeg: unpack into a
+    temporary directory first, then move the finished executable into place, so
+    a failed download never leaves a half-written engine behind that
+    :func:`bundled_deno` would then hand to yt-dlp.
+
+    :return: ``None`` on success, otherwise the error message.
+    """
+    url = deno_download_url()
+    if url is None:
+        return "no Deno build available for this platform"
+
+    name = paths.bundled_deno_exe().name
+    with tempfile.TemporaryDirectory(prefix="clipster-deno-") as tmp:
+        temp_dir = Path(tmp)
+        archive = temp_dir / "deno.zip"
+        log.info("Downloading Deno from %s ...", url)
+        problem = _download(url, archive)
+        if problem is not None:
+            log.warning("Deno download failed: %s", problem)
+            return problem
+        try:
+            with zipfile.ZipFile(archive) as bundle:
+                bundle.extractall(temp_dir / "extracted")
+        except (zipfile.BadZipFile, OSError) as exc:
+            log.warning("Deno archive could not be extracted: %s", exc)
+            return str(exc)
+
+        executables = list((temp_dir / "extracted").rglob(name))
+        if not executables:
+            return "{0} not found in the archive".format(name)
+
+        target = paths.bundled_deno_exe()
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # Replacing a running engine fails on Windows, so the old one is
+            # moved aside rather than written over.
+            if target.exists():
+                target.unlink()
+            shutil.move(str(executables[0]), str(target))
+            if not paths.IS_WINDOWS:
+                target.chmod(0o755)
+        except OSError as exc:
+            log.warning("Deno could not be installed: %s", exc)
+            return str(exc)
+
+    if bundled_deno() is None:
+        return "the downloaded Deno build does not run on this machine"
+    log.info("Deno installed in %s", paths.bundled_deno_exe())
+    return None
+
+
+#: Shown when no engine could be provided.  Deliberately concrete: this is the
+#: single most common reason a download dies with an unexplained HTTP 403.
+JS_RUNTIME_HINT = (
+    "Install Deno 2.3+ (https://deno.land) or Node 22+, then start Clipster again - "
+    "YouTube downloads need a JavaScript engine to sign their stream URLs."
+)
+
+#: The label the setup window shows for this step.
+_JS_STEP = "JavaScript runtime (YouTube signatures)"
+
+
 def ensure_js_runtime(auto_install: bool = True) -> Step:
-    """Install an optional JavaScript runtime that yt-dlp-ejs uses.
+    """Make sure yt-dlp has a JavaScript engine it accepts.
 
-    Never fails the setup.  YouTube signature solving needs both this engine
-    and the yt-dlp-ejs package; without them some formats come back 403.
+    Not optional in practice, even though the step never fails the setup: without
+    an engine yt-dlp cannot solve YouTube's ``n`` challenge, every media URL it
+    is handed is refused, and the download ends in an HTTP 403 that looks like a
+    block but is not one.  Distribution packages rarely help - Debian and Ubuntu
+    still ship a QuickJS from 2021 that yt-dlp rejects - so a private Deno build
+    is downloaded the same way FFmpeg already is on Windows.
 
-    :param auto_install: Allow installing ``quickjs``.
+    :param auto_install: Allow downloading Deno / installing a system package.
     :return: The finished step (always ``ok``).
     """
     found = find_js_runtime()
     if found is not None:
         name, path = found
-        return Step(
-            name="JavaScript runtime (optional)",
-            ok=True,
-            detail="{0} ({1})".format(name, path),
-        )
+        return Step(name=_JS_STEP, ok=True, detail="{0} ({1})".format(name, path))
 
-    if not paths.IS_LINUX or not auto_install:
-        return Step(name="JavaScript runtime (optional)", ok=True, detail="not installed")
+    if not auto_install:
+        return Step(name=_JS_STEP, ok=True, detail="missing", hint=JS_RUNTIME_HINT)
 
-    install_system_packages([_system_key("JavaScript runtime", "js")], refresh=False)
-    found = find_js_runtime()
-    if found is not None:
-        name, path = found
+    # A distribution package is tried first where one can plausibly be new
+    # enough (Termux's nodejs is), because it is shared and updated by the
+    # system instead of being another copy Clipster has to keep current.  Where
+    # the manager declares no usable package the attempt is skipped outright, so
+    # nobody is asked for a password for nothing.
+    key = _system_key("JavaScript runtime", "js")
+    manager = detect_package_manager()
+    if paths.IS_LINUX and manager is not None and manager.package_for(key):
+        install_system_packages([key], refresh=False)
+        found = find_js_runtime()
+        if found is not None:
+            name, path = found
+            return Step(
+                name=_JS_STEP,
+                ok=True,
+                detail="{0} installed ({1})".format(name, path),
+                changed=True,
+            )
+
+    problem = install_deno()
+    if problem is None:
         return Step(
-            name="JavaScript runtime (optional)",
+            name=_JS_STEP,
             ok=True,
-            detail="{0} installed ({1})".format(name, path),
+            detail="deno downloaded ({0})".format(paths.bundled_deno_exe()),
             changed=True,
         )
-    if shutil.which("qjs"):
-        return Step(name="JavaScript runtime (optional)", ok=True, detail="quickjs installed", changed=True)
-    return Step(name="JavaScript runtime (optional)", ok=True, detail="not installed")
+    return Step(name=_JS_STEP, ok=True, detail=problem, hint=JS_RUNTIME_HINT)
 
 
 # ----------------------------------------------------------------------
@@ -1621,7 +1830,7 @@ def bootstrap(
         log.info("[OK] Clipboard access, tray - not needed without windows")
     note("Checking QR code support (optional, for the phone setup)...")
     report.add(ensure_qr_support(interpreter=interpreter, auto_install=auto_install))
-    note("Checking JavaScript runtime...")
+    note("Checking JavaScript runtime (YouTube signatures)...")
     report.add(ensure_js_runtime(auto_install=auto_install))
     note("Dependency check finished.")
     return finish(report)

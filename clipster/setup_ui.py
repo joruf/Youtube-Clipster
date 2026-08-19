@@ -19,7 +19,7 @@ from tkinter import messagebox
 from tkinter import ttk
 from typing import Optional
 
-from . import APP_TITLE, paths
+from . import APP_TITLE, APP_VERSION_FULL, paths
 from .logging_setup import get_logger
 from .theme import PALETTE, PAD
 
@@ -227,7 +227,11 @@ def open_setup_splash(messages) -> Optional[SetupSplash]:
     :param messages: The loaded :class:`~clipster.i18n.Messages` catalogue.
     :return: The open splash or ``None`` when no display is available.
     """
-    title = messages.get("setup_title", APP_TITLE)
+    # The setup window is the first thing a fresh install shows, and often the
+    # only window a failing install ever gets to - so it names the version too.
+    title = "{0} - {1}".format(
+        messages.get("setup_title", APP_TITLE), APP_VERSION_FULL
+    )
     heading = messages.get("setup_heading", "Setting up YouTube Clipster")
     wait_hint = messages.get(
         "setup_please_wait",

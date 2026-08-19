@@ -96,6 +96,22 @@ def bundled_ffplay_exe() -> Path:
     return bundled_ffmpeg_bin() / ("ffplay.exe" if IS_WINDOWS else "ffplay")
 
 
+def deno_dir() -> Path:
+    """Return the directory of the privately installed Deno runtime."""
+    return install_dir() / "deno"
+
+
+def bundled_deno_exe() -> Path:
+    """Return the path the privately installed ``deno`` executable would have.
+
+    yt-dlp needs a JavaScript engine to solve YouTube's signature and ``n``
+    challenges.  Distributions rarely ship a new enough one - Ubuntu's
+    ``quickjs`` predates the minimum by years - so Clipster keeps its own next
+    to the FFmpeg it already downloads.
+    """
+    return deno_dir() / ("deno.exe" if IS_WINDOWS else "deno")
+
+
 def bundled_mpv_exe() -> Path:
     """Return a privately installed ``mpv`` path if we ever ship one beside FFmpeg."""
     return bundled_ffmpeg_bin() / ("mpv.exe" if IS_WINDOWS else "mpv")

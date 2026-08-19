@@ -197,9 +197,16 @@ is already in place, so a warm start takes about a second):
    which the tray icon cannot show a menu. Never blocks the start.
 8. **System tray** *(optional)* – installs `pystray`, `Pillow` and, on Linux, `python-xlib`.
    Never blocks the start; without them the view window is shown instead.
-9. **JavaScript runtime** *(optional)* – `quickjs`/`node`/`deno` help a few yt-dlp extractors.
-   The engine that is present is named explicitly, because yt-dlp otherwise only tries deno.
-   Never blocks the start.
+9. **JavaScript runtime** – needed for every YouTube download, not optional in practice.
+   YouTube signs its stream addresses with an `n` challenge that has to be solved in JavaScript;
+   without an engine yt-dlp accepts, every address it hands out is refused and the download ends in
+   an `HTTP 403` that looks like a block and is not one.
+   yt-dlp's minimums are Deno 2.3, Node 22, Bun 1.2.11 and QuickJS 2023-12-09 (quickjs-ng: any).
+   Distribution packages rarely reach them – Debian and Ubuntu still ship QuickJS 2021.03.27 and
+   Node 18, both of which yt-dlp rejects – so Clipster downloads a private Deno build into
+   `deno/` inside its data directory, the same way it already downloads FFmpeg on Windows.
+   An engine already installed and new enough is used as is. Never blocks the start; when no engine
+   can be provided, the failure says so instead of blaming a 403.
 
 Afterwards the program restarts itself with the venv interpreter and begins monitoring the clipboard.
 

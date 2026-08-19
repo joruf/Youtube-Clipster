@@ -22,7 +22,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import APP_AUTHOR, APP_SHORT_NAME, APP_TITLE, APP_URL, APP_VERSION, APP_WEBSITE, paths, shortcuts
+from . import (
+    APP_AUTHOR,
+    APP_SHORT_NAME,
+    APP_TITLE,
+    APP_URL,
+    APP_VERSION_FULL,
+    APP_WEBSITE,
+    paths,
+    shortcuts,
+)
 from .bridge import Prompt, TkBridge
 from .clip import ClipRange
 from .clipboard import Clipboard
@@ -2529,7 +2538,9 @@ class ClipsterApp:
         """Return About-page facts for the phone / Android UI."""
         return {
             "name": APP_SHORT_NAME,
-            "version": APP_VERSION,
+            # The full version, so the phone shows the same string as every
+            # desktop window title and the APK's own version.
+            "version": APP_VERSION_FULL,
             "author": APP_AUTHOR,
             "website": APP_WEBSITE,
             "repository": APP_URL,

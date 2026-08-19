@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from clipster import theme
+from clipster import theme, viewwindow
 from clipster.bridge import Prompt
 from clipster.clip import ClipRange
 from clipster.history import STATUS_CANCELED, STATUS_FAILED, STATUS_OK, HistoryEntry
@@ -31,6 +31,24 @@ def _entries(widget) -> list:
             found.append(child)
         found.extend(_entries(child))
     return found
+
+
+def _row_actions(view) -> list:
+    """Return one dict per rendered row: action handler name -> button.
+
+    The row actions are symbols with tooltips, so they are found by the position
+    :data:`clipster.viewwindow._ROW_ACTIONS` declares rather than by their text -
+    which also keeps these tests indifferent to translations.
+
+    :param view: The view window.
+    :return: One mapping per row, in display order.
+    """
+    rows = []
+    for _separator, row, _entry in view._row_items:
+        frames = [w for w in row.winfo_children() if w.winfo_class() == "TFrame"]
+        buttons = [w for w in frames[-1].winfo_children() if w.winfo_class() == "TButton"]
+        rows.append(dict(zip((action[0] for action in viewwindow._ROW_ACTIONS), buttons)))
+    return rows
 
 
 def _labels(widget) -> list:
@@ -375,37 +393,22 @@ def test_a_failed_row_shows_the_problem(gui, sample_entries) -> None:
     assert any("boom" in t for t in _all_text(gui.view._scroller.body))
 
 
-def test_play_and_folder_are_disabled_when_the_file_is_gone(gui, sample_entries, messages) -> None:
+def test_play_and_folder_are_disabled_when_the_file_is_gone(gui, sample_entries) -> None:
     """Deleting stays available - it is the only way to clear a stale row."""
     gui.render_history(sample_entries)
-    buttons = []
-
-    def collect(widget):
-        for child in widget.winfo_children():
-            if isinstance(child, type(gui.view._clear_button)):
-                buttons.append(child)
-            collect(child)
-
-    collect(gui.view._scroller.body)
-    by_label = {}
-    for button in buttons:
-        by_label.setdefault(str(button.cget("text")), []).append(button)
-
-    assert set(by_label) == {
-        messages["history_retry"],
-        messages["history_play"],
-        messages["history_folder"],
-        messages["history_hide"],
-        messages["history_delete"],
-    }
-    for label in (messages["history_play"], messages["history_folder"]):
-        assert all("disabled" in b.state() for b in by_label[label]), label
-    assert all("disabled" not in b.state() for b in by_label[messages["history_delete"]])
-    assert all("disabled" not in b.state() for b in by_label[messages["history_hide"]])
-    retry = by_label[messages["history_retry"]]
-    assert "disabled" in retry[0].state()
-    assert "disabled" not in retry[1].state()
-    assert "disabled" in retry[2].state()
+    rows = _row_actions(gui.view)
+    assert len(rows) == len(sample_entries)
+    for row in rows:
+        assert set(row) == {action[0] for action in viewwindow._ROW_ACTIONS}
+        for handler in ("_on_play_entry", "_on_reveal_entry"):
+            assert "disabled" in row[handler].state(), handler
+        for handler in ("_on_hide_entry", "_on_delete_entry"):
+            assert "disabled" not in row[handler].state(), handler
+    # Only the failed row can be retried; the fixture orders them
+    # finished / failed / canceled, newest first, which is how they render.
+    assert "disabled" in rows[0]["_on_retry_entry"].state()
+    assert "disabled" not in rows[1]["_on_retry_entry"].state()
+    assert "disabled" in rows[2]["_on_retry_entry"].state()
 
 
 def test_deleting_a_row_needs_no_confirmation(gui, sample_entries) -> None:
@@ -426,25 +429,16 @@ def test_hiding_a_row_forwards_without_prompt(gui, sample_entries) -> None:
     assert hidden == [sample_entries[0]]
 
 
-def test_retrying_a_failed_row_forwards_without_prompt(gui, sample_entries, messages) -> None:
+def test_retrying_a_failed_row_forwards_without_prompt(gui, sample_entries) -> None:
     gui.render_history(sample_entries)
     retried = []
     gui.on_retry_entry = retried.append
-    buttons = []
-
-    def collect(widget):
-        for child in widget.winfo_children():
-            if isinstance(child, type(gui.view._clear_button)):
-                buttons.append(child)
-            collect(child)
-
-    collect(gui.view._scroller.body)
     retry = [
-        button
-        for button in buttons
-        if str(button.cget("text")) == messages["history_retry"]
-        and "disabled" not in button.state()
+        row["_on_retry_entry"]
+        for row in _row_actions(gui.view)
+        if "disabled" not in row["_on_retry_entry"].state()
     ]
+    # Only the failed row has something to retry.
     assert len(retry) == 1
     retry[0].invoke()
     assert retried == [sample_entries[1]]
