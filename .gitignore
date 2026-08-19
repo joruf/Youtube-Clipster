@@ -29,3 +29,4 @@ dist/
 .coverage
 htmlcov/
 /tools/android/launcher/.gradle
+/tools/android/launcher/.gradle
