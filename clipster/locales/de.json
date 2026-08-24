@@ -311,7 +311,7 @@
   "settings_behaviour": "Verhalten",
   "settings_language": "Sprache der Oberfläche",
   "settings_default_format": "Vorausgewähltes Format",
-  "settings_download_dir": "Download-Ordner (leer = Systemordner)",
+  "settings_download_dir": "Download-Ordner — leer bedeutet den System-Download-Ordner plus Unterordner clipster. Beliebig änderbar, oder über Durchsuchen wählen.",
   "settings_download_dir_android": "Download-Ordner — Standard Download/clipster (im Android-Dateimanager sichtbar). Beliebig änderbar, z. B. /storage/emulated/0/Download/clipster",
   "settings_download_dir_resolved": "Dateien landen in: {path}",
   "settings_browse": "Auswählen...",

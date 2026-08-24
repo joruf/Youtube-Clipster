@@ -246,14 +246,20 @@ def _windows_shell_folder(guid: str) -> Path | None:
     return expanded if expanded.is_dir() else None
 
 
-def default_download_dir() -> Path:
-    """Return the user's download folder, honouring OS specific settings.
+#: Folder created inside the system Downloads directory.  Every platform uses
+#: it: Android always did, and the desktop dropping its files straight into
+#: ``~/Downloads`` mixed them in with everything a browser ever saved.
+DOWNLOAD_SUBFOLDER = "clipster"
 
-    On Termux / Android this is the shared phone Downloads tree under
-    ``Download/clipster``, not Termux's private ``~/Downloads``.
+
+def system_download_dir() -> Path:
+    """Return the operating system's own Downloads folder.
+
+    The plain folder, without Clipster's subfolder - what a file dialog would
+    open at, and the base :func:`default_download_dir` builds on.
+
+    :return: The user's Downloads directory.
     """
-    if is_termux():
-        return android_public_download_dir()
     if IS_WINDOWS:
         folder = _windows_shell_folder("{374DE290-123F-4565-9164-39C4925E467B}")
         if folder is not None:
@@ -265,8 +271,23 @@ def default_download_dir() -> Path:
     return Path.home() / "Downloads"
 
 
+def default_download_dir() -> Path:
+    """Return the folder downloads land in when Settings names none.
+
+    Always the system Downloads folder plus :data:`DOWNLOAD_SUBFOLDER`, so the
+    files stay together and apart from everything else that folder collects.
+    Android resolves to the *shared* phone Downloads tree rather than Termux's
+    private ``~/Downloads``, which no file manager would show.
+
+    :return: The default download directory.
+    """
+    if is_termux():
+        return android_public_download_dir()
+    return system_download_dir() / DOWNLOAD_SUBFOLDER
+
+
 #: Public Android path shown in Settings / About and stored in config.
-ANDROID_PUBLIC_DOWNLOAD = Path("/storage/emulated/0/Download/clipster")
+ANDROID_PUBLIC_DOWNLOAD = Path("/storage/emulated/0/Download") / DOWNLOAD_SUBFOLDER
 
 
 def android_public_download_dir() -> Path:
@@ -285,12 +306,12 @@ def android_download_dir() -> Path:
     :return: Absolute path under the phone's public Download folder.
     """
     link_root = _android_storage_link_root()
-    link = link_root / "clipster"
+    link = link_root / DOWNLOAD_SUBFOLDER
     if link_root.is_symlink() or _path_present(link_root):
         return link
     for path in (
         ANDROID_PUBLIC_DOWNLOAD,
-        Path("/sdcard/Download/clipster"),
+        Path("/sdcard/Download") / DOWNLOAD_SUBFOLDER,
     ):
         if _path_present(path.parent):
             return path
@@ -331,7 +352,7 @@ def android_writable_download_dir(configured: Path | str) -> Path:
     )
     for root in public_roots:
         if text == root or text.startswith(root + "/"):
-            rest = text[len(root) :].lstrip("/") or "clipster"
+            rest = text[len(root) :].lstrip("/") or DOWNLOAD_SUBFOLDER
             if _path_present(link_root):
                 return link_root / rest
             return Path(root) / rest
@@ -350,12 +371,12 @@ def friendly_download_path(path: Path | str) -> str:
     link_root = str(_android_storage_link_root())
     normalized = str(Path(text).expanduser())
     if normalized == link_root or normalized.startswith(link_root + os.sep):
-        rest = normalized[len(link_root) :].lstrip("/") or "clipster"
+        rest = normalized[len(link_root) :].lstrip("/") or DOWNLOAD_SUBFOLDER
         return str(Path("/storage/emulated/0/Download") / rest)
     # /data/data/.../home/storage/downloads/...
     marker = "/home/storage/downloads"
     if marker in normalized.replace("\\", "/"):
-        rest = normalized.split(marker, 1)[-1].lstrip("/") or "clipster"
+        rest = normalized.split(marker, 1)[-1].lstrip("/") or DOWNLOAD_SUBFOLDER
         return str(Path("/storage/emulated/0/Download") / rest)
     try:
         resolved = str(Path(normalized).resolve())

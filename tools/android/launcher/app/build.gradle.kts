@@ -15,8 +15,8 @@ android {
         // tests/test_version.py fails when the two drift apart: an APK that
         // reports a different version from the program inside it is worse than
         // no version at all.
-        versionCode = 4
-        versionName = "2.1.0"
+        versionCode = 6
+        versionName = "2.2.1"
     }
 
     buildTypes {

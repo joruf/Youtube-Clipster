@@ -126,6 +126,22 @@ _SORT_DESCENDING_FIRST = {"name": False, "duration": True, "size": True, "date":
 _SORT_MARKS = {False: " ▲", True: " ▼"}
 
 
+def _nearest_existing(target: Path) -> Path:
+    """Return ``target`` or the closest ancestor of it that exists.
+
+    :param target: A folder that may not have been created yet.
+    :return: An existing directory; the home directory as a last resort.
+    """
+    candidate = target.expanduser()
+    for path in (candidate, *candidate.parents):
+        try:
+            if path.is_dir():
+                return path
+        except OSError:  # pragma: no cover - unreadable mount points
+            continue
+    return Path.home()
+
+
 def _shorten(text: str, limit: int = 120) -> str:
     """Return ``text`` truncated to ``limit`` characters with an ellipsis."""
     clean = " ".join((text or "").split())
@@ -1183,8 +1199,17 @@ class ViewWindow:
             side="right", padx=(0, PAD_SMALL)
         )
 
-        columns = ttk.Frame(page, style="TFrame")
-        columns.pack(fill="both", expand=True)
+        # The form is taller than any window it is shown in, and pack hands the
+        # leftover height to whichever card asks first: the Streaming card took
+        # all of it and squeezed General and Behaviour - the download folder
+        # among them - down to a single pixel, with no way to reach them.  A
+        # scroller makes the page's height its own business.
+        self._settings_scroller = _Scroller(page, self.palette)
+        self._settings_scroller.pack(fill="both", expand=True)
+        form = self._settings_scroller.body
+
+        columns = ttk.Frame(form, style="TFrame")
+        columns.pack(fill="x")
         columns.columnconfigure(0, weight=1, uniform="col")
         columns.columnconfigure(1, weight=1, uniform="col")
 
@@ -1195,9 +1220,13 @@ class ViewWindow:
                                padding=PAD)
         right.grid(row=0, column=1, sticky="nsew", padx=(PAD_SMALL, 0))
 
-        discover = ttk.LabelFrame(page, text=self.messages["settings_discover"], style="Card.TLabelframe",
+        # Inside the scroller as well, and after the two columns rather than
+        # before them: General holds the download folder, which is what someone
+        # opening Settings is most often looking for, so it must not need
+        # scrolling to reach.
+        discover = ttk.LabelFrame(form, text=self.messages["settings_discover"], style="Card.TLabelframe",
                                   padding=PAD)
-        discover.pack(fill="x", pady=(PAD, 0), before=columns)
+        discover.pack(fill="x", pady=(PAD, 0))
 
         self._vars["language"] = tk.StringVar()
         self._add_combo(left, "settings_language", "language", self._language_values())
@@ -1475,12 +1504,20 @@ class ViewWindow:
             entry.pack(fill="x")
 
     def _pick_folder(self) -> None:
-        """Ask for the download directory."""
+        """Ask for the download directory.
+
+        The dialog is opened at the nearest folder that actually exists: the
+        default now ends in a ``clipster`` subfolder that is only created once
+        something writes there, and file dialogs handle a missing ``initialdir``
+        differently on every platform - some silently fall back to the home
+        directory, which is not where the user was looking.
+        """
         current = self._vars["download_dir"].get().strip()
+        wanted = Path(current).expanduser() if current else self.config.resolved_download_dir()
         chosen = filedialog.askdirectory(
             parent=self.window,
             title=self.messages["settings_download_dir"],
-            initialdir=current or str(self.config.resolved_download_dir()),
+            initialdir=str(_nearest_existing(wanted)),
         )
         if chosen:
             self._vars["download_dir"].set(chosen)

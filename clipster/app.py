@@ -344,7 +344,9 @@ class ClipsterApp:
 
         :return: The process exit code.
         """
-        self.download_dir.mkdir(parents=True, exist_ok=True)
+        # Not fatal when it fails: a bad path belongs in Settings, and refusing
+        # to start is the one outcome that keeps the user from getting there.
+        self._ensure_download_dir()
         self._install_signal_handlers()
         self.bridge.start()
         self.gui.render_history(self.history.entries)
@@ -1507,10 +1509,7 @@ class ClipsterApp:
         self.history.limit = max(1, self.config.history_limit)
         self.download_dir = self.config.resolved_download_dir()
         self.gui.download_dir = self.download_dir
-        try:
-            self.download_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            log.warning("Download folder %s could not be created: %s", self.download_dir, exc)
+        self._ensure_download_dir()
         self._sync_autostart()
         self.gui.render_history(self.history.entries)
         log.info("Settings saved to %s", self.config.path)
@@ -3008,8 +3007,29 @@ class ClipsterApp:
             context="download",
         )
 
+    def _ensure_download_dir(self) -> bool:
+        """Create the download folder if it is not there yet.
+
+        The default now ends in its own ``clipster`` subfolder, which - unlike
+        the plain system Downloads directory it sits in - does not exist until
+        something makes it.  Called before anything shows the folder to the user
+        rather than only before a download writes into it, so "open folder"
+        cannot point at a path that is not there.
+
+        :return: Whether the folder exists afterwards.
+        """
+        try:
+            self.download_dir.mkdir(parents=True, exist_ok=True)
+            return True
+        except OSError as exc:
+            log.warning(
+                "Download folder %s could not be created: %s", self.download_dir, exc
+            )
+            return False
+
     def _open_download_folder(self) -> None:
         """Open the configured download folder in the file manager."""
+        self._ensure_download_dir()
         shortcuts.open_folder(self.download_dir, self.config.file_manager)
 
 

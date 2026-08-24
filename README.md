@@ -272,10 +272,17 @@ The result stays on screen with buttons to open the file or its folder.
 
 ![Finished](assets/screenshots/nav-done.png)
 
-Files are saved to your download folder:
+Files are saved to a `clipster` folder inside your download folder, so they stay together
+instead of mixing in with everything else that lands there:
 
-- Linux/macOS: `~/Downloads` (the XDG folder is honoured)
-- Windows: `%USERPROFILE%\Downloads`
+- Linux/macOS: `~/Downloads/clipster` (the XDG folder is honoured)
+- Windows: `%USERPROFILE%\Downloads\clipster`
+- Android: `Download/clipster` in the phone's shared storage
+
+Pick a different one under **Settings → Download folder**, either by typing a path or with
+**Browse**. What you choose is used exactly as given - the `clipster` subfolder is only added to the
+default. The line below the field always names the folder the files really land in, and the folder
+is created when it is missing.
 
 ### The view window
 
@@ -377,7 +384,7 @@ For a **portable setup** copy `config.example.json` to `config.json` **next to
 | Key | Default | Meaning |
 |---|---|---|
 | `language` | `"en"` | UI language, any file name in `clipster/locales` (`en`, `de`) |
-| `download_dir` | `""` | Target folder; empty means the OS download folder |
+| `download_dir` | `""` | Target folder; empty means the OS download folder plus a `clipster` subfolder |
 | `interval_sec` | `2.0` | Clipboard polling interval in seconds |
 | `show_startup_notification` | `true` | Short notification on start |
 | `default_format` | `"mp3"` | Format preselected in the navigation window (`mp3` / `mp4`) |

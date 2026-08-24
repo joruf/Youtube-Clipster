@@ -311,7 +311,7 @@
   "settings_behaviour": "Behaviour",
   "settings_language": "Interface language",
   "settings_default_format": "Preselected format",
-  "settings_download_dir": "Download folder (empty = system folder)",
+  "settings_download_dir": "Download folder — empty uses the system Downloads folder plus a clipster subfolder. Change it freely, or pick one with Browse.",
   "settings_download_dir_android": "Download folder — default Download/clipster (visible in the Android file manager). Change freely, e.g. /storage/emulated/0/Download/clipster",
   "settings_download_dir_resolved": "Files land in: {path}",
   "settings_browse": "Browse...",
