@@ -15,12 +15,12 @@ APP_NAME = "Loresoft YouTube Clipster"
 APP_SHORT_NAME = "YouTube Clipster"
 
 #: Marketing version, ``major.minor.patch``.
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.3.0"
 #: Build number, raised on every release.  Android needs a monotonic integer for
 #: ``versionCode``, and having one number that only ever counts up also tells two
 #: builds of the same version apart - which a bug report needs and
 #: ``2.1.0`` alone cannot give.
-APP_BUILD = 6
+APP_BUILD = 7
 #: What the user sees: ``2.1.0 (4)``.  One string, so no window, page or APK can
 #: drift into showing a different version from the others.
 APP_VERSION_FULL = "{0} ({1})".format(APP_VERSION, APP_BUILD)

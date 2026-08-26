@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=YouTube Clipster
+GenericName=Clipboard video downloader
+Comment=Download YouTube videos or audio as soon as a link is copied
+Comment[de]=YouTube-Videos oder -Audio laden, sobald ein Link kopiert wird
+# %k is this .desktop file, so ./run.py is always the one in the same folder.
+Exec=/bin/bash -c "cd \\$(dirname \\$(readlink -f \\$0)) && exec python3 ./run.py" %k
+Icon=youtube-clipster
+Terminal=false
+Categories=AudioVideo;Network;Utility;
+Keywords=youtube;download;mp3;mp4;clipboard;Zwischenablage;
+StartupNotify=false
