@@ -5,7 +5,25 @@
 # Run:  ./stage-apk.sh
 set -euo pipefail
 
-export JAVA_HOME="${JAVA_HOME:-$HOME/.local/jdk/jdk-17.0.19+10}"
+# Gradle needs a JDK (javac), not only a JRE.
+if [[ -z "${JAVA_HOME:-}" ]] || [[ ! -x "${JAVA_HOME}/bin/javac" ]]; then
+  for candidate in \
+    /usr/lib/jvm/java-21-openjdk-amd64 \
+    /usr/lib/jvm/java-21-openjdk \
+    /usr/lib/jvm/java-17-openjdk-amd64 \
+    /usr/lib/jvm/java-17-openjdk \
+    "$HOME/jdk/current" \
+    "$HOME/.local/jdk/jdk-17.0.19+10"; do
+    if [[ -x "$candidate/bin/javac" ]]; then
+      export JAVA_HOME="$candidate"
+      break
+    fi
+  done
+fi
+if [[ ! -x "${JAVA_HOME:-/nonexistent}/bin/javac" ]]; then
+  echo "JDK not found. Set JAVA_HOME or install OpenJDK 17+." >&2
+  exit 1
+fi
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,8 +33,8 @@ APK="$LAUNCHER/app/build/outputs/apk/debug/app-debug.apk"
 OUT="$HERE/tools/android/clipster-launcher.apk"
 AAPT="$HOME/Android/Sdk/build-tools/35.0.0/aapt2"
 
-if [[ ! -f "$LAUNCHER/local.properties" ]]; then
-    echo "sdk.dir=$ANDROID_HOME" > "$LAUNCHER/local.properties"
+if [[ ! -f "$LAUNCHER/local.properties" ]] || ! grep -q '^sdk.dir=' "$LAUNCHER/local.properties" 2>/dev/null; then
+  printf 'sdk.dir=%s\n' "$ANDROID_HOME" > "$LAUNCHER/local.properties"
 fi
 
 cd "$LAUNCHER"

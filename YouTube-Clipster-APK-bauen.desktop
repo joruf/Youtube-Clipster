@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Build YouTube Clipster APK
+Comment=Bump version, build debug APK, stage to ~/clipster-apk
+Path=/home/joruf/Dokumente/GitHub/youtube-clipster
+Exec=gnome-terminal --title=YouTube-Clipster-APK -- bash -lc "./build-apk.sh; echo; read -r -p 'Press Enter to close…'"
+Icon=applications-development
+Terminal=false
+Categories=Development;
+StartupNotify=true
