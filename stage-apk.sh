@@ -62,6 +62,7 @@ VERSION="$(printf '%s' "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
 CODE="$(printf '%s' "$BADGING" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")"
 
 NAME="clipster-$VERSION-b$CODE.apk"
+DOWNLOAD_NAME="clipster_${VERSION} (${CODE}).apk"
 STAMP="$(date '+%Y-%m-%d %H:%M')"
 SIZE="$(du -h "$APK" | cut -f1)"
 SHA="$(sha256sum "$APK" | cut -c1-16)"
@@ -70,6 +71,10 @@ mkdir -p "$TARGET"
 find "$TARGET" -maxdepth 1 -name 'clipster-*.apk' -delete
 cp "$APK" "$TARGET/$NAME"
 cp "$APK" "$TARGET/clipster.apk"
+
+DOWNLOADS="$HOME/Downloads"
+mkdir -p "$DOWNLOADS"
+cp "$APK" "$DOWNLOADS/$DOWNLOAD_NAME"
 
 if [[ "${BUILD_VERBOSE:-}" == 1 ]]; then
     echo "  → Writing download page (index.html)…" >&2
@@ -121,6 +126,7 @@ echo
 echo "Staged in $TARGET:"
 echo "  clipster.apk   ($SIZE, $VERSION build $CODE)"
 echo "  $NAME"
+echo "Downloads: $DOWNLOADS/$DOWNLOAD_NAME"
 echo "  tools/android/clipster-launcher.apk"
 echo
 echo "Start server:  python3 $TARGET/serve.py"

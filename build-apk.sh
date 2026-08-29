@@ -349,7 +349,7 @@ connected_devices() {
 }
 
 download_apk_name() {
-  printf '%s-%s-b%s.apk\n' "$APP_SLUG" "$NEW_NAME" "$NEW_CODE"
+  printf '%s_%s (%s).apk\n' "$APP_SLUG" "$NEW_NAME" "$NEW_CODE"
 }
 
 apk_for_phone() {
