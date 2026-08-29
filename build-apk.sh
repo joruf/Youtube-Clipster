@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 #
 # Build YouTube Clipster debug APK: bump gradle.properties, compile, stage to ~/clipster-apk/
-# (via stage-apk.sh). Optionally install on connected phones via adb.
+# (via stage-apk.sh). Optionally install on connected phones and/or copy the APK to
+# /sdcard/Download/ on each phone.
 #
 # Run:  ./build-apk.sh
-#       ./build-apk.sh --deploy
-# Double-click: YouTube-Clipster-APK-bauen.desktop (terminal + zenity dialogs, same as Fundus).
+#       ./build-apk.sh --deploy          # install + copy to Download/
+#       ./build-apk.sh --download-only   # copy to Download/ only
+# Double-click: YouTube-Clipster-APK-bauen.desktop (terminal + zenity dialogs).
 #
 set -euo pipefail
 
@@ -23,6 +25,9 @@ GRADLE_CD=2
 RUN_TESTS=0
 SYNC_PY=1
 
+# Phone step after build: none | install | download | both
+PHONE_ACTION=""
+
 case "$GRADLE_CD" in
   1) GRADLE_ROOT="$HERE/android" ;;
   2) GRADLE_ROOT="$HERE/tools/android/launcher" ;;
@@ -38,7 +43,6 @@ ensure_android_sdk() {
   fi
 }
 
-DEPLOY=""
 CURRENT_STEP=0
 TOTAL_STEPS=0
 PROGRESS_PID=""
@@ -83,7 +87,7 @@ error_msg() {
 progress_start() {
   TOTAL_STEPS=3
   [[ "$RUN_TESTS" == 1 ]] && TOTAL_STEPS=$((TOTAL_STEPS + 1))
-  [[ "$DEPLOY" == yes ]] && TOTAL_STEPS=$((TOTAL_STEPS + 2))
+  [[ -n "$PHONE_ACTION" && "$PHONE_ACTION" != none ]] && TOTAL_STEPS=$((TOTAL_STEPS + 2))
   CURRENT_STEP=0
 
   if have_zenity && ! use_terminal_progress; then
@@ -141,10 +145,23 @@ substep() {
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -d | --deploy) DEPLOY=yes; shift ;;
-      --no-deploy) DEPLOY=no; shift ;;
+      -d | --deploy) PHONE_ACTION=both; shift ;;
+      --install) PHONE_ACTION=install; shift ;;
+      --download | --download-only) PHONE_ACTION=download; shift ;;
+      --no-deploy | --no-phone) PHONE_ACTION=none; shift ;;
       -h | --help)
-        echo "Usage: $0 [--deploy | --no-deploy]"
+        cat <<EOF
+Usage: $0 [options]
+
+  --deploy          Install on phones and save a copy to Download/
+  --install         Install on phones only
+  --download-only   Save APK copy to Download/ on phones (no install)
+  --no-phone        Build and stage only (default when you decline the dialog)
+
+Non-interactive:
+  BUILD_APK_BUMP=no|yes|keep
+  BUILD_APK_PHONE=both|install|download|none
+EOF
         exit 0
         ;;
       *)
@@ -277,20 +294,40 @@ choose_versions() {
   fi
 }
 
-ask_deploy() {
-  [[ -n "$DEPLOY" ]] && return
+ask_phone_action() {
+  if [[ -n "${BUILD_APK_PHONE:-}" ]]; then
+    PHONE_ACTION="${BUILD_APK_PHONE,,}"
+    return
+  fi
+  [[ -n "$PHONE_ACTION" ]] && return
+
   if have_zenity; then
-    if zenity --question --title="Build $APP_TITLE APK" \
-      --text="Install on connected phones after the build?"; then
-      DEPLOY=yes
-    else
-      DEPLOY=no
-    fi
+    choice="$(zenity --list --title="Build $APP_TITLE APK" --width=520 --height=300 \
+      --text="What should happen on connected phones after the build?" \
+      --column="Action" \
+      "Install and save to Download/" \
+      "Install only" \
+      "Save to Download/ only" \
+      "Skip phone step" 2>/dev/null || true)"
+    case "${choice:-Skip phone step}" in
+      "Install and save to Download/") PHONE_ACTION=both ;;
+      "Install only") PHONE_ACTION=install ;;
+      "Save to Download/ only") PHONE_ACTION=download ;;
+      *) PHONE_ACTION=none ;;
+    esac
   else
-    read -r -p "Install on phones after build? [y/N]: " answer
-    case "${answer:-n}" in
-      y | Y | j | J) DEPLOY=yes ;;
-      *) DEPLOY=no ;;
+    echo
+    echo "Phone step after build:"
+    echo "  1) Install and save to Download/ (default)"
+    echo "  2) Install only"
+    echo "  3) Save to Download/ only"
+    echo "  4) Skip"
+    read -r -p "Choice [1]: " choice
+    case "${choice:-1}" in
+      1) PHONE_ACTION=both ;;
+      2) PHONE_ACTION=install ;;
+      3) PHONE_ACTION=download ;;
+      *) PHONE_ACTION=none ;;
     esac
   fi
 }
@@ -311,11 +348,39 @@ connected_devices() {
   adb devices | awk '$2 == "device" && $1 !~ /^emulator-/ { print $1 }'
 }
 
-deploy_to_phones() {
+download_apk_name() {
+  printf '%s-%s-b%s.apk\n' "$APP_SLUG" "$NEW_NAME" "$NEW_CODE"
+}
+
+apk_for_phone() {
   local target="$HOME/${APP_SLUG}-apk"
-  local staged="$target/${APP_SLUG}-$NEW_NAME-b$NEW_CODE.apk"
-  local download_name="${APP_SLUG}-$NEW_NAME-b$NEW_CODE.apk"
+  local staged="$target/$(download_apk_name)"
+  if [[ -f "$staged" ]]; then
+    printf '%s\n' "$staged"
+  elif [[ -f "$APK" ]]; then
+    printf '%s\n' "$APK"
+  else
+    return 1
+  fi
+}
+
+copy_apk_to_download() {
+  local serial="$1"
+  local src remote="/sdcard/Download/$(download_apk_name)"
+  src="$(apk_for_phone)" || return 1
+  adb -s "$serial" push "$src" "$remote" >/dev/null
+}
+
+deploy_to_phones() {
   local serial result_lines=() ok=0 fail=0 n=0 total
+  local do_install=0 do_download=0
+
+  case "$PHONE_ACTION" in
+    both) do_install=1; do_download=1 ;;
+    install) do_install=1 ;;
+    download) do_download=1 ;;
+    *) return 0 ;;
+  esac
 
   if ! command -v adb >/dev/null 2>&1; then
     error_msg "adb not found. Install Android platform-tools."
@@ -325,7 +390,7 @@ deploy_to_phones() {
     error_msg "scripts/adb-phones.sh is missing or not executable."
     return 1
   fi
-  if [[ ! -f "$APK" ]]; then
+  if ! apk_for_phone >/dev/null; then
     error_msg "APK missing: $APK"
     return 1
   fi
@@ -341,29 +406,64 @@ deploy_to_phones() {
   fi
 
   total="${#devices[@]}"
-  step "Install on $total phone(s)"
+  if [[ "$do_install" == 1 && "$do_download" == 1 ]]; then
+    step "Install and copy to Download/ on $total phone(s)"
+  elif [[ "$do_install" == 1 ]]; then
+    step "Install on $total phone(s)"
+  else
+    step "Copy APK to Download/ on $total phone(s)"
+  fi
 
   for serial in "${devices[@]}"; do
     n=$((n + 1))
-    substep "[$n/$total] $serial — install -r"
-    if adb -s "$serial" install -r "$APK"; then
-      if [[ -f "$staged" ]]; then
-        substep "[$n/$total] $serial — copy to Download/"
-        adb -s "$serial" push "$staged" "/sdcard/Download/$download_name" >/dev/null
+    local line="" install_ok=1 download_ok=1
+
+    if [[ "$do_install" == 1 ]]; then
+      substep "[$n/$total] $serial — install -r"
+      if adb -s "$serial" install -r "$APK"; then
+        install_ok=0
+      fi
+    fi
+
+    if [[ "$do_download" == 1 ]]; then
+      substep "[$n/$total] $serial — copy to Download/$(download_apk_name)"
+      if copy_apk_to_download "$serial"; then
+        download_ok=0
+      fi
+    fi
+
+    if [[ "$do_install" == 1 && "$install_ok" == 0 ]]; then
+      line="✓ $serial: installed"
+      if [[ "$do_download" == 1 ]]; then
+        if [[ "$download_ok" == 0 ]]; then
+          line+=", Download/$(download_apk_name)"
+        else
+          line+=", Download copy failed"
+        fi
       fi
       version_line="$(adb -s "$serial" shell dumpsys package "$PACKAGE" \
         | grep -E 'versionName=|versionCode=' \
         | head -2 | tr -d '\r' | paste -sd ' ' -)"
-      result_lines+=("✓ $serial: $version_line")
+      [[ -n "$version_line" ]] && line+=" ($version_line)"
+      result_lines+=("$line")
+      ok=$((ok + 1))
+    elif [[ "$do_install" == 0 && "$do_download" == 1 && "$download_ok" == 0 ]]; then
+      result_lines+=("✓ $serial: Download/$(download_apk_name)")
       ok=$((ok + 1))
     else
-      result_lines+=("✗ $serial: install failed")
+      if [[ "$do_install" == 1 && "$install_ok" != 0 ]]; then
+        result_lines+=("✗ $serial: install failed")
+      elif [[ "$do_download" == 1 && "$download_ok" != 0 ]]; then
+        result_lines+=("✗ $serial: Download copy failed")
+      else
+        result_lines+=("✗ $serial: phone step failed")
+      fi
       fail=$((fail + 1))
     fi
   done
 
-  substep "Installed: $ok, failed: $fail"
-  local summary="Installed: $ok, failed: $fail"
+  substep "Phones OK: $ok, failed: $fail"
+  local summary="Phones OK: $ok, failed: $fail"
   if [[ ${#result_lines[@]} -gt 0 ]]; then
     summary+=$'\n\n'"$(printf '%s\n' "${result_lines[@]}")"
   fi
@@ -397,14 +497,14 @@ run_build() {
   BUILD_VERBOSE=1 SKIP_GRADLE=1 SKIP_TESTS=1 "$STAGE"
 
   local deploy_summary=""
-  if [[ "$DEPLOY" == yes ]]; then
+  if [[ -n "$PHONE_ACTION" && "$PHONE_ACTION" != none ]]; then
     deploy_summary="$(deploy_to_phones || true)"
   fi
 
   progress_stop
 
   local target="$HOME/${APP_SLUG}-apk"
-  local body=$'Version '"$NEW_NAME"$' (build '"$NEW_CODE"$')\n\nStaged at:\n'"$target/${APP_SLUG}.apk"$'\n'"$target/${APP_SLUG}-$NEW_NAME-b$NEW_CODE.apk"$'\n\nServe: python3 '"$target/serve.py"
+  local body=$'Version '"$NEW_NAME"$' (build '"$NEW_CODE"$')\n\nStaged at:\n'"$target/${APP_SLUG}.apk"$'\n'"$target/$(download_apk_name)"$'\n\nServe: python3 '"$target/serve.py"
   if [[ -n "$deploy_summary" ]]; then
     body+=$'\n\n'"$deploy_summary"
   fi
@@ -431,7 +531,7 @@ main() {
   fi
   ensure_android_sdk
   choose_versions
-  ask_deploy
+  ask_phone_action
   run_build
 }
 
