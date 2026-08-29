@@ -16,7 +16,7 @@ import pytest
 import clipster
 
 ROOT = Path(__file__).resolve().parent.parent
-GRADLE = ROOT / "tools" / "android" / "launcher" / "app" / "build.gradle.kts"
+GRADLE_PROPS = ROOT / "tools" / "android" / "launcher" / "gradle.properties"
 
 
 def test_the_version_is_a_three_part_number() -> None:
@@ -44,15 +44,14 @@ def test_every_title_carries_the_build() -> None:
 def test_the_android_apk_reports_the_same_version() -> None:
     """An APK whose version differs from the program inside it misleads.
 
-    Gradle cannot import Python, so the two are compared here rather than
-    generated from one another.
+    Gradle reads gradle.properties; Python reads __init__.py. Both must match.
     """
-    source = GRADLE.read_text(encoding="utf-8")
-    name = re.search(r'versionName\s*=\s*"([^"]+)"', source)
-    code = re.search(r"versionCode\s*=\s*(\d+)", source)
+    props = GRADLE_PROPS.read_text(encoding="utf-8")
+    name = re.search(r"^CLIPSTER_VERSION_NAME=(.+)$", props, re.MULTILINE)
+    code = re.search(r"^CLIPSTER_VERSION_CODE=(.+)$", props, re.MULTILINE)
     assert name is not None and code is not None, "the launcher declares no version"
-    assert name.group(1) == clipster.APP_VERSION
-    assert int(code.group(1)) == clipster.APP_BUILD
+    assert name.group(1).strip() == clipster.APP_VERSION
+    assert int(code.group(1).strip()) == clipster.APP_BUILD
 
 
 @pytest.mark.gui

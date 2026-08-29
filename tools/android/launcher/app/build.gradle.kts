@@ -12,11 +12,8 @@ android {
         minSdk = 24
         targetSdk = 34
         // Kept in step with clipster/__init__.py (APP_BUILD / APP_VERSION).
-        // tests/test_version.py fails when the two drift apart: an APK that
-        // reports a different version from the program inside it is worse than
-        // no version at all.
-        versionCode = 7
-        versionName = "2.3.0"
+        versionCode = (findProperty("CLIPSTER_VERSION_CODE") as String).toInt()
+        versionName = findProperty("CLIPSTER_VERSION_NAME") as String
     }
 
     buildTypes {

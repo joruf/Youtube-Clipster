@@ -36,3 +36,4 @@ htmlcov/
 # wizard ships it to the phone, so it is a product, not build waste.
 /tools/android/launcher/.gradle/
 /tools/android/launcher/local.properties
+scripts/adb-phones.env
