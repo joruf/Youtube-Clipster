@@ -162,6 +162,31 @@ def local_source(track: DiscoverTrack) -> Optional[str]:
         return None
 
 
+def _is_http_url(stream: str) -> bool:
+    """Return whether ``stream`` is an HTTP(S) media URL."""
+    lower = (stream or "").strip().lower()
+    return lower.startswith("http://") or lower.startswith("https://")
+
+
+def _is_local_media_path(stream: str) -> bool:
+    """Return whether ``stream`` is a media file on disk, not an HTTP URL.
+
+    Audio mode used to pipe every source through ``urlopen``.  That works for
+    YouTube streams and silently dies for a path such as
+    ``/home/me/Downloads/song.mp3``, so local library rows (which have no
+    channel name) were skipped one after another.
+
+    :param stream: Path or URL chosen by :meth:`DiscoverPlayer._start_track`.
+    :return: ``True`` when mpv/ffplay should open the value as a file.
+    """
+    if not stream or _is_http_url(stream):
+        return False
+    try:
+        return Path(stream).is_file()
+    except (OSError, ValueError):
+        return False
+
+
 @dataclass
 class PlayStartResult:
     """Outcome of starting one Discover track."""
@@ -1264,7 +1289,12 @@ class DiscoverPlayer:
         *,
         start_at: float = 0.0,
     ) -> PlayStartResult:
-        """Launch mpv for audio-only playback (stream piped to stdin)."""
+        """Launch mpv for audio-only playback.
+
+        HTTP streams are piped on stdin so Clipster can attach YouTube headers.
+        Files already on disk are passed as a path: ``urlopen`` cannot fetch
+        them, and treating a path as a URL made the queue skip every local row.
+        """
         # An IPC socket for audio too, not only for the embedded video: without
         # it the volume of the usual case - listening to music - cannot be
         # changed at all, neither here nor by remote control.
@@ -1279,13 +1309,19 @@ class DiscoverPlayer:
         ]
         if start_at > 0.05:
             cmd.append("--start={0}".format(start_at))
-        cmd.append("-")
+        local = _is_local_media_path(stream)
+        cmd.append(stream if local else "-")
         try:
-            self._process = _popen(cmd, stdin=subprocess.PIPE)
+            self._process = _popen(cmd, stdin=None if local else subprocess.PIPE)
             self._backend = BACKEND_AUDIO
-            player_in = getattr(self._process, "stdin", None)
-            self._start_feeder(stream, player_in)
-            log.info("Streaming audio-only via mpv (piped, start=%.1f)", start_at)
+            if not local:
+                player_in = getattr(self._process, "stdin", None)
+                self._start_feeder(stream, player_in)
+            log.info(
+                "Streaming audio-only via mpv (%s, start=%.1f)",
+                "file" if local else "piped",
+                start_at,
+            )
             return PlayStartResult(backend=BACKEND_AUDIO)
         except OSError as exc:
             log.warning("Audio mpv failed: %s", exc)
@@ -1303,7 +1339,7 @@ class DiscoverPlayer:
         """Launch ffplay for audio-only playback.
 
         :param ffplay: Absolute path to ffplay.
-        :param stream: Direct media URL.
+        :param stream: Direct media URL or a local file path.
         :param use_dummy_video: Set ``SDL_VIDEODRIVER=dummy`` (Linux-friendly;
             some Windows builds need this off).
         :param start_at: Optional seek offset in seconds.
@@ -1317,15 +1353,20 @@ class DiscoverPlayer:
         cmd = [ffplay, "-autoexit", "-nodisp", "-vn", "-loglevel", "quiet"]
         if start_at > 0.05:
             cmd.extend(["-ss", "{0}".format(start_at)])
-        cmd.extend(["-i", "pipe:0"])
+        local = _is_local_media_path(stream)
+        cmd.extend(["-i", stream if local else "pipe:0"])
         try:
             self._cleanup_ipc()
-            self._process = _popen(cmd, env=env, stdin=subprocess.PIPE)
+            self._process = _popen(
+                cmd, env=env, stdin=None if local else subprocess.PIPE
+            )
             self._backend = BACKEND_AUDIO
-            player_in = getattr(self._process, "stdin", None)
-            self._start_feeder(stream, player_in)
+            if not local:
+                player_in = getattr(self._process, "stdin", None)
+                self._start_feeder(stream, player_in)
             log.info(
-                "Streaming audio-only via ffplay (piped, dummy_video=%s start=%.1f)",
+                "Streaming audio-only via ffplay (%s, dummy_video=%s start=%.1f)",
+                "file" if local else "piped",
                 use_dummy_video,
                 start_at,
             )

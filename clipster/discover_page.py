@@ -410,8 +410,10 @@ class DiscoverPage(ttk.Frame):
         # Stage controls are Audio-only; pack/hide from the current media mode.
         self._sync_stage_controls_visibility()
 
+        # Do not pack the stage yet: transport chrome is packed to the bottom
+        # first so play/stop/seek stay visible when the pane is short.  The
+        # stage then takes only the leftover space instead of covering them.
         self._video_host = tk.Frame(player, background="#0b0c0f", height=280, highlightthickness=0)
-        self._video_host.pack(fill="both", expand=True, pady=(0, PAD_SMALL))
         self._video_host.pack_propagate(False)
         self._eq_canvas = tk.Canvas(
             self._video_host,
@@ -436,14 +438,11 @@ class DiscoverPage(ttk.Frame):
             font=self.fonts.get("title", self.fonts["body"]),
             wraplength=360,
         )
-        self._now_title.pack(anchor="w")
         self._now_meta = ttk.Label(player, text="", style="Panel.Muted.TLabel", wraplength=360)
-        self._now_meta.pack(anchor="w", pady=(2, 0))
         self._up_next = ttk.Label(player, text="", style="Panel.Muted.TLabel", wraplength=360)
-        self._up_next.pack(anchor="w", pady=(2, PAD_SMALL))
 
         seek_row = ttk.Frame(player, style="Panel.TFrame")
-        seek_row.pack(fill="x", pady=(0, PAD_SMALL))
+        self._seek_row = seek_row
         self._time_elapsed = ttk.Label(seek_row, text="0:00", style="Panel.Muted.TLabel")
         self._time_elapsed.pack(side="left")
         self._seek_var = tk.DoubleVar(value=0.0)
@@ -463,7 +462,7 @@ class DiscoverPage(ttk.Frame):
         self._reset_seek_ui()
 
         controls = ttk.Frame(player, style="Panel.TFrame")
-        controls.pack(fill="x")
+        self._player_controls = controls
         tip_bg = self.palette.elevated
         tip_fg = self.palette.text
         prev_btn = ttk.Button(
@@ -534,8 +533,18 @@ class DiscoverPage(ttk.Frame):
         # would widen the player pane, and the Panedwindow would take that width
         # straight out of the queue beside it.
         modes = ttk.Frame(player, style="Panel.TFrame")
-        modes.pack(fill="x", pady=(PAD_SMALL, 0))
+        self._player_modes = modes
         self._build_playback_modes(modes, tip_bg=tip_bg, tip_fg=tip_fg)
+
+        # Bottom-first so a short pane clips the stage (or the title), never
+        # play / stop / seek.  First packed side=bottom widget is lowest.
+        modes.pack(side="bottom", fill="x", pady=(PAD_SMALL, 0))
+        controls.pack(side="bottom", fill="x")
+        seek_row.pack(side="bottom", fill="x", pady=(0, PAD_SMALL))
+        self._up_next.pack(side="bottom", anchor="w", fill="x", pady=(2, PAD_SMALL))
+        self._now_meta.pack(side="bottom", anchor="w", fill="x", pady=(2, 0))
+        self._now_title.pack(side="bottom", anchor="w", fill="x")
+        self._video_host.pack(fill="both", expand=True, pady=(0, PAD_SMALL))
 
         queue = ttk.LabelFrame(
             split, text=self.messages["discover_queue"], style="Card.TLabelframe", padding=PAD_SMALL

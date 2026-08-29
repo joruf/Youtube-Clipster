@@ -333,6 +333,69 @@ def test_audio_play_ready_maps_stage_and_starts_generator(gui, messages) -> None
     gui.root.update_idletasks()
 
 
+def _inside(widget: tk.Misc, parent: tk.Misc) -> bool:
+    """Return True when ``widget`` is fully inside ``parent`` on screen."""
+    wx, wy = widget.winfo_rootx(), widget.winfo_rooty()
+    ww, wh = widget.winfo_width(), widget.winfo_height()
+    px, py = parent.winfo_rootx(), parent.winfo_rooty()
+    pw, ph = parent.winfo_width(), parent.winfo_height()
+    return (
+        ww > 1
+        and wh > 1
+        and wx >= px
+        and wy >= py
+        and wx + ww <= px + pw + 2
+        and wy + wh <= py + ph + 2
+    )
+
+
+@pytest.mark.parametrize("window_height", [720, 620])
+def test_discover_transport_stays_visible_below_the_stage(gui, window_height: int) -> None:
+    """Play/stop/seek must stay on screen even when the stage wants 280px.
+
+    The Now Playing stage used to pack first with expand=True, so it ate the
+    pane and covered the transport row.  Chrome is packed to the bottom first
+    so a short window shrinks the stage instead.
+    """
+    from clipster.discover import DiscoverTrack
+
+    gui.show_view()
+    gui.view.select_page("discover")
+    page = gui.view.discover
+    page.restore_tracks(
+        [
+            DiscoverTrack(
+                url="https://www.youtube.com/watch?v=abcdefghijk",
+                video_id="abcdefghijk",
+                title="Sample Track One With A Long Enough Title To Wrap",
+                uploader="Example Channel",
+                duration=214,
+            )
+        ]
+    )
+    page._show_stage_audio()
+    gui.view.window.geometry("1120x{0}".format(window_height))
+    for _ in range(6):
+        gui.view.window.update_idletasks()
+        gui.view.window.update()
+
+    assert str(page._player_controls.pack_info().get("side", "")) == "bottom"
+    assert str(page._seek_row.pack_info().get("side", "")) == "bottom"
+    assert str(page._player_modes.pack_info().get("side", "")) == "bottom"
+
+    pane = page._player_pane
+    stage = page._video_host
+    play = page._play_btn
+    assert play.winfo_ismapped()
+    assert page._seek_scale.winfo_ismapped()
+    assert _inside(play, pane)
+    assert _inside(page._seek_scale, pane)
+    assert _inside(page._player_controls, pane)
+    stage_bottom = stage.winfo_rooty() + stage.winfo_height()
+    assert play.winfo_rooty() >= stage_bottom - 1
+    assert page._seek_scale.winfo_rooty() >= stage_bottom - 1
+
+
 def test_an_unknown_page_is_ignored(gui) -> None:
     gui.view.select_page("discover")
     gui.view.select_page("no-such-page")

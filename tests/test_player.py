@@ -850,3 +850,116 @@ def test_set_visualizer_mode_toggles_pcm_want() -> None:
     assert player._pcm_wanted is False
     player.set_visualizer_mode("cover")
     assert player._pcm_wanted is False
+
+
+def test_is_local_media_path_rejects_http(tmp_path) -> None:
+    from clipster.player import _is_local_media_path
+
+    media = tmp_path / "song.mp3"
+    media.write_bytes(b"x")
+    assert _is_local_media_path(str(media)) is True
+    assert _is_local_media_path("https://example/a.m4a") is False
+    assert _is_local_media_path("http://example/a.m4a") is False
+    assert _is_local_media_path("") is False
+    assert _is_local_media_path(str(tmp_path / "missing.mp3")) is False
+
+
+def test_local_file_is_passed_to_mpv_as_a_path(tmp_path, monkeypatch) -> None:
+    """Library rows have no channel name; they must still play from disk.
+
+    Audio used to pipe every source through urlopen.  A filesystem path is not
+    an HTTP URL, so mpv got EOF immediately and the queue skipped to the next
+    row until it hit a YouTube stream (those have a channel name).
+    """
+    media = tmp_path / "Metito Light (Visualizer).mp3"
+    media.write_bytes(b"x" * 64)
+    calls = []
+
+    class Alive:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=0):
+            return 0
+
+        def kill(self):
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        calls.append((list(cmd), dict(kwargs)))
+        return Alive()
+
+    monkeypatch.setattr(
+        "clipster.player.shutil.which",
+        lambda name: "/usr/bin/mpv" if name == "mpv" else None,
+    )
+    monkeypatch.setattr(
+        "clipster.player.urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("local files must not be fetched")
+        ),
+    )
+    monkeypatch.setattr("clipster.player.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(
+        "clipster.player.resolve_stream_url",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("local files must not hit YouTube")),
+    )
+
+    player = DiscoverPlayer()
+    player.set_visualizer_mode("off")
+    player.set_playlist(
+        [
+            DiscoverTrack(
+                url="",
+                video_id="",
+                title="Metito Light (Visualizer)",
+                path=str(media),
+            )
+        ]
+    )
+    result = player.play(0, prefer_video=False)
+    assert result.backend == BACKEND_AUDIO
+    assert calls
+    cmd, kwargs = calls[0]
+    assert cmd[-1] == str(media)
+    assert "-" not in cmd[1:]
+    assert kwargs.get("stdin") is None
+
+
+def test_local_file_is_passed_to_ffplay_as_a_path(tmp_path, monkeypatch) -> None:
+    media = tmp_path / "song.mp3"
+    media.write_bytes(b"x" * 64)
+    calls = []
+
+    class Alive:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=0):
+            return 0
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(
+        "clipster.player.shutil.which",
+        lambda name: "/usr/bin/ffplay" if name == "ffplay" else None,
+    )
+    monkeypatch.setattr("clipster.player.subprocess.Popen", lambda cmd, **kwargs: calls.append((list(cmd), dict(kwargs))) or Alive())
+
+    player = DiscoverPlayer()
+    player.set_visualizer_mode("off")
+    player.set_playlist([DiscoverTrack(url="", video_id="", title="song", path=str(media))])
+    result = player.play(0, prefer_video=False)
+    assert result.backend == BACKEND_AUDIO
+    cmd, kwargs = calls[0]
+    assert "-i" in cmd
+    assert cmd[cmd.index("-i") + 1] == str(media)
+    assert "pipe:0" not in cmd
+    assert kwargs.get("stdin") is None
